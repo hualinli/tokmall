@@ -1,0 +1,7 @@
+bin/
+*.env
+.DS_Store
+docs/
+.reasonix/
+AGENTS.md
+reasonix.toml
