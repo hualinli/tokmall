@@ -4,7 +4,11 @@ go 1.26.3
 
 require (
 	github.com/cloudwego/hertz v0.10.5
+	github.com/google/uuid v1.6.0
+	github.com/hertz-contrib/logger/slog v1.0.0
+	github.com/hertz-contrib/requestid v1.1.0
 	github.com/stretchr/testify v1.10.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (

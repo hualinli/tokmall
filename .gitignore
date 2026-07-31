@@ -5,3 +5,4 @@ docs/
 .reasonix/
 AGENTS.md
 reasonix.toml
+logs/
