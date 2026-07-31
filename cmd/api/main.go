@@ -13,6 +13,7 @@ import (
 	hertzslog "github.com/hertz-contrib/logger/slog"
 	"github.com/hertz-contrib/requestid"
 	"github.com/lihualin/tokmall/internal/config"
+	"github.com/lihualin/tokmall/internal/database"
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/middleware"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -45,6 +46,11 @@ func run() error {
 		hertzslog.WithOutput(logger),
 		hertzslog.WithHandlerOptions(&slog.HandlerOptions{Level: slog.LevelDebug}),
 	))
+
+	db, err := database.Connect(cfg.DBConfig)
+	if err != nil {
+		return fmt.Errorf("connect databse: %w", err)
+	}
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	h := server.New(server.WithHostPorts(addr))
 	slog.Info("server starting", "port", cfg.ServerPort)
@@ -56,6 +62,6 @@ func run() error {
 			}),
 		),
 	)
-	health.Register(h)
+	health.NewHandler(db).Register(h)
 	return h.Run()
 }

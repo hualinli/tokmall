@@ -6,14 +6,40 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/lihualin/tokmall/internal/response"
+	"gorm.io/gorm"
 )
 
-// Register 将 health 相关路由挂载到 Hertz 引擎上。
-func Register(h *server.Hertz) {
-	healthGroup := h.Group("/health")
-	healthGroup.GET("/live", live)
+type Handler struct {
+	db *gorm.DB
 }
 
-func live(ctx context.Context, c *app.RequestContext) {
+func NewHandler(db *gorm.DB) *Handler {
+	return &Handler{
+		db: db,
+	}
+}
+
+// Register 将 health 相关路由挂载到 Hertz 引擎上。
+func (hd *Handler) Register(h *server.Hertz) {
+	healthGroup := h.Group("/health")
+	healthGroup.GET("/live", hd.live)
+	healthGroup.GET("/ready", hd.ready)
+}
+
+func (hd *Handler) live(ctx context.Context, c *app.RequestContext) {
+	response.NoContent(c)
+}
+
+func (hd *Handler) ready(ctx context.Context, c *app.RequestContext) {
+	sqlDB, err := hd.db.DB()
+	if err != nil {
+		response.Error(c, response.ErrDependencyUnavailable)
+		return
+	}
+	err = sqlDB.Ping()
+	if err != nil {
+		response.Error(c, response.ErrDependencyUnavailable)
+		return
+	}
 	response.NoContent(c)
 }

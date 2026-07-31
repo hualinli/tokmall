@@ -9,11 +9,27 @@ import (
 
 const (
 	defaultServerPort = "8080"
+	defaultDBHost     = "localhost"
+	defaultDBPort     = "5432"
+	defaultDBUser     = "tokmall"
+	defaultDBPassword = "tokmall"
+	defaultDBDatabase = "tokmall"
+	defaultDBSSLMode  = "disable"
 )
 
 type Config struct {
 	ServerPort string
 	JWTSecret  string
+	DBConfig
+}
+
+type DBConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+	Database string
+	SSLMode  string
 }
 
 func Load() (*Config, error) {
@@ -24,6 +40,14 @@ func Load() (*Config, error) {
 	return &Config{
 		ServerPort: envString("SERVER_PORT", defaultServerPort),
 		JWTSecret:  jwtsecret,
+		DBConfig: DBConfig{
+			Host:     envString("DB_HOST", defaultDBHost),
+			Port:     envString("DB_PORT", defaultDBPort),
+			User:     envString("DB_USER", defaultDBUser),
+			Password: envString("DB_PASSWORD", defaultDBPassword),
+			Database: envString("DB_DATABASE", defaultDBDatabase),
+			SSLMode:  envString("DB_SSL_MODE", defaultDBSSLMode),
+		},
 	}, nil
 }
 

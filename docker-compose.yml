@@ -1,0 +1,10 @@
+services:
+  postgres:
+    image: postgres:latest
+    container_name: tokmall-postgres
+    environment:
+      POSTGRES_USER: tokmall
+      POSTGRES_PASSWORD: tokmall
+      POSTGRES_DB: tokmall
+    ports:
+      - "5432:5432"
