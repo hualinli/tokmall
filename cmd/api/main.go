@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
+	"github.com/golang-migrate/migrate/v4"
 	"github.com/google/uuid"
 	hertzslog "github.com/hertz-contrib/logger/slog"
 	"github.com/hertz-contrib/requestid"
@@ -50,6 +52,10 @@ func run() error {
 	db, err := database.Connect(cfg.DBConfig)
 	if err != nil {
 		return fmt.Errorf("connect databse: %w", err)
+	}
+	err = database.Migrate(db)
+	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("database migrate: %w", err)
 	}
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	h := server.New(server.WithHostPorts(addr))
