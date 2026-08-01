@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -29,6 +32,8 @@ func main() {
 }
 
 func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -69,5 +74,23 @@ func run() error {
 		),
 	)
 	health.NewHandler(db).Register(h)
-	return h.Run()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- h.Run()
+	}()
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30 *time.Second)
+		defer cancel()
+		if err := h.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown: %w", err)
+		}
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+		slog.Info("server stopped gracefully")
+		return nil
+	}
 }
