@@ -1,6 +1,8 @@
 package response
 
 import (
+	"net/http"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
@@ -24,6 +26,9 @@ var (
 	ErrUploadURLExpired      = &BizError{Code: "UPLOAD_URL_EXPIRED", Message: "upload url expired"}
 	ErrInternal              = &BizError{Code: "INTERNAL", Message: "internal error"}
 	ErrDependencyUnavailable = &BizError{Code: "DEPENDENCY_UNAVAILABLE", Message: "dependency unavailable"}
+	ErrMissingAuthHeader     = &BizError{Code: "MISSING_AUTH_HEADER", Message: "missing auth header"}
+	ErrInvalidAuthType       = &BizError{Code: "INVALID_AUTH_TYPE", Message: "invalid auth type"}
+	ErrInvalidToken          = &BizError{Code: "INVALID_TOKEN", Message: "invalid token"}
 )
 
 var statusByCode = map[string]int{
@@ -33,6 +38,9 @@ var statusByCode = map[string]int{
 	"VIDEO_NOT_PUBLISHED":    consts.StatusNotFound,
 	"USER_NOT_FOUND":         consts.StatusNotFound,
 	"UNAUTHENTICATED":        consts.StatusUnauthorized,
+	"MISSING_AUTH_HEADER":    consts.StatusUnauthorized,
+	"INVALID_AUTH_TYPE":      consts.StatusUnauthorized,
+	"INVALID_TOKEN":          consts.StatusUnauthorized,
 	"FORBIDDEN":              consts.StatusForbidden,
 	"RATE_LIMITED":           consts.StatusTooManyRequests,
 	"DUPLICATE_ACTION":       consts.StatusConflict,
@@ -63,6 +71,13 @@ func Error(ctx *app.RequestContext, bizErr *BizError) {
 		status = consts.StatusInternalServerError
 	}
 	ctx.JSON(status, map[string]any{
+		"error":      bizErr,
+		"request_id": string(ctx.Response.Header.Get("X-Request-ID")),
+	})
+}
+
+func Abort(ctx *app.RequestContext, bizErr *BizError) {
+	ctx.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
 		"error":      bizErr,
 		"request_id": string(ctx.Response.Header.Get("X-Request-ID")),
 	})

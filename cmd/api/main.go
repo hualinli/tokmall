@@ -21,6 +21,8 @@ import (
 	"github.com/lihualin/tokmall/internal/database"
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/middleware"
+	"github.com/lihualin/tokmall/internal/token"
+	"github.com/lihualin/tokmall/internal/user"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -73,7 +75,10 @@ func run() error {
 			}),
 		),
 	)
+	g := h.Group("/api/v1")
 	health.NewHandler(db).Register(h)
+	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
+	user.NewHandler(user.NewService(user.NewRepository(db), tokenManager)).RegisterRoutes(g)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- h.Run()
@@ -82,7 +87,7 @@ func run() error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30 *time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := h.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown: %w", err)
