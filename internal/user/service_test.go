@@ -209,7 +209,7 @@ func TestRegisterSignTokenFailure(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newTestService(repo, &fakeTokenManager{signErr: errors.New("jwt failure")})
 	_, err := svc.Register(context.Background(), RegisterParams{
-		Email: "abas3@123.com",Username: "alice12",Password: "1234123jkaljd",
+		Email: "abas3@123.com", Username: "alice12", Password: "1234123jkaljd",
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "sign token")
