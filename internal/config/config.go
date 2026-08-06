@@ -19,11 +19,13 @@ const (
 	defaultMinIOBucket    = "tokmall"
 	defaultMinIOPublicURL = "http://localhost:9000"
 	defaultUploadExpiry   = 15 * time.Minute
+	defaultCursorSecret   = "change-me-cursor-secret"
 )
 
 type Config struct {
-	ServerPort string
-	JWTSecret  string
+	ServerPort   string
+	JWTSecret    string
+	CursorSecret string
 	DBConfig
 	MinIOConfig
 }
@@ -54,8 +56,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	return &Config{
-		ServerPort: envString("SERVER_PORT", defaultServerPort),
-		JWTSecret:  jwtsecret,
+		ServerPort:   envString("SERVER_PORT", defaultServerPort),
+		JWTSecret:    jwtsecret,
+		CursorSecret: envString("FEED_CURSOR_SECRET", defaultCursorSecret),
 		DBConfig: DBConfig{
 			Host:     envString("DB_HOST", defaultDBHost),
 			Port:     envString("DB_PORT", defaultDBPort),

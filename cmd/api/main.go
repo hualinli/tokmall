@@ -19,6 +19,7 @@ import (
 	"github.com/hertz-contrib/requestid"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
+	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/storage"
@@ -95,6 +96,13 @@ func run() error {
 		cfg.UploadURLExpiry,
 	))
 	videoHandler.RegisterProtectedRoutes(protected)
+
+	feedHandler := feed.NewHandler(feed.NewService(
+		feed.NewRepository(db),
+		feed.NewCodec(cfg.CursorSecret),
+		storageClient,
+	))
+	feedHandler.RegisterRoutes(g)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- h.Run()
