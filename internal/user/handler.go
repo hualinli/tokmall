@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
 
@@ -33,6 +34,24 @@ func (h *Handler) RegisterRoutes(g *route.RouterGroup) {
 	authGroup := g.Group("/auth")
 	authGroup.POST("/register", h.register)
 	authGroup.POST("/login", h.login)
+}
+
+func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
+	g.GET("/me", h.me)
+}
+
+func (h *Handler) me(ctx context.Context, c *app.RequestContext) {
+	userID := c.GetInt64(middleware.CtxUserIDKey)
+	profile, err := h.service.GetProfile(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(c, response.ErrUserNotFound)
+			return
+		}
+		response.Error(c, response.ErrInternal)
+		return
+	}
+	response.OK(c, profile)
 }
 
 func (h *Handler) register(ctx context.Context, c *app.RequestContext) {

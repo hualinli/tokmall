@@ -31,6 +31,7 @@ var dummyHash = []byte("$2a$10$bSPKSKJUdh257leaWepIZeXFZXWgmWxvz6UaPXUFqWCzc28m6
 // 业务代码不 import hertz
 type Repository interface {
 	Create(ctx context.Context, u *User) error
+	FindByID(ctx context.Context, id int64) (*User, error)
 	FindByUsername(ctx context.Context, username string) (*User, error)
 	FindByEmail(ctx context.Context, email string) (*User, error)
 }
@@ -171,6 +172,24 @@ func (s *Service) Login(ctx context.Context, p LoginParams) (*AuthResult, error)
 			Bio:       u.Bio,
 			AvatarKey: u.AvatarKey,
 		},
+	}, nil
+}
+
+func (s *Service) GetProfile(ctx context.Context, userID int64) (*PublicUser, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		slog.Error("get profile failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("get profile: %w", err)
+	}
+	return &PublicUser{
+		UserID:    u.UserID,
+		Username:  u.Username,
+		Email:     u.Email,
+		Bio:       u.Bio,
+		AvatarKey: u.AvatarKey,
 	}, nil
 }
 

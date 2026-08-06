@@ -11,6 +11,7 @@ import (
 
 // fakeRepo 内存版仓库：模拟 gorm 行为，重点回填主键（对应 Create 后的 RETURNING）。
 type fakeRepo struct {
+	usersByID       map[int64]*User
 	usersByUsername map[string]*User
 	usersByEmail    map[string]*User
 	nextID          int64
@@ -20,6 +21,7 @@ type fakeRepo struct {
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
+		usersByID:       make(map[int64]*User),
 		usersByUsername: make(map[string]*User),
 		usersByEmail:    make(map[string]*User),
 		nextID:          1,
@@ -38,9 +40,21 @@ func (f *fakeRepo) Create(ctx context.Context, u *User) error {
 	}
 	u.UserID = f.nextID
 	f.nextID++
+	f.usersByID[u.UserID] = u
 	f.usersByEmail[u.Email] = u
 	f.usersByUsername[u.Username] = u
 	return nil
+}
+
+func (f *fakeRepo) FindByID(ctx context.Context, id int64) (*User, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	u, ok := f.usersByID[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return u, nil
 }
 
 func (f *fakeRepo) FindByUsername(ctx context.Context, username string) (*User, error) {

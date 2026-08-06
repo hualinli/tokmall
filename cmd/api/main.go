@@ -78,7 +78,9 @@ func run() error {
 	g := h.Group("/api/v1")
 	health.NewHandler(db).Register(h)
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
-	user.NewHandler(user.NewService(user.NewRepository(db), tokenManager)).RegisterRoutes(g)
+	userHandler := user.NewHandler(user.NewService(user.NewRepository(db), tokenManager))
+	userHandler.RegisterRoutes(g)
+	userHandler.RegisterProtectedRoutes(g.Group("/", middleware.AuthMiddleware(tokenManager)))
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- h.Run()

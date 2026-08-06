@@ -11,6 +11,7 @@ import (
 type column string
 
 const (
+	colID       column = "id"
 	colUsername column = "username"
 	colEmail    column = "email"
 )
@@ -43,17 +44,21 @@ func (r *GormRepository) Create(ctx context.Context, u *User) error {
 	return nil
 }
 
+func (r *GormRepository) FindByID(ctx context.Context, id int64) (*User, error) {
+	return r.findOne(ctx, colID, id)
+}
+
 func (r *GormRepository) FindByUsername(ctx context.Context, username string) (*User, error) {
-	return r.findOne(ctx, "username", username)
+	return r.findOne(ctx, colUsername, username)
 }
 
 func (r *GormRepository) FindByEmail(ctx context.Context, email string) (*User, error) {
-	return r.findOne(ctx, "email", email)
+	return r.findOne(ctx, colEmail, email)
 }
 
-func (r *GormRepository) findOne(ctx context.Context, col column, value string) (*User, error) {
+func (r *GormRepository) findOne(ctx context.Context, col column, value any) (*User, error) {
 	var u User
-	if err := r.db.WithContext(ctx).Where(col+" = ?", value).First(&u).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where(string(col)+" = ?", value).First(&u).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
