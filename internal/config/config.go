@@ -8,19 +8,24 @@ import (
 )
 
 const (
-	defaultServerPort = "8080"
-	defaultDBHost     = "localhost"
-	defaultDBPort     = "5432"
-	defaultDBUser     = "tokmall"
-	defaultDBPassword = "tokmall"
-	defaultDBDatabase = "tokmall"
-	defaultDBSSLMode  = "disable"
+	defaultServerPort     = "8080"
+	defaultDBHost         = "localhost"
+	defaultDBPort         = "5432"
+	defaultDBUser         = "tokmall"
+	defaultDBPassword     = "tokmall"
+	defaultDBDatabase     = "tokmall"
+	defaultDBSSLMode      = "disable"
+	defaultMinIOEndpoint  = "localhost:9000"
+	defaultMinIOBucket    = "tokmall"
+	defaultMinIOPublicURL = "http://localhost:9000"
+	defaultUploadExpiry   = 15 * time.Minute
 )
 
 type Config struct {
 	ServerPort string
 	JWTSecret  string
 	DBConfig
+	MinIOConfig
 }
 
 type DBConfig struct {
@@ -30,6 +35,17 @@ type DBConfig struct {
 	Password string
 	Database string
 	SSLMode  string
+}
+
+type MinIOConfig struct {
+	Endpoint  string
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	PublicURL string
+	UseSSL    bool
+
+	UploadURLExpiry time.Duration
 }
 
 func Load() (*Config, error) {
@@ -47,6 +63,15 @@ func Load() (*Config, error) {
 			Password: envString("DB_PASSWORD", defaultDBPassword),
 			Database: envString("DB_DATABASE", defaultDBDatabase),
 			SSLMode:  envString("DB_SSL_MODE", defaultDBSSLMode),
+		},
+		MinIOConfig: MinIOConfig{
+			Endpoint:        envString("MINIO_ENDPOINT", defaultMinIOEndpoint),
+			AccessKey:       envString("MINIO_ACCESS_KEY", "tokmall"),
+			SecretKey:       envString("MINIO_SECRET_KEY", "tokmall123"),
+			Bucket:          envString("MINIO_BUCKET", defaultMinIOBucket),
+			PublicURL:       envString("MINIO_PUBLIC_URL", defaultMinIOPublicURL),
+			UseSSL:          envString("MINIO_USE_SSL", "") == "true",
+			UploadURLExpiry: envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
 		},
 	}, nil
 }

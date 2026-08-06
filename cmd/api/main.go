@@ -21,8 +21,10 @@ import (
 	"github.com/lihualin/tokmall/internal/database"
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/middleware"
+	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
+	"github.com/lihualin/tokmall/internal/video"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -80,7 +82,19 @@ func run() error {
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(db), tokenManager))
 	userHandler.RegisterRoutes(g)
-	userHandler.RegisterProtectedRoutes(g.Group("/", middleware.AuthMiddleware(tokenManager)))
+	protected := g.Group("/", middleware.AuthMiddleware(tokenManager))
+	userHandler.RegisterProtectedRoutes(protected)
+
+	storageClient, err := storage.New(cfg.MinIOConfig)
+	if err != nil {
+		return fmt.Errorf("init storage: %w", err)
+	}
+	videoHandler := video.NewHandler(video.NewService(
+		video.NewRepository(db),
+		storageClient,
+		cfg.UploadURLExpiry,
+	))
+	videoHandler.RegisterProtectedRoutes(protected)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- h.Run()

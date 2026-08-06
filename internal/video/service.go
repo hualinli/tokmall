@@ -1,0 +1,239 @@
+package video
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/lihualin/tokmall/internal/storage"
+)
+
+var (
+	ErrInvalidParam     = errors.New("invalid param")
+	ErrForbidden        = errors.New("forbidden")
+	ErrUploadURLExpired = errors.New("upload url expired or never issued")
+)
+
+// Repository 由 service 定义、消费，GormRepository 隐式满足。
+type Repository interface {
+	CreateVideo(ctx context.Context, v *Video) error
+	FindVideoByID(ctx context.Context, id int64) (*Video, error)
+	UpdateVideoStatus(ctx context.Context, id int64, from, to Status, publishedAt *time.Time) error
+	CreateTicket(ctx context.Context, t *UploadTicket) error
+	ConsumeTicket(ctx context.Context, userID int64, objectKey string) error
+}
+
+// Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
+type Storage interface {
+	PresignPutURL(ctx context.Context, objectKey string) (string, error)
+	StatObject(ctx context.Context, objectKey string) (int64, error)
+	PublicURL(objectKey string) string
+}
+
+type Service struct {
+	repo    Repository
+	storage Storage
+	expiry  time.Duration
+}
+
+func NewService(repo Repository, storage Storage, uploadExpiry time.Duration) *Service {
+	return &Service{
+		repo:    repo,
+		storage: storage,
+		expiry:  uploadExpiry,
+	}
+}
+
+// statusTransitions 状态机：key 是当前状态，value 是允许迁移到的状态集合。
+var statusTransitions = map[Status][]Status{
+	StatusUploading:     {StatusProcessing, StatusFailed},
+	StatusProcessing:    {StatusPendingReview, StatusFailed},
+	StatusPendingReview: {StatusPublished, StatusBlocked, StatusFailed, StatusDeleted},
+	StatusPublished:     {StatusBlocked, StatusDeleted},
+	StatusBlocked:       {StatusDeleted},
+	StatusFailed:        {StatusDeleted},
+}
+
+func canTransition(from, to Status) bool {
+	for _, s := range statusTransitions[from] {
+		if s == to {
+			return true
+		}
+	}
+	return false
+}
+
+type UploadResult struct {
+	ObjectKey string    `json:"object_key"`
+	UploadURL string    `json:"upload_url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type CreateParams struct {
+	Title           string
+	ObjectKey       string
+	CoverKey        *string
+	DurationSeconds int
+}
+
+type CreateResult struct {
+	VideoID int64  `json:"video_id"`
+	Status  Status `json:"status"`
+}
+
+type PublishResult struct {
+	VideoID int64  `json:"video_id"`
+	Status  Status `json:"status"`
+}
+
+type VideoDetail struct {
+	VideoID         int64      `json:"video_id"`
+	AuthorID        int64      `json:"author_id"`
+	Title           string     `json:"title"`
+	VideoURL        string     `json:"video_url"`
+	DurationSeconds int        `json:"duration_seconds"`
+	Status          Status     `json:"status"`
+	PublishedAt     *time.Time `json:"published_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+// GetUploadURL 发放预签名上传 URL 并记录 ticket。
+func (s *Service) GetUploadURL(ctx context.Context, userID int64, filename string, fileSize int64, contentType string) (*UploadResult, error) {
+	if fileSize < 1<<20 || fileSize > 512<<20 {
+		return nil, ErrInvalidParam
+	}
+	switch contentType {
+	case "video/mp4", "video/webm", "video/quicktime":
+	default:
+		return nil, ErrInvalidParam
+	}
+	objectKey := fmt.Sprintf("videos/%d/%s.mp4", userID, uuid.NewString())
+	uploadURL, err := s.storage.PresignPutURL(ctx, objectKey)
+	if err != nil {
+		slog.Error("presign upload url failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("presign upload url: %w", err)
+	}
+	err = s.repo.CreateTicket(ctx, &UploadTicket{
+		UserID:    userID,
+		ObjectKey: objectKey,
+		ExpiresAt: time.Now().Add(s.expiry),
+	})
+	if err != nil {
+		slog.Error("create ticket failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("create ticket: %w", err)
+	}
+	return &UploadResult{
+		ObjectKey: objectKey,
+		UploadURL: uploadURL,
+		ExpiresAt: time.Now().Add(s.expiry),
+	}, nil
+}
+
+// Create 校验 ticket 并确认文件真实上传后创建视频记录（PENDING_REVIEW）。
+func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*CreateResult, error) {
+	title := p.Title
+	if title == "" || len(title) > 200 {
+		return nil, ErrInvalidParam
+	}
+	if p.DurationSeconds < 1 || p.DurationSeconds > 3600 {
+		return nil, ErrInvalidParam
+	}
+	size, err := s.storage.StatObject(ctx, p.ObjectKey)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			return nil, ErrUploadURLExpired
+		}
+		slog.Error("stat object failed", "object_key", p.ObjectKey, "err", err)
+		return nil, fmt.Errorf("stat object: %w", err)
+	}
+	if size == 0 {
+		return nil, ErrUploadURLExpired
+	}
+	err = s.repo.ConsumeTicket(ctx, userID, p.ObjectKey)
+	if err != nil {
+		if errors.Is(err, ErrTicketInvalid) {
+			return nil, ErrUploadURLExpired
+		}
+		slog.Error("consume ticket failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("consume ticket: %w", err)
+	}
+	v := &Video{
+		AuthorID:        userID,
+		Title:           title,
+		ObjectKey:       p.ObjectKey,
+		CoverKey:        p.CoverKey,
+		DurationSeconds: p.DurationSeconds,
+		Status:          StatusPendingReview,
+	}
+	if err := s.repo.CreateVideo(ctx, v); err != nil {
+		slog.Error("create video failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("create video: %w", err)
+	}
+	return &CreateResult{VideoID: v.ID, Status: v.Status}, nil
+}
+
+// Publish 作者发布：PENDING_REVIEW -> PUBLISHED。
+func (s *Service) Publish(ctx context.Context, userID, videoID int64) (*PublishResult, error) {
+	now := time.Now()
+	err := s.repo.UpdateVideoStatus(ctx, videoID, StatusPendingReview, StatusPublished, &now)
+	if err != nil {
+		if errors.Is(err, ErrStatusConflict) {
+			return nil, ErrStatusConflict
+		}
+		slog.Error("publish video failed", "video_id", videoID, "err", err)
+		return nil, fmt.Errorf("publish video: %w", err)
+	}
+	return &PublishResult{VideoID: videoID, Status: StatusPublished}, nil
+}
+
+// Delete 作者删除：任意非终态 -> DELETED。
+func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
+	v, err := s.repo.FindVideoByID(ctx, videoID)
+	if err != nil {
+		return err
+	}
+	if v.AuthorID != userID {
+		return ErrForbidden
+	}
+	if !canTransition(v.Status, StatusDeleted) {
+		return ErrStatusConflict
+	}
+	err = s.repo.UpdateVideoStatus(ctx, videoID, v.Status, StatusDeleted, nil)
+	if err != nil {
+		if errors.Is(err, ErrStatusConflict) {
+			return ErrStatusConflict
+		}
+		slog.Error("delete video failed", "video_id", videoID, "err", err)
+		return fmt.Errorf("delete video: %w", err)
+	}
+	return nil
+}
+
+// Get 按可见性策略返回详情：已删除对所有人不可见；
+// 未发布仅作者可见；已发布对所有人可见。
+// 不可见一律返回 ErrNotFound（不泄露存在性）。
+func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetail, error) {
+	v, err := s.repo.FindVideoByID(ctx, videoID)
+	if err != nil {
+		return nil, err
+	}
+	if v.Status == StatusDeleted {
+		return nil, ErrNotFound
+	}
+	if v.AuthorID != viewerID && v.Status != StatusPublished {
+		return nil, ErrNotFound
+	}
+	return &VideoDetail{
+		VideoID:         v.ID,
+		AuthorID:        v.AuthorID,
+		Title:           v.Title,
+		VideoURL:        s.storage.PublicURL(v.ObjectKey),
+		DurationSeconds: v.DurationSeconds,
+		Status:          v.Status,
+		PublishedAt:     v.PublishedAt,
+		CreatedAt:       v.CreatedAt,
+	}, nil
+}

@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS upload_tickets;
+DROP TABLE IF EXISTS videos;
