@@ -21,6 +21,7 @@ import (
 	"github.com/lihualin/tokmall/internal/database"
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/health"
+	"github.com/lihualin/tokmall/internal/interaction"
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
@@ -103,6 +104,9 @@ func run() error {
 		storageClient,
 	))
 	feedHandler.RegisterRoutes(g)
+
+	interactionHandler := interaction.NewHandler(interaction.NewService(interaction.NewRepository(db)))
+	interactionHandler.RegisterProtectedRoutes(protected)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- h.Run()
