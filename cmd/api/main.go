@@ -16,6 +16,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/google/uuid"
 	hertzslog "github.com/hertz-contrib/logger/slog"
+	hertzmonitor "github.com/hertz-contrib/monitor-prometheus"
 	"github.com/hertz-contrib/requestid"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
@@ -23,10 +24,12 @@ import (
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/interaction"
 	"github.com/lihualin/tokmall/internal/middleware"
+	"github.com/lihualin/tokmall/internal/observability"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
+	"github.com/prometheus/client_golang/prometheus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -60,16 +63,29 @@ func run() error {
 		hertzslog.WithHandlerOptions(&slog.HandlerOptions{Level: slog.LevelDebug}),
 	))
 
+	metricsRegistry := prometheus.NewRegistry()
 	db, err := database.Connect(cfg.DBConfig)
 	if err != nil {
 		return fmt.Errorf("connect databse: %w", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("get sql db: %w", err)
+	}
+	metricsRegistry.MustRegister(observability.NewDBPoolCollector(sqlDB, "tokmall"))
 	err = database.Migrate(db)
 	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("database migrate: %w", err)
 	}
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
-	h := server.New(server.WithHostPorts(addr))
+	h := server.New(
+		server.WithHostPorts(addr),
+		server.WithTracer(hertzmonitor.NewServerTracer(
+			":9091", "/metrics",
+			hertzmonitor.WithRegistry(metricsRegistry),
+			hertzmonitor.WithEnableGoCollector(true),
+		)),
+	)
 	slog.Info("server starting", "port", cfg.ServerPort)
 	h.Use(
 		middleware.Recovery(),
