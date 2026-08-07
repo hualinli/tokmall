@@ -20,6 +20,9 @@ const (
 	defaultMinIOPublicURL = "http://localhost:9000"
 	defaultUploadExpiry   = 15 * time.Minute
 	defaultCursorSecret   = "change-me-cursor-secret"
+	defaultRedisAddr      = "localhost:6380"
+	defaultRedisDB        = 0
+	defaultFeedCacheTTL   = 60 * time.Second
 )
 
 type Config struct {
@@ -28,6 +31,16 @@ type Config struct {
 	CursorSecret string
 	DBConfig
 	MinIOConfig
+	RedisConfig
+}
+
+type RedisConfig struct {
+	Addr     string
+	Password string
+	DB       int
+	// FeedCacheTTL 是 feed 首页缓存的过期时间：TTL 兜底防删缓存失败导致
+	// 脏数据永久存活（先写库再删缓存的 Cache-Aside 策略依赖它）。
+	FeedCacheTTL time.Duration
 }
 
 type DBConfig struct {
@@ -75,6 +88,12 @@ func Load() (*Config, error) {
 			PublicURL:       envString("MINIO_PUBLIC_URL", defaultMinIOPublicURL),
 			UseSSL:          envString("MINIO_USE_SSL", "") == "true",
 			UploadURLExpiry: envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
+		},
+		RedisConfig: RedisConfig{
+			Addr:         envString("REDIS_ADDR", defaultRedisAddr),
+			Password:     envString("REDIS_PASSWORD", ""),
+			DB:           envInt("REDIS_DB", defaultRedisDB),
+			FeedCacheTTL: envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
 		},
 	}, nil
 }

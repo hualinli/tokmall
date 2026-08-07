@@ -22,5 +22,11 @@ services:
     volumes:
       - minio-data:/data
 
+  redis:
+    image: redis:7
+    container_name: tokmall-redis
+    ports:
+      - "6380:6379"
+
 volumes:
   minio-data:

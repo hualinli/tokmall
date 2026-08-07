@@ -18,6 +18,7 @@ import (
 	hertzslog "github.com/hertz-contrib/logger/slog"
 	hertzmonitor "github.com/hertz-contrib/monitor-prometheus"
 	"github.com/hertz-contrib/requestid"
+	"github.com/lihualin/tokmall/internal/cache"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
 	"github.com/lihualin/tokmall/internal/feed"
@@ -77,6 +78,11 @@ func run() error {
 	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("database migrate: %w", err)
 	}
+	redisClient, err := cache.NewClient(cfg.RedisConfig)
+	if err != nil {
+		return fmt.Errorf("connect redis: %w", err)
+	}
+	defer redisClient.Close()
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	h := server.New(
 		server.WithHostPorts(addr),
@@ -98,7 +104,11 @@ func run() error {
 	g := h.Group("/api/v1")
 	health.NewHandler(db).Register(h)
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
-	userHandler := user.NewHandler(user.NewService(user.NewRepository(db), tokenManager))
+	userHandler := user.NewHandler(user.NewService(
+		user.NewRepository(db),
+		tokenManager,
+		user.NewRedisRefreshTokenBlacklist(redisClient),
+	))
 	userHandler.RegisterRoutes(g)
 	protected := g.Group("/", middleware.AuthMiddleware(tokenManager))
 	userHandler.RegisterProtectedRoutes(protected)

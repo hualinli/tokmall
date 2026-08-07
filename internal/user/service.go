@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/mail"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lihualin/tokmall/internal/token"
 	"golang.org/x/crypto/bcrypt"
@@ -38,17 +40,20 @@ type Repository interface {
 
 type TokenManager interface {
 	Sign(claims token.Claims) (string, error)
+	Verify(tokenString string) (*token.Claims, error)
 }
 
 type Service struct {
-	repo   Repository
-	tokens TokenManager
+	repo      Repository
+	tokens    TokenManager
+	blacklist RefreshTokenBlacklist
 }
 
-func NewService(repo Repository, tokens TokenManager) *Service {
+func NewService(repo Repository, tokens TokenManager, blacklist RefreshTokenBlacklist) *Service {
 	return &Service{
-		repo:   repo,
-		tokens: tokens,
+		repo:      repo,
+		tokens:    tokens,
+		blacklist: blacklist,
 	}
 }
 
@@ -191,6 +196,76 @@ func (s *Service) GetProfile(ctx context.Context, userID int64) (*PublicUser, er
 		Bio:       u.Bio,
 		AvatarKey: u.AvatarKey,
 	}, nil
+}
+
+// Refresh 用 refresh token 换取新 token 对（rotation）：
+// 新 token 签发前先把旧 jti 拉黑——两步骤之间崩溃的后果是
+// 旧 token 作废、用户需要重新登录，而不会出现新旧两个 token 同时有效
+// （不产生 token 泛滥）。这是无状态 JWT 下无法用事务时对顺序的取舍。
+// 已知限制：两个并发请求同时用同一 refresh token 刷新时，可能都通过
+// 黑名单检查而各自签发新 token（短暂双活）。工业级解法是 per-user
+// 当前 jti 白名单（只认最新一个），列为 ADR 演进项。
+func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResult, error) {
+	claims, err := s.tokens.Verify(refreshToken)
+	if err != nil || !claims.IsRefresh() {
+		return nil, ErrInvalidCredentials
+	}
+	remaining := claims.ExpiresAt.Time.Sub(time.Now())
+	if remaining <= 0 {
+		return nil, ErrInvalidCredentials
+	}
+	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
+	if err != nil {
+		return nil, ErrInvalidCredentials
+	}
+	// 用户已删除（软删）时 token 必须作废，否则删号后旧 refresh token
+	// 还能无限续签新 access token。
+	if _, err := s.repo.FindByID(ctx, userID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrInvalidCredentials
+		}
+		slog.Error("find user on refresh failed", "err", err)
+		return nil, fmt.Errorf("find user on refresh: %w", err)
+	}
+	blocked, err := s.blacklist.IsBlocked(ctx, claims.ID)
+	if err != nil {
+		slog.Error("check refresh blacklist failed", "err", err)
+		return nil, fmt.Errorf("check refresh blacklist: %w", err)
+	}
+	if blocked {
+		return nil, ErrInvalidCredentials
+	}
+	if err := s.blacklist.Block(ctx, claims.ID, remaining); err != nil {
+		slog.Error("block refresh token failed", "err", err)
+		return nil, fmt.Errorf("block refresh token: %w", err)
+	}
+	accessToken, refreshTokenNew, err := s.issueToken(userID)
+	if err != nil {
+		return nil, err
+	}
+	return &AuthResult{
+		AccessToken:  accessToken,
+		RefreshToken: refreshTokenNew,
+		ExpiresIn:    accessTokenTTL,
+	}, nil
+}
+
+// Logout 拉黑 refresh token。幂等：token 已失效/已过期/类型不符
+// 一律视为"已经登出"，返回成功；只有 Redis 故障才算错误。
+func (s *Service) Logout(ctx context.Context, refreshToken string) error {
+	claims, err := s.tokens.Verify(refreshToken)
+	if err != nil || !claims.IsRefresh() {
+		return nil
+	}
+	remaining := claims.ExpiresAt.Time.Sub(time.Now())
+	if remaining <= 0 {
+		return nil
+	}
+	if err := s.blacklist.Block(ctx, claims.ID, remaining); err != nil {
+		slog.Error("block refresh token failed", "err", err)
+		return fmt.Errorf("block refresh token: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) issueToken(userID int64) (string, string, error) {

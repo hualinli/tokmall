@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/stretchr/testify/require"
 )
@@ -80,7 +82,9 @@ func (f *fakeRepo) FindByEmail(ctx context.Context, email string) (*User, error)
 }
 
 type fakeTokenManager struct {
-	signErr error
+	signErr   error
+	verifyRes *token.Claims
+	verifyErr error
 }
 
 func (f *fakeTokenManager) Sign(claims token.Claims) (string, error) {
@@ -90,8 +94,58 @@ func (f *fakeTokenManager) Sign(claims token.Claims) (string, error) {
 	return "token-" + claims.Type, nil
 }
 
+func (f *fakeTokenManager) Verify(tokenString string) (*token.Claims, error) {
+	if f.verifyErr != nil {
+		return nil, f.verifyErr
+	}
+	return f.verifyRes, nil
+}
+
+// fakeBlacklist 内存版黑名单：记录 jti，两个方法可独立注入故障。
+type fakeBlacklist struct {
+	blocked   map[string]bool
+	blockErr  error
+	existsErr error
+}
+
+func newFakeBlacklist() *fakeBlacklist {
+	return &fakeBlacklist{blocked: make(map[string]bool)}
+}
+
+func (f *fakeBlacklist) Block(_ context.Context, jti string, _ time.Duration) error {
+	if f.blockErr != nil {
+		return f.blockErr
+	}
+	f.blocked[jti] = true
+	return nil
+}
+
+func (f *fakeBlacklist) IsBlocked(_ context.Context, jti string) (bool, error) {
+	if f.existsErr != nil {
+		return false, f.existsErr
+	}
+	return f.blocked[jti], nil
+}
+
 func newTestService(repo *fakeRepo, tokens *fakeTokenManager) *Service {
-	return NewService(repo, tokens)
+	return NewService(repo, tokens, newFakeBlacklist())
+}
+
+func refreshClaims(jti string) *token.Claims {
+	return &token.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			Subject:   "1",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+		Type: token.TypeRefresh,
+		Role: "USER",
+	}
+}
+
+// seedUser 给 fakeRepo 预置 id=1 的用户（Refresh 会做存在性检查）。
+func seedUser(repo *fakeRepo) {
+	repo.usersByID[1] = &User{UserID: 1, Email: "a@b.com", Username: "alice12", Bio: ""}
 }
 
 // TestRegisterLoginFullFlow 全流程模板：注册 -> 用户名登录 -> 邮箱登录
@@ -227,4 +281,271 @@ func TestRegisterSignTokenFailure(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "sign token")
+}
+
+func TestRefreshSuccess(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := NewService(repo, tm, newFakeBlacklist())
+
+	result, err := svc.Refresh(context.Background(), "old-refresh-token")
+	require.NoError(t, err)
+	require.NotEmpty(t, result.AccessToken)
+	require.NotEmpty(t, result.RefreshToken)
+	require.Equal(t, int64(15*60), result.ExpiresIn)
+}
+
+// TestRefreshRotatesOldJti rotation 的核心：刷新后旧 jti 必须被拉黑，
+// 旧 token 再用立刻被拒。
+func TestRefreshRotatesOldJti(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	blacklist := newFakeBlacklist()
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := NewService(repo, tm, blacklist)
+
+	_, err := svc.Refresh(context.Background(), "old-refresh-token")
+	require.NoError(t, err)
+	require.True(t, blacklist.blocked["jti-1"])
+
+	tm.verifyRes = refreshClaims("jti-1")
+	_, err = svc.Refresh(context.Background(), "old-refresh-token")
+	require.ErrorIs(t, err, ErrInvalidCredentials)
+}
+
+// TestRefreshDeletedUser 软删用户：旧 refresh token 必须被拒（不能续签）。
+func TestRefreshDeletedUser(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	svc := NewService(newFakeRepo(), tm, newFakeBlacklist())
+
+	_, err := svc.Refresh(context.Background(), "old-refresh-token")
+	require.ErrorIs(t, err, ErrInvalidCredentials)
+}
+
+func TestRefreshRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		mod  func(tm *fakeTokenManager, bl *fakeBlacklist)
+	}{
+		{
+			"expired token",
+			func(tm *fakeTokenManager, _ *fakeBlacklist) {
+				tm.verifyRes = &token.Claims{
+					RegisteredClaims: jwt.RegisteredClaims{
+						ID:        "jti-expired",
+						Subject:   "1",
+						ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)),
+					},
+					Type: token.TypeRefresh,
+					Role: "USER",
+				}
+			},
+		},
+		{
+			"access token passed to refresh",
+			func(tm *fakeTokenManager, _ *fakeBlacklist) {
+				c := refreshClaims("jti-access")
+				c.Type = token.TypeAccess
+				tm.verifyRes = c
+			},
+		},
+		{
+			"signature invalid",
+			func(tm *fakeTokenManager, _ *fakeBlacklist) {
+				tm.verifyErr = errors.New("bad signature")
+			},
+		},
+		{
+			"token already blocked",
+			func(_ *fakeTokenManager, bl *fakeBlacklist) {
+				bl.blocked["jti-blocked"] = true
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tm := &fakeTokenManager{verifyRes: refreshClaims("jti-blocked")}
+			bl := newFakeBlacklist()
+			tc.mod(tm, bl)
+			repo := newFakeRepo()
+			seedUser(repo)
+			svc := NewService(repo, tm, bl)
+
+			_, err := svc.Refresh(context.Background(), "refresh-token")
+			require.ErrorIs(t, err, ErrInvalidCredentials)
+		})
+	}
+}
+
+func TestLogout(t *testing.T) {
+	t.Run("blocks valid token", func(t *testing.T) {
+		tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+		bl := newFakeBlacklist()
+		svc := NewService(newFakeRepo(), tm, bl)
+
+		require.NoError(t, svc.Logout(context.Background(), "refresh-token"))
+		require.True(t, bl.blocked["jti-1"])
+	})
+
+	// 幂等：无效/过期/类型不符的 token，logout 都返回成功。
+	t.Run("idempotent on already-invalid token", func(t *testing.T) {
+		tm := &fakeTokenManager{verifyErr: errors.New("bad signature")}
+		svc := NewService(newFakeRepo(), tm, newFakeBlacklist())
+		require.NoError(t, svc.Logout(context.Background(), "garbage"))
+	})
+
+	t.Run("expired token is no-op", func(t *testing.T) {
+		tm := &fakeTokenManager{verifyRes: &token.Claims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				ID:        "jti-expired",
+				Subject:   "1",
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)),
+			},
+			Type: token.TypeRefresh,
+			Role: "USER",
+		}}
+		bl := newFakeBlacklist()
+		svc := NewService(newFakeRepo(), tm, bl)
+		require.NoError(t, svc.Logout(context.Background(), "refresh-token"))
+		require.False(t, bl.blocked["jti-expired"])
+	})
+
+	t.Run("access token is no-op", func(t *testing.T) {
+		c := refreshClaims("jti-access")
+		c.Type = token.TypeAccess
+		tm := &fakeTokenManager{verifyRes: c}
+		bl := newFakeBlacklist()
+		svc := NewService(newFakeRepo(), tm, bl)
+
+		require.NoError(t, svc.Logout(context.Background(), "access-token"))
+		require.False(t, bl.blocked["jti-access"])
+	})
+
+	t.Run("redis failure surfaces", func(t *testing.T) {
+		tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+		bl := newFakeBlacklist()
+		bl.blockErr = errors.New("redis down")
+		svc := NewService(newFakeRepo(), tm, bl)
+		require.Error(t, svc.Logout(context.Background(), "refresh-token"))
+	})
+}
+
+func TestRefreshBlacklistFailure(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	bl := newFakeBlacklist()
+	bl.existsErr = errors.New("redis down")
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := NewService(repo, tm, bl)
+
+	_, err := svc.Refresh(context.Background(), "refresh-token")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrInvalidCredentials)
+}
+
+// TestRefreshBlockFailure 缺口1：IsBlocked 通过但 Block 失败——错误必须
+// 上抛（不是 401），且旧 token 不得被标记为已拉黑。
+func TestRefreshBlockFailure(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	bl := newFakeBlacklist()
+	bl.blockErr = errors.New("redis down")
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := NewService(repo, tm, bl)
+
+	_, err := svc.Refresh(context.Background(), "refresh-token")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrInvalidCredentials)
+	require.False(t, bl.blocked["jti-1"])
+}
+
+// TestRefreshSignFailureAfterRotation 缺口2：旧 jti 拉黑后签发失败——
+// 错误上抛，且旧 token 已被拉黑（安全侧优先：宁可让用户重登）。
+func TestRefreshSignFailureAfterRotation(t *testing.T) {
+	tm := &fakeTokenManager{
+		verifyRes: refreshClaims("jti-1"),
+		signErr:   errors.New("jwt failure"),
+	}
+	bl := newFakeBlacklist()
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := NewService(repo, tm, bl)
+
+	_, err := svc.Refresh(context.Background(), "refresh-token")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sign token")
+	require.True(t, bl.blocked["jti-1"])
+}
+
+// TestRefreshBadSubject 缺口3：subject 不是数字——必须 401，不能 500。
+func TestRefreshBadSubject(t *testing.T) {
+	c := refreshClaims("jti-1")
+	c.Subject = "not-a-number"
+	tm := &fakeTokenManager{verifyRes: c}
+	svc := NewService(newFakeRepo(), tm, newFakeBlacklist())
+
+	_, err := svc.Refresh(context.Background(), "refresh-token")
+	require.ErrorIs(t, err, ErrInvalidCredentials)
+}
+
+// TestRefreshRepoFailure 缺口4：查用户时 DB 故障——必须上抛原始错误，
+// 不能误判成 401。
+func TestRefreshRepoFailure(t *testing.T) {
+	boom := errors.New("db connection lost")
+	repo := newFakeRepo()
+	seedUser(repo)
+	repo.findErr = boom
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	svc := NewService(repo, tm, newFakeBlacklist())
+
+	_, err := svc.Refresh(context.Background(), "refresh-token")
+	require.ErrorIs(t, err, boom)
+	require.NotErrorIs(t, err, ErrInvalidCredentials)
+}
+
+// TestGetProfile 缺口5：GetProfile 完全没测。
+func TestGetProfile(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.usersByID[7] = &User{UserID: 7, Email: "p@b.com", Username: "prof7", Bio: "hi"}
+		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist())
+
+		p, err := svc.GetProfile(context.Background(), 7)
+		require.NoError(t, err)
+		require.Equal(t, int64(7), p.UserID)
+		require.Equal(t, "prof7", p.Username)
+		require.Equal(t, "hi", p.Bio)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		svc := NewService(newFakeRepo(), &fakeTokenManager{}, newFakeBlacklist())
+		_, err := svc.GetProfile(context.Background(), 99)
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("repo failure", func(t *testing.T) {
+		boom := errors.New("db connection lost")
+		repo := newFakeRepo()
+		repo.findErr = boom
+		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist())
+
+		_, err := svc.GetProfile(context.Background(), 1)
+		require.ErrorIs(t, err, boom)
+	})
+}
+
+// TestLoginEmailPathRepoFailure 缺口7：email 登录路径的 repo 故障。
+func TestLoginEmailPathRepoFailure(t *testing.T) {
+	boom := errors.New("db connection lost")
+	repo := newFakeRepo()
+	repo.findErr = boom
+	svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist())
+
+	_, err := svc.Login(context.Background(), LoginParams{
+		EmailOrUsername: "alice@example.com",
+		Password:        "password123",
+	})
+	require.ErrorIs(t, err, boom)
+	require.NotErrorIs(t, err, ErrInvalidCredentials)
 }

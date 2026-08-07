@@ -22,6 +22,14 @@ type LoginRequest struct {
 	Password   string `json:"password" binding:"required"`
 }
 
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
 type Handler struct {
 	service *Service
 }
@@ -34,6 +42,8 @@ func (h *Handler) RegisterRoutes(g *route.RouterGroup) {
 	authGroup := g.Group("/auth")
 	authGroup.POST("/register", h.register)
 	authGroup.POST("/login", h.login)
+	authGroup.POST("/refresh", h.refresh)
+	authGroup.POST("/logout", h.logout)
 }
 
 func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
@@ -97,6 +107,39 @@ func (h *Handler) login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response.OK(c, authResult)
+}
+
+func (h *Handler) refresh(ctx context.Context, c *app.RequestContext) {
+	var req RefreshRequest
+	if err := c.BindAndValidate(&req); err != nil {
+		slog.Debug("bind failed", "err", err)
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	authResult, err := h.service.Refresh(ctx, req.RefreshToken)
+	if err != nil {
+		if errors.Is(err, ErrInvalidCredentials) {
+			response.Error(c, response.ErrUnauthenticated)
+			return
+		}
+		response.Error(c, response.ErrInternal)
+		return
+	}
+	response.OK(c, authResult)
+}
+
+func (h *Handler) logout(ctx context.Context, c *app.RequestContext) {
+	var req LogoutRequest
+	if err := c.BindAndValidate(&req); err != nil {
+		slog.Debug("bind failed", "err", err)
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	if err := h.service.Logout(ctx, req.RefreshToken); err != nil {
+		response.Error(c, response.ErrInternal)
+		return
+	}
+	response.NoContent(c)
 }
 
 func (r *RegisterRequest) toParams() RegisterParams {

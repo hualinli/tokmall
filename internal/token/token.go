@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 const (
@@ -27,9 +28,12 @@ func NewManager(secret []byte) *Manager {
 	return &Manager{secret: secret}
 }
 
+// GenClaims 生成带 jti 的 claims：jti 是 token 唯一 ID，
+// refresh token 撤销（黑名单）以它为键。
 func GenClaims(userID, expiresIn int64, t, role string) Claims {
 	return Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.NewString(),
 			Subject:   strconv.Itoa(int(userID)),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * time.Duration(expiresIn))),
 		},
@@ -51,6 +55,7 @@ func (m *Manager) Verify(tokenString string) (*Claims, error) {
 			return m.secret, nil
 		},
 		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
 	)
 	if err != nil {
 		return nil, err

@@ -35,6 +35,8 @@ func Connect(cfg config.DBConfig) (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(poolConnMaxLifetime)
 	err = sqlDB.Ping()
 	if err != nil {
+		// 失败路径同样要释放连接池资源（与 cache.NewClient 同理）。
+		_ = sqlDB.Close()
 		return nil, err
 	}
 	return db, nil
