@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -95,7 +96,22 @@ func (f *fakeStorage) PublicURL(objectKey string) string {
 }
 
 func newTestService(repo *fakeRepo, store *fakeStorage) *Service {
-	return NewService(repo, store, 15*time.Minute)
+	return NewService(repo, store, 15*time.Minute, newFakeInvalidator())
+}
+
+// fakeInvalidator 记录失效调用：验证"发布/删除成功才失效"与"失效失败不阻塞请求"。
+type fakeInvalidator struct {
+	calls int
+	err   error
+}
+
+func newFakeInvalidator() *fakeInvalidator {
+	return &fakeInvalidator{}
+}
+
+func (f *fakeInvalidator) InvalidateFeedCache(ctx context.Context) error {
+	f.calls++
+	return f.err
 }
 
 func registerTicket(t *testing.T, repo *fakeRepo, userID int64, objectKey string) {
@@ -279,4 +295,69 @@ func TestDelete_ForbiddenAndSuccess(t *testing.T) {
 	// 已删除是终态，不能再删
 	err = svc.Delete(context.Background(), 42, res.VideoID)
 	require.ErrorIs(t, err, ErrStatusConflict)
+}
+
+// TestPublishInvalidatesCache 发布成功必须失效 feed 缓存。
+func TestPublishInvalidatesCache(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	invalidator := newFakeInvalidator()
+	svc := NewService(repo, store, 15*time.Minute, invalidator)
+	registerTicket(t, repo, 42, "videos/42/u1.mp4")
+	store.objectSizes["videos/42/u1.mp4"] = 1024
+	res, err := svc.Create(context.Background(), 42, CreateParams{
+		Title: "t", ObjectKey: "videos/42/u1.mp4", DurationSeconds: 10,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Publish(context.Background(), 42, res.VideoID)
+	require.NoError(t, err)
+	require.Equal(t, 1, invalidator.calls, "发布成功必须失效缓存")
+
+	// 状态冲突的发布（未成功）不能失效
+	_, err = svc.Publish(context.Background(), 42, res.VideoID)
+	require.ErrorIs(t, err, ErrStatusConflict)
+	require.Equal(t, 1, invalidator.calls, "失败的发布不得触发失效")
+}
+
+// TestDeleteInvalidatesCache 删除成功必须失效 feed 缓存。
+func TestDeleteInvalidatesCache(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	invalidator := newFakeInvalidator()
+	svc := NewService(repo, store, 15*time.Minute, invalidator)
+	registerTicket(t, repo, 42, "videos/42/u1.mp4")
+	store.objectSizes["videos/42/u1.mp4"] = 1024
+	res, err := svc.Create(context.Background(), 42, CreateParams{
+		Title: "t", ObjectKey: "videos/42/u1.mp4", DurationSeconds: 10,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Delete(context.Background(), 42, res.VideoID))
+	require.Equal(t, 1, invalidator.calls, "删除成功必须失效缓存")
+
+	// 越权删除（未成功）不能失效
+	require.ErrorIs(t, svc.Delete(context.Background(), 99, res.VideoID), ErrForbidden)
+	require.Equal(t, 1, invalidator.calls, "失败的删除不得触发失效")
+}
+
+// TestInvalidateFailureDoesNotFailRequest 缓存失效失败不能阻塞业务：
+// DB 已写入，脏窗口由 TTL 兜底。
+func TestInvalidateFailureDoesNotFailRequest(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	invalidator := newFakeInvalidator()
+	invalidator.err = errors.New("redis down")
+	svc := NewService(repo, store, 15*time.Minute, invalidator)
+	registerTicket(t, repo, 42, "videos/42/u1.mp4")
+	store.objectSizes["videos/42/u1.mp4"] = 1024
+	res, err := svc.Create(context.Background(), 42, CreateParams{
+		Title: "t", ObjectKey: "videos/42/u1.mp4", DurationSeconds: 10,
+	})
+	require.NoError(t, err)
+
+	pub, err := svc.Publish(context.Background(), 42, res.VideoID)
+	require.NoError(t, err)
+	require.Equal(t, StatusPublished, pub.Status)
+	require.Equal(t, 1, invalidator.calls)
 }

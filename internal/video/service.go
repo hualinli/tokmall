@@ -33,17 +33,37 @@ type Storage interface {
 	PublicURL(objectKey string) string
 }
 
-type Service struct {
-	repo    Repository
-	storage Storage
-	expiry  time.Duration
+// FeedCacheInvalidator 消费侧接口：发布/删除成功后失效 feed 首页缓存。
+// 实现是 feed.RedisFeedCache（main 装配），video 不知道 feed 存在。
+type FeedCacheInvalidator interface {
+	InvalidateFeedCache(ctx context.Context) error
 }
 
-func NewService(repo Repository, storage Storage, uploadExpiry time.Duration) *Service {
+type Service struct {
+	repo      Repository
+	storage   Storage
+	expiry    time.Duration
+	feedCache FeedCacheInvalidator
+}
+
+func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, feedCache FeedCacheInvalidator) *Service {
 	return &Service{
-		repo:    repo,
-		storage: storage,
-		expiry:  uploadExpiry,
+		repo:      repo,
+		storage:   storage,
+		expiry:    uploadExpiry,
+		feedCache: feedCache,
+	}
+}
+
+// invalidateFeed 先写库、后删缓存（Cache-Aside 标准动作）。
+// 失效失败只记 Warn 不回滚请求：DB 已写入，脏窗口由 TTL 兜底
+// （最坏 60s 后自动恢复）。缓存失效绝不能进入请求的成功路径。
+func (s *Service) invalidateFeed(ctx context.Context) {
+	if s.feedCache == nil {
+		return
+	}
+	if err := s.feedCache.InvalidateFeedCache(ctx); err != nil {
+		slog.Warn("invalidate feed cache failed", "err", err)
 	}
 }
 
@@ -186,6 +206,7 @@ func (s *Service) Publish(ctx context.Context, userID, videoID int64) (*PublishR
 		slog.Error("publish video failed", "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("publish video: %w", err)
 	}
+	s.invalidateFeed(ctx)
 	return &PublishResult{VideoID: videoID, Status: StatusPublished}, nil
 }
 
@@ -209,6 +230,7 @@ func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
 		slog.Error("delete video failed", "video_id", videoID, "err", err)
 		return fmt.Errorf("delete video: %w", err)
 	}
+	s.invalidateFeed(ctx)
 	return nil
 }
 

@@ -2,6 +2,8 @@ package feed
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,10 +11,15 @@ import (
 )
 
 type fakeRepo struct {
+	mu     sync.Mutex
+	calls  int
 	videos []Video // 已按 (published_at, id) 倒序排好，模拟索引顺序
 }
 
 func (f *fakeRepo) ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
 	out := make([]Video, 0, limit+1)
 	for _, v := range f.videos {
 		// 与生产 SQL 一致：保留 (published_at, id) < 游标 的行（DESC 顺序下更旧的）
@@ -28,6 +35,37 @@ func (f *fakeRepo) ListPublished(ctx context.Context, before *Cursor, limit int)
 	return out, nil
 }
 
+// fakeCache 内存版首页缓存：可注入 Get/Set 故障。
+type fakeCache struct {
+	store  *FeedResult
+	gets   int
+	sets   int
+	getErr error
+	setErr error
+}
+
+func (f *fakeCache) Get(ctx context.Context) (*FeedResult, error) {
+	f.gets++
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.store, nil
+}
+
+func (f *fakeCache) Set(ctx context.Context, result *FeedResult) error {
+	f.sets++
+	if f.setErr != nil {
+		return f.setErr
+	}
+	f.store = result
+	return nil
+}
+
+func (f *fakeCache) Del(ctx context.Context) error {
+	f.store = nil
+	return nil
+}
+
 type fakeURLProvider struct{}
 
 func (fakeURLProvider) PublicURL(objectKey string) string {
@@ -40,7 +78,11 @@ func ts(offset time.Duration) *time.Time {
 }
 
 func newTestService(repo *fakeRepo) *Service {
-	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{})
+	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil)
+}
+
+func newTestServiceWithCache(repo *fakeRepo, cache *fakeCache) *Service {
+	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, cache, nil)
 }
 
 func TestCursor_RoundTrip(t *testing.T) {
@@ -193,4 +235,98 @@ func TestList_InvalidInputs(t *testing.T) {
 
 	_, err = svc.List(context.Background(), 20, "forged.cursor")
 	require.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+// TestFirstPage_CacheHit 命中缓存时零 DB 查询。
+func TestFirstPage_CacheHit(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	cache := &fakeCache{store: &FeedResult{Items: []FeedItem{
+		{VideoID: 99, Title: "cached", VideoURL: "http://cache.local/v99"},
+	}}}
+	svc := newTestServiceWithCache(repo, cache)
+
+	res, err := svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	require.Equal(t, int64(99), res.Items[0].VideoID)
+	repo.mu.Lock()
+	require.Equal(t, 0, repo.calls, "命中缓存不得查库")
+	repo.mu.Unlock()
+}
+
+// TestFirstPage_PopulatesCache 未命中时查库并回填，第二次命中。
+func TestFirstPage_PopulatesCache(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	cache := &fakeCache{}
+	svc := newTestServiceWithCache(repo, cache)
+
+	_, err := svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, cache.sets)
+	require.Equal(t, int64(5), cache.store.Items[0].VideoID)
+
+	_, err = svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	repo.mu.Lock()
+	require.Equal(t, 1, repo.calls, "第二次应命中缓存")
+	repo.mu.Unlock()
+}
+
+// TestFirstPage_CacheFailureDegrades 缓存故障必须降级直连 DB（缓存不是单点）。
+func TestFirstPage_CacheFailureDegrades(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	cache := &fakeCache{getErr: errors.New("redis down")}
+	svc := newTestServiceWithCache(repo, cache)
+
+	res, err := svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	require.Len(t, res.Items, 5)
+}
+
+// TestFirstPage_CacheSetFailureReturnsResult Set 失败不影响本次响应。
+func TestFirstPage_CacheSetFailureReturnsResult(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	cache := &fakeCache{setErr: errors.New("redis down")}
+	svc := newTestServiceWithCache(repo, cache)
+
+	res, err := svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	require.Len(t, res.Items, 5)
+}
+
+// TestFirstPage_Singleflight 20 个并发首页请求只产生一次 DB 查询。
+func TestFirstPage_Singleflight(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	svc := newTestServiceWithCache(repo, &fakeCache{})
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = svc.List(context.Background(), 0, "")
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		require.NoError(t, err, "request %d", i)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, 1, repo.calls, "singleflight 必须合并为一次 DB 查询")
+}
+
+// TestList_CustomLimitSkipsCache 自定义 limit 与缓存内容绑定，必须绕过缓存。
+func TestList_CustomLimitSkipsCache(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	cache := &fakeCache{}
+	svc := newTestServiceWithCache(repo, cache)
+
+	_, err := svc.List(context.Background(), 5, "")
+	require.NoError(t, err)
+	repo.mu.Lock()
+	require.Equal(t, 1, repo.calls)
+	repo.mu.Unlock()
+	require.Equal(t, 0, cache.gets, "自定义 limit 不走缓存")
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -30,13 +32,21 @@ type Service struct {
 	repo    Repository
 	cursor  *codec
 	storage PublicURLProvider
+	cache   FirstPageCache
+	stats   CacheStats
+	group   singleflight.Group
 }
 
-func NewService(repo Repository, codec *codec, storage PublicURLProvider) *Service {
+func NewService(repo Repository, codec *codec, storage PublicURLProvider, cache FirstPageCache, stats CacheStats) *Service {
+	if stats == nil {
+		stats = noopStats{}
+	}
 	return &Service{
 		repo:    repo,
 		cursor:  codec,
 		storage: storage,
+		cache:   cache,
+		stats:   stats,
 	}
 }
 
@@ -57,6 +67,8 @@ type FeedResult struct {
 }
 
 // List 取一页已发布视频。limit 默认 20、上限 100；cursor 为空取第一页。
+// 只有"默认 limit 的无游标请求"走缓存：自定义 limit 与缓存内容绑定，
+// 混用会串数据；深层翻页命中率低不值得缓存。
 func (s *Service) List(ctx context.Context, limit int, cursorRaw string) (*FeedResult, error) {
 	if limit == 0 {
 		limit = defaultLimit
@@ -72,6 +84,50 @@ func (s *Service) List(ctx context.Context, limit int, cursorRaw string) (*FeedR
 		}
 		before = cur
 	}
+	if before == nil && limit == defaultLimit && s.cache != nil {
+		return s.firstPage(ctx)
+	}
+	return s.loadPage(ctx, before, limit)
+}
+
+// firstPage Cache-Aside + singleflight 防击穿：
+// 缓存未命中时并发请求合并成一次 DB 查询，避免缓存刚过期瞬间打爆 DB。
+// 缓存故障（Redis 挂了）必须降级直连 DB——缓存不能成为单点故障。
+func (s *Service) firstPage(ctx context.Context) (*FeedResult, error) {
+	cached, err := s.cache.Get(ctx)
+	if err != nil {
+		slog.Warn("feed cache get failed", "err", err)
+	} else if cached != nil {
+		s.stats.Hit()
+		return cached, nil
+	}
+	s.stats.Miss()
+	v, err, _ := s.group.Do(firstPageKey, func() (any, error) {
+		// 二次检查（double-checked locking）：singleflight 只合并时间上
+		// 重叠的调用——等待期间若已有执行者回填缓存，直接命中，不再查库。
+		cached, err := s.cache.Get(ctx)
+		if err == nil && cached != nil {
+			return cached, nil
+		}
+		result, err := s.loadPage(ctx, nil, defaultLimit)
+		if err != nil {
+			return nil, err
+		}
+		// Set 失败只影响后续命中率，不能因此让本次请求失败。
+		if err := s.cache.Set(ctx, result); err != nil {
+			slog.Warn("feed cache set failed", "err", err)
+		}
+		return result, nil
+	})
+	if err != nil {
+		slog.Error("first page load failed", "err", err)
+		return nil, err
+	}
+	return v.(*FeedResult), nil
+}
+
+// loadPage 查库 + 拼 URL + 生成游标，是 firstPage 与翻页共用的核心。
+func (s *Service) loadPage(ctx context.Context, before *Cursor, limit int) (*FeedResult, error) {
 	videos, err := s.repo.ListPublished(ctx, before, limit)
 	if err != nil {
 		slog.Error("list published videos failed", "err", err)

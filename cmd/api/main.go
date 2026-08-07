@@ -117,19 +117,31 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
 	}
-	videoHandler := video.NewHandler(video.NewService(
-		video.NewRepository(db),
-		storageClient,
-		cfg.UploadURLExpiry,
-	))
-	videoHandler.RegisterProtectedRoutes(protected)
-
+	// 注意：必须用 nil 接口变量。直接声明 *feed.RedisFeedCache 再赋给接口，
+	// 关闭时会得到"typed nil"——接口判 nil 为真但方法调用即 panic。
+	var feedCache feed.FirstPageCache
+	var feedInvalidator video.FeedCacheInvalidator
+	if cfg.FeedCacheEnabled {
+		redisFeedCache := feed.NewRedisFeedCache(redisClient, cfg.FeedCacheTTL)
+		feedCache = redisFeedCache
+		feedInvalidator = redisFeedCache
+	}
 	feedHandler := feed.NewHandler(feed.NewService(
 		feed.NewRepository(db),
 		feed.NewCodec(cfg.CursorSecret),
 		storageClient,
+		feedCache,
+		observability.NewFeedCacheStats(metricsRegistry),
 	))
 	feedHandler.RegisterRoutes(g)
+
+	videoHandler := video.NewHandler(video.NewService(
+		video.NewRepository(db),
+		storageClient,
+		cfg.UploadURLExpiry,
+		feedInvalidator,
+	))
+	videoHandler.RegisterProtectedRoutes(protected)
 
 	interactionHandler := interaction.NewHandler(interaction.NewService(interaction.NewRepository(db)))
 	interactionHandler.RegisterProtectedRoutes(protected)

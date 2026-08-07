@@ -23,6 +23,7 @@ const (
 	defaultRedisAddr      = "localhost:6380"
 	defaultRedisDB        = 0
 	defaultFeedCacheTTL   = 60 * time.Second
+	defaultFeedCacheOn    = true
 )
 
 type Config struct {
@@ -41,6 +42,9 @@ type RedisConfig struct {
 	// FeedCacheTTL 是 feed 首页缓存的过期时间：TTL 兜底防删缓存失败导致
 	// 脏数据永久存活（先写库再删缓存的 Cache-Aside 策略依赖它）。
 	FeedCacheTTL time.Duration
+	// FeedCacheEnabled 是缓存开关：A/B 对照压测（同样数据量下
+	// 有缓存/无缓存）需要它，线上误配置关闭只会损失性能不失正确性。
+	FeedCacheEnabled bool
 }
 
 type DBConfig struct {
@@ -90,10 +94,11 @@ func Load() (*Config, error) {
 			UploadURLExpiry: envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
 		},
 		RedisConfig: RedisConfig{
-			Addr:         envString("REDIS_ADDR", defaultRedisAddr),
-			Password:     envString("REDIS_PASSWORD", ""),
-			DB:           envInt("REDIS_DB", defaultRedisDB),
-			FeedCacheTTL: envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
+			Addr:             envString("REDIS_ADDR", defaultRedisAddr),
+			Password:         envString("REDIS_PASSWORD", ""),
+			DB:               envInt("REDIS_DB", defaultRedisDB),
+			FeedCacheTTL:     envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
+			FeedCacheEnabled: envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn),
 		},
 	}, nil
 }
@@ -136,4 +141,16 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return duration
+}
+
+func envBool(key string, fallback bool) bool {
+	value := envString(key, "")
+	if value == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
