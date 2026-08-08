@@ -622,6 +622,7 @@ components:
           $ref: "#/components/schemas/PublicUser"
     PublicUser:
       type: object
+      required: [user_id, email, username, bio, avatar_key, avatar_url]
       properties:
         user_id:
           type: integer
@@ -635,9 +636,15 @@ components:
         avatar_key:
           type: string
           nullable: true
+          description: MinIO key，仅用于 PATCH /me 回传
+        avatar_url:
+          type: string
+          nullable: true
+          description: 可显示的预签名 URL（7 天有效），导航栏/个人页直接用
     PublicProfile:
       type: object
       description: 公开资料（不含 email）
+      required: [user_id, username, bio, avatar_url, following_count, followers_count, is_following, is_me]
       properties:
         user_id:
           type: integer
@@ -649,7 +656,7 @@ components:
         avatar_url:
           type: string
           nullable: true
-          description: 预签名 URL
+          description: 预签名 URL（7 天有效）
         following_count:
           type: integer
           format: int64
@@ -673,6 +680,7 @@ components:
     ProfileItem:
       type: object
       description: 关注/粉丝列表项（不含计数，避免 N+1）
+      required: [user_id, username, bio, avatar_url, is_following, is_me]
       properties:
         user_id:
           type: integer
@@ -768,6 +776,7 @@ components:
 
     FeedItem:
       type: object
+      required: [video_id, author_id, title, video_url, duration_seconds, author, like_count]
       properties:
         video_id:
           type: integer
@@ -797,6 +806,7 @@ components:
           description: 点赞数（现查，准实时）
     AuthorRef:
       type: object
+      required: [user_id, username, avatar_url]
       properties:
         user_id:
           type: integer
@@ -806,6 +816,7 @@ components:
         avatar_url:
           type: string
           nullable: true
+          description: 预签名 URL（7 天有效）
     FeedResult:
       type: object
       required: [items, next_cursor, has_more]
@@ -822,6 +833,8 @@ components:
 
     VideoDetail:
       type: object
+      required: [video_id, author_id, title, video_url, duration_seconds, status,
+        created_at, author, like_count, is_liked]
       properties:
         video_id:
           type: integer

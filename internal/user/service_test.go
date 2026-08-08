@@ -172,7 +172,7 @@ type fakeAvatar struct {
 	err error
 }
 
-func (f *fakeAvatar) PresignGetURL(_ context.Context, objectKey string) (string, error) {
+func (f *fakeAvatar) PresignAvatarURL(_ context.Context, objectKey string) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}

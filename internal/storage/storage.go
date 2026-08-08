@@ -18,6 +18,7 @@ type Client struct {
 	bucket         string
 	uploadExpiry   time.Duration
 	downloadExpiry time.Duration
+	avatarExpiry   time.Duration
 }
 
 func New(cfg config.MinIOConfig) (*Client, error) {
@@ -33,6 +34,7 @@ func New(cfg config.MinIOConfig) (*Client, error) {
 		bucket:         cfg.Bucket,
 		uploadExpiry:   cfg.UploadURLExpiry,
 		downloadExpiry: cfg.DownloadURLExpiry,
+		avatarExpiry:   cfg.AvatarURLExpiry,
 	}
 	if err := c.ensureBucket(context.Background()); err != nil {
 		return nil, err
@@ -68,7 +70,18 @@ func (c *Client) PresignPutURL(ctx context.Context, objectKey string) (string, e
 // 对象被删后，已发出的 URL 指向空对象（404），播放自然失败。
 // bucket 保持私有（默认），不再依赖"公开读"这种无法撤销的假设。
 func (c *Client) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
-	url, err := c.mc.PresignedGetObject(ctx, c.bucket, objectKey, c.downloadExpiry, nil)
+	return c.PresignGetURLWithExpiry(ctx, objectKey, c.downloadExpiry)
+}
+
+// PresignAvatarURL 头像签名：独立的长有效期（7d）。
+// 头像出现在 feed/列表的几十个条目里，短有效期会批量过期，
+// 前端被迫频繁重拉；头像非核心内容，长有效期可接受。
+func (c *Client) PresignAvatarURL(ctx context.Context, objectKey string) (string, error) {
+	return c.PresignGetURLWithExpiry(ctx, objectKey, c.avatarExpiry)
+}
+
+func (c *Client) PresignGetURLWithExpiry(ctx context.Context, objectKey string, expiry time.Duration) (string, error) {
+	url, err := c.mc.PresignedGetObject(ctx, c.bucket, objectKey, expiry, nil)
 	if err != nil {
 		return "", fmt.Errorf("presign get url: %w", err)
 	}

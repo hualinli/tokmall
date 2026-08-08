@@ -63,7 +63,7 @@ func (f *fakeRepo) UserExists(ctx context.Context, userID int64) (bool, error) {
 // fakeAvatar 预签名 URL 假实现。
 type fakeAvatar struct{}
 
-func (fakeAvatar) PresignGetURL(_ context.Context, objectKey string) (string, error) {
+func (fakeAvatar) PresignAvatarURL(_ context.Context, objectKey string) (string, error) {
 	return "http://minio.local/signed/" + objectKey, nil
 }
 

@@ -19,6 +19,7 @@ const (
 	defaultMinIOBucket    = "tokmall"
 	defaultUploadExpiry   = 15 * time.Minute
 	defaultDownloadExpiry = 2 * time.Hour
+	defaultAvatarExpiry   = 7 * 24 * time.Hour
 	defaultCursorSecret   = "change-me-cursor-secret"
 	defaultRedisAddr      = "localhost:6380"
 	defaultRedisDB        = 0
@@ -65,6 +66,9 @@ type MinIOConfig struct {
 
 	UploadURLExpiry   time.Duration
 	DownloadURLExpiry time.Duration
+	// AvatarURLExpiry 头像签名有效期：头像出现在 feed/列表的几十个条目里，
+	// 短有效期会导致批量过期重拉，故独立给长有效期（默认 7d）。
+	AvatarURLExpiry time.Duration
 }
 
 func Load() (*Config, error) {
@@ -92,6 +96,7 @@ func Load() (*Config, error) {
 			UseSSL:            envString("MINIO_USE_SSL", "") == "true",
 			UploadURLExpiry:   envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
 			DownloadURLExpiry: envDuration("MINIO_DOWNLOAD_EXPIRY", defaultDownloadExpiry),
+			AvatarURLExpiry:   envDuration("MINIO_AVATAR_EXPIRY", defaultAvatarExpiry),
 		},
 		RedisConfig: RedisConfig{
 			Addr:             envString("REDIS_ADDR", defaultRedisAddr),

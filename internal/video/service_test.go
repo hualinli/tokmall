@@ -147,6 +147,10 @@ func (f *fakeStorage) PresignGetURL(ctx context.Context, objectKey string) (stri
 	return "http://minio.local/signed/" + objectKey, nil
 }
 
+func (f *fakeStorage) PresignAvatarURL(ctx context.Context, objectKey string) (string, error) {
+	return "http://minio.local/avatar/" + objectKey, nil
+}
+
 func (f *fakeStorage) DeleteObject(ctx context.Context, objectKey string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr

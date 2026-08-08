@@ -105,6 +105,10 @@ func (fakeURLProvider) PresignGetURL(ctx context.Context, objectKey string) (str
 	return "http://minio.local/signed/" + objectKey, nil
 }
 
+func (fakeURLProvider) PresignAvatarURL(ctx context.Context, objectKey string) (string, error) {
+	return "http://minio.local/avatar/" + objectKey, nil
+}
+
 func ts(offset time.Duration) *time.Time {
 	t := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC).Add(offset)
 	return &t

@@ -38,6 +38,7 @@ type Repository interface {
 type Storage interface {
 	PresignPutURL(ctx context.Context, objectKey string) (string, error)
 	PresignGetURL(ctx context.Context, objectKey string) (string, error)
+	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 	StatObject(ctx context.Context, objectKey string) (int64, error)
 	DeleteObject(ctx context.Context, objectKey string) error
 }
@@ -440,7 +441,7 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 	}
 	if v.AvatarKey != nil {
 		// 头像签名失败降级为 null（装饰性字段）
-		avatar, err := s.storage.PresignGetURL(ctx, *v.AvatarKey)
+		avatar, err := s.storage.PresignAvatarURL(ctx, *v.AvatarKey)
 		if err != nil {
 			slog.Warn("presign avatar url failed", "video_id", videoID, "err", err)
 		} else {

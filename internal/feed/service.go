@@ -24,10 +24,11 @@ type Repository interface {
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 }
 
-// PlayURLProvider 是 storage.Client 的最小投影：feed 只消费"签发播放 URL"
-// 这一个能力。签名即授权：URL 短时效，删除后旧 URL 指向空对象（404）。
+// PlayURLProvider 是 storage.Client 的最小投影：feed 只消费
+// "签发播放 URL"和"签发头像 URL"两个能力。
 type PlayURLProvider interface {
 	PresignGetURL(ctx context.Context, objectKey string) (string, error)
+	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 }
 
 type Service struct {
@@ -255,7 +256,7 @@ func (s *Service) assemble(ctx context.Context, videos []Video, limit int) (*Fee
 		item.VideoURL = videoURL
 		if v.AvatarKey != nil {
 			// 头像签名失败降级为 null（装饰性字段）
-			avatar, err := s.storage.PresignGetURL(ctx, *v.AvatarKey)
+			avatar, err := s.storage.PresignAvatarURL(ctx, *v.AvatarKey)
 			if err != nil {
 				slog.Warn("presign avatar url failed", "err", err)
 			} else {

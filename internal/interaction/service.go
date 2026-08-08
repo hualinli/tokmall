@@ -21,9 +21,9 @@ type Repository interface {
 	IsFollowingMany(ctx context.Context, viewerID int64, userIDs []int64) (map[int64]bool, error)
 }
 
-// AvatarURLProvider 消费侧接口：列表项的头像 key 转预签名 URL。
+// AvatarURLProvider 消费侧接口：列表项的头像 key 转预签名 URL（长有效期）。
 type AvatarURLProvider interface {
-	PresignGetURL(ctx context.Context, objectKey string) (string, error)
+	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 }
 
 type Service struct {
@@ -194,7 +194,7 @@ func (s *Service) assemble(ctx context.Context, viewerID int64, edges []FollowEd
 			IsMe:        viewerID == e.UserID,
 		}
 		if e.AvatarKey != nil {
-			avatar, err := s.avatar.PresignGetURL(ctx, *e.AvatarKey)
+			avatar, err := s.avatar.PresignAvatarURL(ctx, *e.AvatarKey)
 			if err != nil {
 				slog.Warn("presign avatar url failed", "user_id", e.UserID, "err", err)
 			} else {

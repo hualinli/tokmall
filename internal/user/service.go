@@ -65,10 +65,10 @@ func NewService(repo Repository, tokens TokenManager, blacklist RefreshTokenBlac
 	}
 }
 
-// AvatarURLProvider 消费侧接口：公开资料把 avatar_key 转成预签名 URL
-// （与视频 URL 同一机制，不暴露 MinIO key 寻址）。
+// AvatarURLProvider 消费侧接口：把 avatar_key 转成可显示的预签名 URL
+// （长有效期，见 storage.PresignAvatarURL）。
 type AvatarURLProvider interface {
-	PresignGetURL(ctx context.Context, objectKey string) (string, error)
+	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 }
 
 // ImageUploadValidator 消费侧接口：PATCH /me 的 avatar_key 必须校验
@@ -123,6 +123,21 @@ type PublicUser struct {
 	Username  string  `json:"username"`
 	Bio       string  `json:"bio"`
 	AvatarKey *string `json:"avatar_key"`
+	// AvatarURL 可显示的预签名 URL（长有效期）；avatar_key 仅用于 PATCH 输入。
+	AvatarURL *string `json:"avatar_url"`
+}
+
+// fillAvatar 给 PublicUser 附加头像显示 URL（key 为 nil 或签名失败则保持 null）。
+func (s *Service) fillAvatar(ctx context.Context, u *User, pu *PublicUser) {
+	if u.AvatarKey == nil {
+		return
+	}
+	url, err := s.avatar.PresignAvatarURL(ctx, *u.AvatarKey)
+	if err != nil {
+		slog.Warn("presign avatar url failed", "user_id", u.UserID, "err", err)
+		return
+	}
+	pu.AvatarURL = &url
 }
 
 // PublicProfile 公开资料：不含 email（隐私），带社交计数与个性化字段。
@@ -170,7 +185,7 @@ func (s *Service) GetPublicProfile(ctx context.Context, viewerID, userID int64) 
 	}
 	if u.AvatarKey != nil {
 		// 头像签名失败只降级为 null（装饰性字段，不值得让整个资料 500）
-		url, err := s.avatar.PresignGetURL(ctx, *u.AvatarKey)
+		url, err := s.avatar.PresignAvatarURL(ctx, *u.AvatarKey)
 		if err != nil {
 			slog.Warn("presign avatar url failed", "user_id", userID, "err", err)
 		} else {
@@ -263,17 +278,19 @@ func (s *Service) Login(ctx context.Context, p LoginParams) (*AuthResult, error)
 	if err != nil {
 		return nil, err
 	}
+	pu := &PublicUser{
+		UserID:    u.UserID,
+		Username:  u.Username,
+		Email:     u.Email,
+		Bio:       u.Bio,
+		AvatarKey: u.AvatarKey,
+	}
+	s.fillAvatar(ctx, u, pu)
 	return &AuthResult{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresIn:    accessTokenTTL,
-		User: PublicUser{
-			UserID:    u.UserID,
-			Username:  u.Username,
-			Email:     u.Email,
-			Bio:       u.Bio,
-			AvatarKey: u.AvatarKey,
-		},
+		User:         *pu,
 	}, nil
 }
 
@@ -286,13 +303,15 @@ func (s *Service) GetProfile(ctx context.Context, userID int64) (*PublicUser, er
 		slog.Error("get profile failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("get profile: %w", err)
 	}
-	return &PublicUser{
+	pu := &PublicUser{
 		UserID:    u.UserID,
 		Username:  u.Username,
 		Email:     u.Email,
 		Bio:       u.Bio,
 		AvatarKey: u.AvatarKey,
-	}, nil
+	}
+	s.fillAvatar(ctx, u, pu)
+	return pu, nil
 }
 
 // Refresh 用 refresh token 换取新 token 对（rotation）：
