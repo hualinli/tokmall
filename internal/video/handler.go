@@ -37,6 +37,7 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	videos := g.Group("/videos")
 	videos.POST("/upload-url", h.uploadURL)
 	videos.POST("", h.create)
+	videos.GET("/me", h.listMine)
 	videos.GET("/:id", h.get)
 	videos.POST("/:id/publish", h.publish)
 	videos.DELETE("/:id", h.delete)
@@ -91,6 +92,29 @@ func (h *Handler) create(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response.Created(c, result)
+}
+
+func (h *Handler) listMine(ctx context.Context, c *app.RequestContext) {
+	limit := 0
+	if v := c.Query("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			response.Error(c, response.ErrInvalidArgument)
+			return
+		}
+		limit = n
+	}
+	result, err := h.service.ListMine(ctx, h.userID(c), limit, c.Query("cursor"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidParam), errors.Is(err, ErrInvalidCursor):
+			response.Error(c, response.ErrInvalidArgument)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
+		return
+	}
+	response.OK(c, result)
 }
 
 func (h *Handler) get(ctx context.Context, c *app.RequestContext) {

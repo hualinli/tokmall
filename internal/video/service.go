@@ -17,6 +17,11 @@ var (
 	ErrUploadURLExpired = errors.New("upload url expired or never issued")
 )
 
+const (
+	defaultListLimit = 20
+	maxListLimit     = 100
+)
+
 // Repository 由 service 定义、消费，GormRepository 隐式满足。
 type Repository interface {
 	CreateVideo(ctx context.Context, v *Video) error
@@ -24,6 +29,7 @@ type Repository interface {
 	UpdateVideoStatus(ctx context.Context, id int64, from, to Status, publishedAt *time.Time) error
 	CreateTicket(ctx context.Context, t *UploadTicket) error
 	ConsumeTicket(ctx context.Context, userID int64, objectKey string) error
+	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
 }
 
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
@@ -31,6 +37,7 @@ type Storage interface {
 	PresignPutURL(ctx context.Context, objectKey string) (string, error)
 	StatObject(ctx context.Context, objectKey string) (int64, error)
 	PublicURL(objectKey string) string
+	DeleteObject(ctx context.Context, objectKey string) error
 }
 
 // FeedCacheInvalidator 消费侧接口：发布/删除成功后失效 feed 首页缓存。
@@ -44,14 +51,16 @@ type Service struct {
 	storage   Storage
 	expiry    time.Duration
 	feedCache FeedCacheInvalidator
+	cursor    *codec
 }
 
-func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, feedCache FeedCacheInvalidator) *Service {
+func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, cursorSecret string, feedCache FeedCacheInvalidator) *Service {
 	return &Service{
 		repo:      repo,
 		storage:   storage,
 		expiry:    uploadExpiry,
 		feedCache: feedCache,
+		cursor:    NewCodec(cursorSecret),
 	}
 }
 
@@ -118,6 +127,23 @@ type VideoDetail struct {
 	Status          Status     `json:"status"`
 	PublishedAt     *time.Time `json:"published_at"`
 	CreatedAt       time.Time  `json:"created_at"`
+}
+
+type VideoListItem struct {
+	VideoID         int64      `json:"video_id"`
+	Title           string     `json:"title"`
+	VideoURL        string     `json:"video_url"`
+	CoverURL        *string    `json:"cover_url"`
+	DurationSeconds int        `json:"duration_seconds"`
+	Status          Status     `json:"status"`
+	PublishedAt     *time.Time `json:"published_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+type VideoListResult struct {
+	Items      []VideoListItem `json:"items"`
+	NextCursor string          `json:"next_cursor"`
+	HasMore    bool            `json:"has_more"`
 }
 
 // GetUploadURL 发放预签名上传 URL 并记录 ticket。
@@ -231,7 +257,84 @@ func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
 		return fmt.Errorf("delete video: %w", err)
 	}
 	s.invalidateFeed(ctx)
+	// 软删成功后再删 MinIO 对象：旧 URL 立刻 404，"软删 ≠ 内容不可达"
+	// 的缺口在此闭合。对象删除失败只记日志——status 已 DELETED，
+	// feed/详情已不可见，孤儿对象由后续清理任务收敛。
+	s.removeObjects(ctx, v)
 	return nil
+}
+
+// removeObjects 删除视频与封面对象（幂等：RemoveObject 对不存在对象不报错）。
+func (s *Service) removeObjects(ctx context.Context, v *Video) {
+	keys := []string{v.ObjectKey}
+	if v.CoverKey != nil {
+		keys = append(keys, *v.CoverKey)
+	}
+	for _, k := range keys {
+		if err := s.storage.DeleteObject(ctx, k); err != nil {
+			slog.Error("delete object failed", "object_key", k, "err", err)
+		}
+	}
+}
+
+// ListMine 作者的管理视图：自己的全部视频（不含 DELETED），按创建时间倒序。
+// 不缓存：QPS 低（只有作者自己看）+ 新鲜性要求高（管理操作后必须立即可见）。
+func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorRaw string) (*VideoListResult, error) {
+	if limit == 0 {
+		limit = defaultListLimit
+	}
+	if limit < 1 || limit > maxListLimit {
+		return nil, ErrInvalidParam
+	}
+	var before *Cursor
+	if cursorRaw != "" {
+		cur, err := s.cursor.Decode(cursorRaw)
+		if err != nil {
+			return nil, ErrInvalidCursor
+		}
+		before = cur
+	}
+	videos, err := s.repo.ListByAuthor(ctx, userID, before, limit)
+	if err != nil {
+		slog.Error("list videos by author failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("list by author: %w", err)
+	}
+	result := &VideoListResult{Items: make([]VideoListItem, 0, limit)}
+	hasMore := len(videos) > limit
+	if hasMore {
+		videos = videos[:limit]
+	}
+	for _, v := range videos {
+		item := VideoListItem{
+			VideoID:         v.ID,
+			Title:           v.Title,
+			DurationSeconds: v.DurationSeconds,
+			Status:          v.Status,
+			PublishedAt:     v.PublishedAt,
+			CreatedAt:       v.CreatedAt,
+		}
+		if v.CoverKey != nil {
+			cover := s.storage.PublicURL(*v.CoverKey)
+			item.CoverURL = &cover
+		}
+		item.VideoURL = s.storage.PublicURL(v.ObjectKey)
+		result.Items = append(result.Items, item)
+	}
+	if hasMore {
+		last := videos[len(videos)-1]
+		next, err := s.cursor.Encode(Cursor{
+			CreatedAt:   last.CreatedAt,
+			VideoID:     last.ID,
+			RankVersion: CurrentRankVersion,
+		})
+		if err != nil {
+			slog.Error("encode next cursor failed", "err", err)
+			return nil, fmt.Errorf("encode next cursor: %w", err)
+		}
+		result.NextCursor = next
+		result.HasMore = true
+	}
+	return result, nil
 }
 
 // Get 按可见性策略返回详情：已删除对所有人不可见；

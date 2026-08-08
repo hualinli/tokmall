@@ -139,6 +139,7 @@ func run() error {
 		video.NewRepository(db),
 		storageClient,
 		cfg.UploadURLExpiry,
+		cfg.CursorSecret,
 		feedInvalidator,
 	))
 	videoHandler.RegisterProtectedRoutes(protected)
