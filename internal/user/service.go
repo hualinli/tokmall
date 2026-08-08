@@ -69,18 +69,18 @@ type LoginParams struct {
 }
 
 type AuthResult struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresIn    int64
-	User         PublicUser
+	AccessToken  string     `json:"access_token"`
+	RefreshToken string     `json:"refresh_token"`
+	ExpiresIn    int64      `json:"expires_in"`
+	User         PublicUser `json:"user"`
 }
 
 type PublicUser struct {
-	UserID    int64
-	Email     string
-	Username  string
-	Bio       string
-	AvatarKey *string
+	UserID    int64   `json:"user_id"`
+	Email     string  `json:"email"`
+	Username  string  `json:"username"`
+	Bio       string  `json:"bio"`
+	AvatarKey *string `json:"avatar_key"`
 }
 
 func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, error) {

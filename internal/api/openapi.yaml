@@ -1,0 +1,715 @@
+openapi: 3.0.3
+info:
+  title: TokMall API
+  description: 短视频 Feed + 商城一体化后端（学习项目）。
+    本文件是 API 契约的唯一事实源，由 openapi_sync_test 保证与代码同步。
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: 本地开发
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth
+    description: 认证（公开）
+  - name: feed
+    description: 全局 Feed（公开）
+  - name: videos
+    description: 视频管理（需认证）
+  - name: interactions
+    description: 点赞/关注（需认证）
+  - name: user
+    description: 个人资料（需认证）
+  - name: health
+    description: 探针（公开）
+
+paths:
+  /health/live:
+    get:
+      tags: [health]
+      summary: 存活探针
+      responses:
+        "200":
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /health/ready:
+    get:
+      tags: [health]
+      summary: 就绪探针（检查 DB 连通）
+      responses:
+        "200":
+          description: 依赖就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /api/v1/docs/openapi.yaml:
+    get:
+      tags: [health]
+      summary: 本 OpenAPI 规范文件本身
+      security: []
+      responses:
+        "200":
+          description: 原始 YAML
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: 注册（注册即签发 token 对）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "409":
+          $ref: "#/components/responses/DuplicateAction"
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 登录（identifier 接受 email 或 username）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: 刷新 token（rotation：旧 refresh token 被拉黑）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: 新的 token 对
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出（幂等：无效/过期 token 视为已登出）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "204":
+          description: 登出成功
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+
+  /api/v1/feed:
+    get:
+      tags: [feed]
+      summary: 全局时间排序 Feed（首页走缓存，翻页用 cursor）
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 一页已发布视频
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+
+  /api/v1/me:
+    get:
+      tags: [user]
+      summary: 当前用户资料
+      responses:
+        "200":
+          description: 用户资料
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicUser"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /api/v1/videos/upload-url:
+    post:
+      tags: [videos]
+      summary: 申请预签名上传 URL（含票证防伪造）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadURLRequest"
+      responses:
+        "200":
+          description: 预签名 PUT URL（15 分钟有效）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/v1/videos:
+    post:
+      tags: [videos]
+      summary: 创建视频记录（需先上传文件到 object_key）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVideoRequest"
+      responses:
+        "201":
+          description: 创建成功（PENDING_REVIEW）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateResult"
+        "400":
+          description: 参数非法或上传凭证过期/伪造
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/v1/videos/me:
+    get:
+      tags: [videos]
+      summary: 我的视频列表（管理视图，含未发布；按创建时间倒序）
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 作者自己的视频列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoListResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/v1/videos/{id}:
+    get:
+      tags: [videos]
+      summary: 视频详情（可见性：DELETED 404；未发布仅作者可见）
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      responses:
+        "200":
+          description: 详情（video_url 为预签名播放 URL，2 小时有效）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/VideoNotFound"
+    delete:
+      tags: [videos]
+      summary: 删除视频（软删 + 删除 MinIO 对象，旧 URL 立即失效）
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      responses:
+        "204":
+          description: 删除成功
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/VideoNotFound"
+        "409":
+          $ref: "#/components/responses/DuplicateAction"
+  /api/v1/videos/{id}/publish:
+    post:
+      tags: [videos]
+      summary: 发布视频（PENDING_REVIEW -> PUBLISHED，条件更新防并发）
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      responses:
+        "200":
+          description: 发布成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "409":
+          $ref: "#/components/responses/DuplicateAction"
+  /api/v1/videos/{id}/like:
+    post:
+      tags: [interactions]
+      summary: 点赞（幂等：重复点赞返回相同结果）
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      responses:
+        "200":
+          description: 点赞结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikeResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    delete:
+      tags: [interactions]
+      summary: 取消点赞（幂等）
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      responses:
+        "200":
+          description: 取消点赞结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikeResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+  /api/v1/users/{id}/follow:
+    post:
+      tags: [interactions]
+      summary: 关注（幂等，禁止自关注）
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: 关注结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    delete:
+      tags: [interactions]
+      summary: 取消关注（幂等）
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: 取消关注结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: 每页条数，默认 20，合法范围 1-100
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    Cursor:
+      name: cursor
+      in: query
+      description: 上一页返回的签名游标（无则取第一页）
+      schema:
+        type: string
+    VideoID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    UserID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
+  responses:
+    InvalidArgument:
+      description: 参数非法（details 指明字段）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthenticated:
+      description: 未认证或凭证无效（token 缺失/过期/黑名单）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: 无权限
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    VideoNotFound:
+      description: 视频不存在或不可见（404 不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UserNotFound:
+      description: 用户不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    DuplicateAction:
+      description: 重复操作（邮箱/用户名已存在、状态冲突）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      description: 统一错误结构
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [INVALID_ARGUMENT, INVALID_CURSOR, VIDEO_NOT_FOUND, VIDEO_NOT_PUBLISHED,
+                USER_NOT_FOUND, UNAUTHENTICATED, FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION,
+                UPLOAD_URL_EXPIRED, INTERNAL, DEPENDENCY_UNAVAILABLE, MISSING_AUTH_HEADER,
+                INVALID_AUTH_TYPE, INVALID_TOKEN]
+            message:
+              type: string
+            details:
+              type: object
+        request_id:
+          type: string
+
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required: [email, username, password]
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+          pattern: "^[a-zA-Z][a-zA-Z0-9]{5,15}$"
+          description: 字母开头，5-15 位字母数字
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: 8-72 字节（bcrypt 上限）
+    LoginRequest:
+      type: object
+      required: [identifier, password]
+      properties:
+        identifier:
+          type: string
+          description: email 或 username
+        password:
+          type: string
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+    AuthResult:
+      type: object
+      required: [access_token, refresh_token, expires_in, user]
+      properties:
+        access_token:
+          type: string
+          description: JWT，15 分钟有效
+        refresh_token:
+          type: string
+          description: JWT，7 天有效；刷新后旧 token 立即失效
+        expires_in:
+          type: integer
+          format: int64
+          description: access_token 剩余秒数
+        user:
+          $ref: "#/components/schemas/PublicUser"
+    PublicUser:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        email:
+          type: string
+        username:
+          type: string
+        bio:
+          type: string
+        avatar_key:
+          type: string
+          nullable: true
+
+    UploadURLRequest:
+      type: object
+      required: [filename, file_size, content_type]
+      properties:
+        filename:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+          minimum: 1048576
+          maximum: 536870912
+          description: 1MB - 512MB
+        content_type:
+          type: string
+          enum: [video/mp4, video/webm, video/quicktime]
+    UploadResult:
+      type: object
+      required: [object_key, upload_url, expires_at]
+      properties:
+        object_key:
+          type: string
+          description: 创建视频时必须回传
+        upload_url:
+          type: string
+          description: 预签名 PUT URL（15 分钟有效）
+        expires_at:
+          type: string
+          format: date-time
+    CreateVideoRequest:
+      type: object
+      required: [title, object_key, duration_seconds]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        object_key:
+          type: string
+        cover_key:
+          type: string
+          nullable: true
+        duration_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+    CreateResult:
+      type: object
+      required: [video_id, status]
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/VideoStatus"
+    PublishResult:
+      type: object
+      required: [video_id, status]
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/VideoStatus"
+    VideoStatus:
+      type: string
+      enum: [UPLOADING, PROCESSING, PENDING_REVIEW, PUBLISHED, FAILED, BLOCKED, DELETED]
+
+    FeedItem:
+      type: object
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        author_id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        cover_url:
+          type: string
+          nullable: true
+        video_url:
+          type: string
+          description: 预签名播放 URL（2 小时有效）
+        duration_seconds:
+          type: integer
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+    FeedResult:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeedItem"
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+
+    VideoDetail:
+      type: object
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        author_id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        video_url:
+          type: string
+        duration_seconds:
+          type: integer
+        status:
+          $ref: "#/components/schemas/VideoStatus"
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    VideoListItem:
+      type: object
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        video_url:
+          type: string
+        cover_url:
+          type: string
+          nullable: true
+        duration_seconds:
+          type: integer
+        status:
+          $ref: "#/components/schemas/VideoStatus"
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    VideoListResult:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/VideoListItem"
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+
+    LikeResult:
+      type: object
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        liked:
+          type: boolean
+    FollowResult:
+      type: object
+      properties:
+        followee_id:
+          type: integer
+          format: int64
+        following:
+          type: boolean

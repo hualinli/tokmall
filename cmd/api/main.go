@@ -18,6 +18,7 @@ import (
 	hertzslog "github.com/hertz-contrib/logger/slog"
 	hertzmonitor "github.com/hertz-contrib/monitor-prometheus"
 	"github.com/hertz-contrib/requestid"
+	"github.com/lihualin/tokmall/internal/api"
 	"github.com/lihualin/tokmall/internal/cache"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
@@ -32,6 +33,7 @@ import (
 	"github.com/lihualin/tokmall/internal/video"
 	"github.com/prometheus/client_golang/prometheus"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -101,18 +103,6 @@ func run() error {
 			}),
 		),
 	)
-	g := h.Group("/api/v1")
-	health.NewHandler(db).Register(h)
-	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
-	userHandler := user.NewHandler(user.NewService(
-		user.NewRepository(db),
-		tokenManager,
-		user.NewRedisRefreshTokenBlacklist(redisClient),
-	))
-	userHandler.RegisterRoutes(g)
-	protected := g.Group("/", middleware.AuthMiddleware(tokenManager))
-	userHandler.RegisterProtectedRoutes(protected)
-
 	storageClient, err := storage.New(cfg.MinIOConfig)
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
@@ -126,6 +116,12 @@ func run() error {
 		feedCache = redisFeedCache
 		feedInvalidator = redisFeedCache
 	}
+	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
+	userHandler := user.NewHandler(user.NewService(
+		user.NewRepository(db),
+		tokenManager,
+		user.NewRedisRefreshTokenBlacklist(redisClient),
+	))
 	feedHandler := feed.NewHandler(feed.NewService(
 		feed.NewRepository(db),
 		feed.NewCodec(cfg.CursorSecret),
@@ -133,8 +129,6 @@ func run() error {
 		feedCache,
 		observability.NewFeedCacheStats(metricsRegistry),
 	))
-	feedHandler.RegisterRoutes(g)
-
 	videoHandler := video.NewHandler(video.NewService(
 		video.NewRepository(db),
 		storageClient,
@@ -142,10 +136,15 @@ func run() error {
 		cfg.CursorSecret,
 		feedInvalidator,
 	))
-	videoHandler.RegisterProtectedRoutes(protected)
-
 	interactionHandler := interaction.NewHandler(interaction.NewService(interaction.NewRepository(db)))
-	interactionHandler.RegisterProtectedRoutes(protected)
+	registerRoutes(h, routes{
+		db:          db,
+		token:       tokenManager,
+		user:        userHandler,
+		video:       videoHandler,
+		feed:        feedHandler,
+		interaction: interactionHandler,
+	})
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- h.Run()
@@ -165,4 +164,31 @@ func run() error {
 		slog.Info("server stopped gracefully")
 		return nil
 	}
+}
+
+// routes 集中持有各模块 handler，registerRoutes 是唯一的路由注册点：
+// 同步测试（main_test.go）用 nil handler 复用同一注册逻辑，
+// 保证 openapi.yaml 与代码路由不脱节。
+type routes struct {
+	db          *gorm.DB
+	token       *token.Manager
+	user        *user.Handler
+	video       *video.Handler
+	feed        *feed.Handler
+	interaction *interaction.Handler
+}
+
+func registerRoutes(h *server.Hertz, r routes) {
+	health.NewHandler(r.db).Register(h)
+	g := h.Group("/api/v1")
+	g.GET("/docs/openapi.yaml", func(ctx context.Context, c *app.RequestContext) {
+		c.Response.Header.SetContentType("application/yaml")
+		c.Response.SetBody(api.Spec)
+	})
+	r.user.RegisterRoutes(g)
+	protected := g.Group("/", middleware.AuthMiddleware(r.token))
+	r.user.RegisterProtectedRoutes(protected)
+	r.video.RegisterProtectedRoutes(protected)
+	r.feed.RegisterRoutes(g)
+	r.interaction.RegisterProtectedRoutes(protected)
 }
