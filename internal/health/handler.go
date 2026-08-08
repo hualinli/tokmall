@@ -27,7 +27,7 @@ func (hd *Handler) Register(h *server.Hertz) {
 }
 
 func (hd *Handler) live(ctx context.Context, c *app.RequestContext) {
-	response.NoContent(c)
+	response.OK(c, healthStatus{Status: "ok"})
 }
 
 func (hd *Handler) ready(ctx context.Context, c *app.RequestContext) {
@@ -41,5 +41,9 @@ func (hd *Handler) ready(ctx context.Context, c *app.RequestContext) {
 		response.Error(c, response.ErrDependencyUnavailable)
 		return
 	}
-	response.NoContent(c)
+	response.OK(c, healthStatus{Status: "ok"})
+}
+
+type healthStatus struct {
+	Status string `json:"status"`
 }
