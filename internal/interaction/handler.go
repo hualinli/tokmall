@@ -28,6 +28,49 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	users.DELETE("/:id/follow", h.unfollow)
 }
 
+// RegisterOptionalRoutes 关注/粉丝列表：公开读 + 可选认证（is_following 个性化）。
+func (h *Handler) RegisterOptionalRoutes(g *route.RouterGroup) {
+	users := g.Group("/users")
+	users.GET("/:id/following", h.followingList)
+	users.GET("/:id/followers", h.followersList)
+}
+
+func (h *Handler) followingList(ctx context.Context, c *app.RequestContext) {
+	h.followList(ctx, c, h.service.ListFollowing)
+}
+
+func (h *Handler) followersList(ctx context.Context, c *app.RequestContext) {
+	h.followList(ctx, c, h.service.ListFollowers)
+}
+
+func (h *Handler) followList(ctx context.Context, c *app.RequestContext, fn func(context.Context, int64, int64, int, string) (*ProfileListResult, error)) {
+	userID, ok := pathID(c)
+	if !ok {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	limit := 0
+	if v := c.Query("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			response.Error(c, response.ErrInvalidArgument)
+			return
+		}
+		limit = n
+	}
+	result, err := fn(ctx, h.userID(c), userID, limit, c.Query("cursor"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidParam), errors.Is(err, ErrInvalidCursor):
+			response.Error(c, response.ErrInvalidArgument)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
+		return
+	}
+	response.OK(c, result)
+}
+
 func (h *Handler) userID(c *app.RequestContext) int64 {
 	return c.GetInt64(middleware.CtxUserIDKey)
 }

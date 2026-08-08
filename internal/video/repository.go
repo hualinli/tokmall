@@ -20,13 +20,21 @@ func NewRepository(db *gorm.DB) *GormRepository {
 	return &GormRepository{db: db}
 }
 
+// CreateVideo 显式白名单列：model 上的 Username/AvatarKey 是 JOIN 投影
+// （videos 表没有这些列），全字段 Create 会生成错误的 INSERT。
 func (r *GormRepository) CreateVideo(ctx context.Context, v *Video) error {
-	return r.db.WithContext(ctx).Create(v).Error
+	return r.db.WithContext(ctx).
+		Select("author_id", "title", "object_key", "cover_key", "duration_seconds", "status").
+		Create(v).Error
 }
 
 func (r *GormRepository) FindVideoByID(ctx context.Context, id int64) (*Video, error) {
 	var v Video
-	err := r.db.WithContext(ctx).Where("id = ?", id).First(&v).Error
+	err := r.db.WithContext(ctx).Table("videos").
+		Select("videos.*, users.username, users.avatar_key").
+		Joins("LEFT JOIN users ON users.id = videos.author_id").
+		Where("videos.id = ?", id).
+		First(&v).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -78,6 +86,45 @@ func (r *GormRepository) ListByAuthor(ctx context.Context, authorID int64, befor
 		return nil, err
 	}
 	return videos, nil
+}
+
+// LikeCounts 批量查点赞数（跨模块只读 likes 表，详情页用）。
+func (r *GormRepository) LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error) {
+	if len(videoIDs) == 0 {
+		return map[int64]int64{}, nil
+	}
+	var rows []struct {
+		VideoID int64
+		Count   int64
+	}
+	err := r.db.WithContext(ctx).Table("likes").
+		Select("video_id, count(*) AS count").
+		Where("video_id IN ?", videoIDs).
+		Group("video_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[int64]int64, len(rows))
+	for _, row := range rows {
+		counts[row.VideoID] = row.Count
+	}
+	return counts, nil
+}
+
+// IsLiked 判断 viewer 是否已点赞（匿名 viewerID=0 时恒 false）。
+func (r *GormRepository) IsLiked(ctx context.Context, userID, videoID int64) (bool, error) {
+	if userID <= 0 {
+		return false, nil
+	}
+	var count int64
+	err := r.db.WithContext(ctx).Table("likes").
+		Where("user_id = ? AND video_id = ?", userID, videoID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // ConsumeTicket 原子核销 ticket：未被使用、未过期、属于该用户时标记 used，

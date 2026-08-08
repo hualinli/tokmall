@@ -3,6 +3,9 @@ package user
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +19,7 @@ type fakeRepo struct {
 	usersByID       map[int64]*User
 	usersByUsername map[string]*User
 	usersByEmail    map[string]*User
+	follows         map[string]bool // key: "follower-followee"
 	nextID          int64
 	createErr       error
 	findErr         error
@@ -26,8 +30,40 @@ func newFakeRepo() *fakeRepo {
 		usersByID:       make(map[int64]*User),
 		usersByUsername: make(map[string]*User),
 		usersByEmail:    make(map[string]*User),
+		follows:         make(map[string]bool),
 		nextID:          1,
 	}
+}
+
+func (f *fakeRepo) FollowCounts(_ context.Context, userID int64) (following, followers int64, err error) {
+	for k := range f.follows {
+		parts := strings.SplitN(k, "-", 2)
+		if parts[0] == strconv.FormatInt(userID, 10) {
+			following++
+		}
+		if parts[1] == strconv.FormatInt(userID, 10) {
+			followers++
+		}
+	}
+	return following, followers, nil
+}
+
+func (f *fakeRepo) IsFollowing(_ context.Context, followerID, followeeID int64) (bool, error) {
+	return f.follows[fmt.Sprintf("%d-%d", followerID, followeeID)], nil
+}
+
+func (f *fakeRepo) UpdateProfile(_ context.Context, userID int64, bio *string, avatarKey *string) error {
+	u, ok := f.usersByID[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	if bio != nil {
+		u.Bio = *bio
+	}
+	if avatarKey != nil {
+		u.AvatarKey = avatarKey
+	}
+	return nil
 }
 
 func (f *fakeRepo) Create(ctx context.Context, u *User) error {
@@ -128,7 +164,28 @@ func (f *fakeBlacklist) IsBlocked(_ context.Context, jti string) (bool, error) {
 }
 
 func newTestService(repo *fakeRepo, tokens *fakeTokenManager) *Service {
-	return NewService(repo, tokens, newFakeBlacklist())
+	return NewService(repo, tokens, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
+}
+
+// fakeAvatar 预签名 URL 假实现。
+type fakeAvatar struct {
+	err error
+}
+
+func (f *fakeAvatar) PresignGetURL(_ context.Context, objectKey string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return "http://minio.local/signed/" + objectKey, nil
+}
+
+// fakeImageValidator 头像校验假实现。
+type fakeImageValidator struct {
+	err error
+}
+
+func (f *fakeImageValidator) ValidateImage(_ context.Context, _ int64, _ string) error {
+	return f.err
 }
 
 func refreshClaims(jti string) *token.Claims {
@@ -287,7 +344,7 @@ func TestRefreshSuccess(t *testing.T) {
 	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
 	repo := newFakeRepo()
 	seedUser(repo)
-	svc := NewService(repo, tm, newFakeBlacklist())
+	svc := NewService(repo, tm, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 	result, err := svc.Refresh(context.Background(), "old-refresh-token")
 	require.NoError(t, err)
@@ -303,7 +360,7 @@ func TestRefreshRotatesOldJti(t *testing.T) {
 	blacklist := newFakeBlacklist()
 	repo := newFakeRepo()
 	seedUser(repo)
-	svc := NewService(repo, tm, blacklist)
+	svc := NewService(repo, tm, blacklist, &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "old-refresh-token")
 	require.NoError(t, err)
@@ -317,7 +374,7 @@ func TestRefreshRotatesOldJti(t *testing.T) {
 // TestRefreshDeletedUser 软删用户：旧 refresh token 必须被拒（不能续签）。
 func TestRefreshDeletedUser(t *testing.T) {
 	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
-	svc := NewService(newFakeRepo(), tm, newFakeBlacklist())
+	svc := NewService(newFakeRepo(), tm, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "old-refresh-token")
 	require.ErrorIs(t, err, ErrInvalidCredentials)
@@ -370,7 +427,7 @@ func TestRefreshRejected(t *testing.T) {
 			tc.mod(tm, bl)
 			repo := newFakeRepo()
 			seedUser(repo)
-			svc := NewService(repo, tm, bl)
+			svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 			_, err := svc.Refresh(context.Background(), "refresh-token")
 			require.ErrorIs(t, err, ErrInvalidCredentials)
@@ -382,7 +439,7 @@ func TestLogout(t *testing.T) {
 	t.Run("blocks valid token", func(t *testing.T) {
 		tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
 		bl := newFakeBlacklist()
-		svc := NewService(newFakeRepo(), tm, bl)
+		svc := NewService(newFakeRepo(), tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 		require.NoError(t, svc.Logout(context.Background(), "refresh-token"))
 		require.True(t, bl.blocked["jti-1"])
@@ -391,7 +448,7 @@ func TestLogout(t *testing.T) {
 	// 幂等：无效/过期/类型不符的 token，logout 都返回成功。
 	t.Run("idempotent on already-invalid token", func(t *testing.T) {
 		tm := &fakeTokenManager{verifyErr: errors.New("bad signature")}
-		svc := NewService(newFakeRepo(), tm, newFakeBlacklist())
+		svc := NewService(newFakeRepo(), tm, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 		require.NoError(t, svc.Logout(context.Background(), "garbage"))
 	})
 
@@ -406,7 +463,7 @@ func TestLogout(t *testing.T) {
 			Role: "USER",
 		}}
 		bl := newFakeBlacklist()
-		svc := NewService(newFakeRepo(), tm, bl)
+		svc := NewService(newFakeRepo(), tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 		require.NoError(t, svc.Logout(context.Background(), "refresh-token"))
 		require.False(t, bl.blocked["jti-expired"])
 	})
@@ -416,7 +473,7 @@ func TestLogout(t *testing.T) {
 		c.Type = token.TypeAccess
 		tm := &fakeTokenManager{verifyRes: c}
 		bl := newFakeBlacklist()
-		svc := NewService(newFakeRepo(), tm, bl)
+		svc := NewService(newFakeRepo(), tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 		require.NoError(t, svc.Logout(context.Background(), "access-token"))
 		require.False(t, bl.blocked["jti-access"])
@@ -426,7 +483,7 @@ func TestLogout(t *testing.T) {
 		tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
 		bl := newFakeBlacklist()
 		bl.blockErr = errors.New("redis down")
-		svc := NewService(newFakeRepo(), tm, bl)
+		svc := NewService(newFakeRepo(), tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 		require.Error(t, svc.Logout(context.Background(), "refresh-token"))
 	})
 }
@@ -437,7 +494,7 @@ func TestRefreshBlacklistFailure(t *testing.T) {
 	bl.existsErr = errors.New("redis down")
 	repo := newFakeRepo()
 	seedUser(repo)
-	svc := NewService(repo, tm, bl)
+	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "refresh-token")
 	require.Error(t, err)
@@ -452,7 +509,7 @@ func TestRefreshBlockFailure(t *testing.T) {
 	bl.blockErr = errors.New("redis down")
 	repo := newFakeRepo()
 	seedUser(repo)
-	svc := NewService(repo, tm, bl)
+	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "refresh-token")
 	require.Error(t, err)
@@ -470,7 +527,7 @@ func TestRefreshSignFailureAfterRotation(t *testing.T) {
 	bl := newFakeBlacklist()
 	repo := newFakeRepo()
 	seedUser(repo)
-	svc := NewService(repo, tm, bl)
+	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "refresh-token")
 	require.Error(t, err)
@@ -483,7 +540,7 @@ func TestRefreshBadSubject(t *testing.T) {
 	c := refreshClaims("jti-1")
 	c.Subject = "not-a-number"
 	tm := &fakeTokenManager{verifyRes: c}
-	svc := NewService(newFakeRepo(), tm, newFakeBlacklist())
+	svc := NewService(newFakeRepo(), tm, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "refresh-token")
 	require.ErrorIs(t, err, ErrInvalidCredentials)
@@ -497,7 +554,7 @@ func TestRefreshRepoFailure(t *testing.T) {
 	seedUser(repo)
 	repo.findErr = boom
 	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
-	svc := NewService(repo, tm, newFakeBlacklist())
+	svc := NewService(repo, tm, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "refresh-token")
 	require.ErrorIs(t, err, boom)
@@ -509,7 +566,7 @@ func TestGetProfile(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		repo := newFakeRepo()
 		repo.usersByID[7] = &User{UserID: 7, Email: "p@b.com", Username: "prof7", Bio: "hi"}
-		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist())
+		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 		p, err := svc.GetProfile(context.Background(), 7)
 		require.NoError(t, err)
@@ -519,7 +576,7 @@ func TestGetProfile(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		svc := NewService(newFakeRepo(), &fakeTokenManager{}, newFakeBlacklist())
+		svc := NewService(newFakeRepo(), &fakeTokenManager{}, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 		_, err := svc.GetProfile(context.Background(), 99)
 		require.ErrorIs(t, err, ErrNotFound)
 	})
@@ -528,7 +585,7 @@ func TestGetProfile(t *testing.T) {
 		boom := errors.New("db connection lost")
 		repo := newFakeRepo()
 		repo.findErr = boom
-		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist())
+		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 		_, err := svc.GetProfile(context.Background(), 1)
 		require.ErrorIs(t, err, boom)
@@ -540,7 +597,7 @@ func TestLoginEmailPathRepoFailure(t *testing.T) {
 	boom := errors.New("db connection lost")
 	repo := newFakeRepo()
 	repo.findErr = boom
-	svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist())
+	svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Login(context.Background(), LoginParams{
 		EmailOrUsername: "alice@example.com",
@@ -548,4 +605,81 @@ func TestLoginEmailPathRepoFailure(t *testing.T) {
 	})
 	require.ErrorIs(t, err, boom)
 	require.NotErrorIs(t, err, ErrInvalidCredentials)
+}
+
+// TestGetPublicProfile 公开资料：email 不泄露、计数、is_following、is_me。
+func TestGetPublicProfile(t *testing.T) {
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := newTestService(repo, &fakeTokenManager{})
+
+	t.Run("anonymous viewer", func(t *testing.T) {
+		p, err := svc.GetPublicProfile(context.Background(), 0, 1)
+		require.NoError(t, err)
+		require.Equal(t, "alice12", p.Username)
+		// PublicProfile 类型本身不含 Email 字段——结构上杜绝隐私泄露
+		require.False(t, p.IsFollowing, "匿名 is_following 恒 false")
+		require.False(t, p.IsMe)
+	})
+
+	t.Run("viewer has followed", func(t *testing.T) {
+		repo.follows["2-1"] = true
+		p, err := svc.GetPublicProfile(context.Background(), 2, 1)
+		require.NoError(t, err)
+		require.True(t, p.IsFollowing)
+		require.False(t, p.IsMe)
+	})
+
+	t.Run("viewer is the user", func(t *testing.T) {
+		p, err := svc.GetPublicProfile(context.Background(), 1, 1)
+		require.NoError(t, err)
+		require.True(t, p.IsMe)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		_, err := svc.GetPublicProfile(context.Background(), 0, 99)
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("avatar presigned", func(t *testing.T) {
+		repo.usersByID[1].AvatarKey = ptr("avatars/1/a.jpg")
+		p, err := svc.GetPublicProfile(context.Background(), 0, 1)
+		require.NoError(t, err)
+		require.NotNil(t, p.AvatarURL)
+		require.Equal(t, "http://minio.local/signed/avatars/1/a.jpg", *p.AvatarURL)
+	})
+}
+
+// TestUpdateMe 更新资料：头像必须通过校验、局部更新语义。
+func TestUpdateMe(t *testing.T) {
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := newTestService(repo, &fakeTokenManager{})
+
+	t.Run("update bio only", func(t *testing.T) {
+		bio := "new bio"
+		p, err := svc.UpdateMe(context.Background(), 1, UpdateMeParams{Bio: &bio})
+		require.NoError(t, err)
+		require.Equal(t, "new bio", p.Bio)
+	})
+
+	t.Run("avatar key validated then stored", func(t *testing.T) {
+		key := "images/1/face.jpg"
+		p, err := svc.UpdateMe(context.Background(), 1, UpdateMeParams{AvatarKey: &key})
+		require.NoError(t, err)
+		require.NotNil(t, p.AvatarKey)
+		require.Equal(t, key, *p.AvatarKey)
+	})
+
+	t.Run("forged avatar key rejected", func(t *testing.T) {
+		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist(),
+			&fakeAvatar{}, &fakeImageValidator{err: errors.New("ticket invalid")})
+		key := "images/forged.jpg"
+		_, err := svc.UpdateMe(context.Background(), 1, UpdateMeParams{AvatarKey: &key})
+		require.ErrorIs(t, err, ErrInvalidImageKey)
+	})
+}
+
+func ptr(s string) *string {
+	return &s
 }

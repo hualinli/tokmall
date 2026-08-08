@@ -159,7 +159,7 @@ paths:
   /api/v1/me:
     get:
       tags: [user]
-      summary: 当前用户资料
+      summary: 当前用户资料（含 email，仅自己可见）
       responses:
         "200":
           description: 用户资料
@@ -171,6 +171,107 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/UserNotFound"
+    patch:
+      tags: [user]
+      summary: 更新自己的资料（bio / avatar_key，局部更新语义）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: 更新后的完整资料
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicUser"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /api/v1/users/{id}:
+    get:
+      tags: [user]
+      summary: 公开用户资料（可选认证：带 token 时 is_following 个性化）
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: 公开资料（不含 email）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicProfile"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /api/v1/users/{id}/videos:
+    get:
+      tags: [feed]
+      summary: 公开作者主页：已发布作品列表（FeedItem 结构，游标分页）
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 该作者的已发布视频
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+
+  /api/v1/users/{id}/following:
+    get:
+      tags: [interactions]
+      summary: 关注列表（可选认证：is_following 个性化）
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 关注的人（按关系时间倒序）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileListResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+  /api/v1/users/{id}/followers:
+    get:
+      tags: [interactions]
+      summary: 粉丝列表（可选认证：is_following 个性化，回关按钮数据）
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 粉丝（按关系时间倒序）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileListResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
 
   /api/v1/videos/upload-url:
     post:
@@ -239,7 +340,10 @@ paths:
   /api/v1/videos/{id}:
     get:
       tags: [videos]
-      summary: 视频详情（可见性：DELETED 404；未发布仅作者可见）
+      summary: 视频详情（公开可看；可见性：DELETED 404，未发布仅作者；is_liked 可选认证）
+      security:
+        - bearerAuth: []
+        - {}
       parameters:
         - $ref: "#/components/parameters/VideoID"
       responses:
@@ -531,6 +635,72 @@ components:
         avatar_key:
           type: string
           nullable: true
+    PublicProfile:
+      type: object
+      description: 公开资料（不含 email）
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        bio:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+          description: 预签名 URL
+        following_count:
+          type: integer
+          format: int64
+        followers_count:
+          type: integer
+          format: int64
+        is_following:
+          type: boolean
+          description: 当前用户是否已关注（匿名 false）
+        is_me:
+          type: boolean
+    UpdateMeRequest:
+      type: object
+      description: 局部更新：缺省字段不更新
+      properties:
+        bio:
+          type: string
+        avatar_key:
+          type: string
+          description: 必须来自 /videos/upload-url（图片类型）发放的 key
+    ProfileItem:
+      type: object
+      description: 关注/粉丝列表项（不含计数，避免 N+1）
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        bio:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        is_following:
+          type: boolean
+        is_me:
+          type: boolean
+    ProfileListResult:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfileItem"
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
 
     UploadURLRequest:
       type: object
@@ -541,12 +711,10 @@ components:
         file_size:
           type: integer
           format: int64
-          minimum: 1048576
-          maximum: 536870912
-          description: 1MB - 512MB
+          description: 视频 1MB-512MB；图片 1KB-5MB
         content_type:
           type: string
-          enum: [video/mp4, video/webm, video/quicktime]
+          enum: [video/mp4, video/webm, video/quicktime, image/jpeg, image/png, image/webp]
     UploadResult:
       type: object
       required: [object_key, upload_url, expires_at]
@@ -621,6 +789,23 @@ components:
           type: string
           format: date-time
           nullable: true
+        author:
+          $ref: "#/components/schemas/AuthorRef"
+        like_count:
+          type: integer
+          format: int64
+          description: 点赞数（现查，准实时）
+    AuthorRef:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
     FeedResult:
       type: object
       required: [items, next_cursor, has_more]
@@ -659,6 +844,14 @@ components:
         created_at:
           type: string
           format: date-time
+        author:
+          $ref: "#/components/schemas/AuthorRef"
+        like_count:
+          type: integer
+          format: int64
+        is_liked:
+          type: boolean
+          description: 当前用户是否已点赞（匿名 false）
     VideoListItem:
       type: object
       properties:

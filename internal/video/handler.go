@@ -38,9 +38,14 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	videos.POST("/upload-url", h.uploadURL)
 	videos.POST("", h.create)
 	videos.GET("/me", h.listMine)
-	videos.GET("/:id", h.get)
 	videos.POST("/:id/publish", h.publish)
 	videos.DELETE("/:id", h.delete)
+}
+
+// RegisterOptionalRoutes 视频详情公开可看（匿名 is_liked=false）：
+// 可见性策略由 service 判定（未发布仅作者，匿名一律 404）。
+func (h *Handler) RegisterOptionalRoutes(g *route.RouterGroup) {
+	g.GET("/videos/:id", h.get)
 }
 
 func (h *Handler) userID(c *app.RequestContext) int64 {

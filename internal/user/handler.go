@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
@@ -30,6 +31,11 @@ type LogoutRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
+type UpdateMeRequest struct {
+	Bio       *string `json:"bio"`
+	AvatarKey *string `json:"avatar_key"`
+}
+
 type Handler struct {
 	service *Service
 }
@@ -48,11 +54,67 @@ func (h *Handler) RegisterRoutes(g *route.RouterGroup) {
 
 func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	g.GET("/me", h.me)
+	g.PATCH("/me", h.updateMe)
+}
+
+// RegisterOptionalRoutes 公开但带个性化字段的端点：有 token 注入 viewer_id，
+// 没有就当匿名（AuthOptional）。
+func (h *Handler) RegisterOptionalRoutes(g *route.RouterGroup) {
+	g.GET("/users/:id", h.profile)
 }
 
 func (h *Handler) me(ctx context.Context, c *app.RequestContext) {
 	userID := c.GetInt64(middleware.CtxUserIDKey)
 	profile, err := h.service.GetProfile(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(c, response.ErrUserNotFound)
+			return
+		}
+		response.Error(c, response.ErrInternal)
+		return
+	}
+	response.OK(c, profile)
+}
+
+func (h *Handler) updateMe(ctx context.Context, c *app.RequestContext) {
+	var req UpdateMeRequest
+	if err := c.BindAndValidate(&req); err != nil {
+		slog.Debug("bind failed", "err", err)
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	profile, err := h.service.UpdateMe(ctx, h.userID(c), UpdateMeParams{
+		Bio:       req.Bio,
+		AvatarKey: req.AvatarKey,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidImageKey):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrNotFound):
+			response.Error(c, response.ErrUserNotFound)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
+		return
+	}
+	response.OK(c, profile)
+}
+
+// userID 从中间件上下文取当前用户。
+func (h *Handler) userID(c *app.RequestContext) int64 {
+	return c.GetInt64(middleware.CtxUserIDKey)
+}
+
+func (h *Handler) profile(ctx context.Context, c *app.RequestContext) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	viewerID := c.GetInt64(middleware.CtxUserIDKey)
+	profile, err := h.service.GetPublicProfile(ctx, viewerID, userID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			response.Error(c, response.ErrUserNotFound)

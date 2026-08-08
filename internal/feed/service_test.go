@@ -3,6 +3,8 @@ package feed
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,14 +16,45 @@ type fakeRepo struct {
 	mu     sync.Mutex
 	calls  int
 	videos []Video // 已按 (published_at, id) 倒序排好，模拟索引顺序
+	likes  map[string]bool // key: "{userID}-{videoID}"
 }
 
 func (f *fakeRepo) ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
-	out := make([]Video, 0, limit+1)
+	return f.list(ctx, f.videos, before, limit), nil
+}
+
+func (f *fakeRepo) ListPublishedByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	rows := make([]Video, 0, limit+1)
 	for _, v := range f.videos {
+		if v.AuthorID == authorID {
+			rows = append(rows, v)
+		}
+	}
+	return f.list(ctx, rows, before, limit), nil
+}
+
+// LikeCounts 从 likes map 聚合（与生产 SQL 语义一致）。
+func (f *fakeRepo) LikeCounts(_ context.Context, videoIDs []int64) (map[int64]int64, error) {
+	counts := map[int64]int64{}
+	for _, id := range videoIDs {
+		for k := range f.likes {
+			if strings.HasSuffix(k, "-"+strconv.FormatInt(id, 10)) {
+				counts[id]++
+			}
+		}
+	}
+	return counts, nil
+}
+
+func (f *fakeRepo) list(ctx context.Context, videos []Video, before *Cursor, limit int) []Video {
+	out := make([]Video, 0, limit+1)
+	for _, v := range videos {
 		// 与生产 SQL 一致：保留 (published_at, id) < 游标 的行（DESC 顺序下更旧的）
 		if before != nil && !(v.PublishedAt.Before(before.PublishedAt) ||
 			(v.PublishedAt.Equal(before.PublishedAt) && v.ID < before.VideoID)) {
@@ -32,7 +65,7 @@ func (f *fakeRepo) ListPublished(ctx context.Context, before *Cursor, limit int)
 			break
 		}
 	}
-	return out, nil
+	return out
 }
 
 // fakeCache 内存版首页缓存：可注入 Get/Set 故障。
@@ -329,4 +362,46 @@ func TestList_CustomLimitSkipsCache(t *testing.T) {
 	require.Equal(t, 1, repo.calls)
 	repo.mu.Unlock()
 	require.Equal(t, 0, cache.gets, "自定义 limit 不走缓存")
+}
+
+// TestList_AuthorAndLikeCount feed 卡片：作者信息 + like_count 现查。
+func TestList_AuthorAndLikeCount(t *testing.T) {
+	repo := &fakeRepo{
+		videos: []Video{
+			{ID: 5, AuthorID: 3, Username: "bob", AvatarKey: ptr("avatars/3/b.jpg"),
+				Title: "v5", ObjectKey: "o5", PublishedAt: ts(0)},
+			{ID: 4, AuthorID: 1, Username: "alice",
+				Title: "v4", ObjectKey: "o4", PublishedAt: ts(-time.Minute)},
+		},
+		likes: map[string]bool{"9-5": true, "8-5": true, "9-4": true},
+	}
+	svc := newTestService(repo)
+
+	res, err := svc.List(context.Background(), 20, "")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), res.Items[0].LikeCount, "v5 有 2 个赞")
+	require.Equal(t, int64(1), res.Items[1].LikeCount)
+	require.Equal(t, "bob", res.Items[0].Author.Username)
+	require.NotNil(t, res.Items[0].Author.AvatarURL)
+	require.Nil(t, res.Items[1].Author.AvatarURL, "无头像的作者 avatar_url 为 null")
+}
+
+// TestListByAuthor_OnlyPublished 作者主页：只含该作者已发布视频，分页复用游标。
+func TestListByAuthor_OnlyPublished(t *testing.T) {
+	repo := &fakeRepo{videos: fiveVideos()}
+	svc := newTestService(repo)
+
+	res, err := svc.ListByAuthor(context.Background(), 1, 0, "")
+	require.NoError(t, err)
+	require.Len(t, res.Items, 5, "fiveVideos 全部是作者 1 的")
+
+	// 换个作者：空列表，items 非 nil
+	res, err = svc.ListByAuthor(context.Background(), 99, 0, "")
+	require.NoError(t, err)
+	require.NotNil(t, res.Items)
+	require.Empty(t, res.Items)
+}
+
+func ptr(s string) *string {
+	return &s
 }

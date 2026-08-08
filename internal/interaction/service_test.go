@@ -2,8 +2,10 @@ package interaction
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -58,8 +60,72 @@ func (f *fakeRepo) UserExists(ctx context.Context, userID int64) (bool, error) {
 	return f.users[userID], nil
 }
 
+// fakeAvatar 预签名 URL 假实现。
+type fakeAvatar struct{}
+
+func (fakeAvatar) PresignGetURL(_ context.Context, objectKey string) (string, error) {
+	return "http://minio.local/signed/" + objectKey, nil
+}
+
+// ListFollowing/ListFollowers 从 follows map 构造 FollowEdge（按 follower/followee 过滤）。
+func (f *fakeRepo) ListFollowing(ctx context.Context, userID int64, before *Cursor, limit int) ([]FollowEdge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	edges := make([]FollowEdge, 0)
+	for k := range f.follows {
+		if k[0] == userID {
+			edges = append(edges, FollowEdge{UserID: k[1], CreatedAt: time.Now(), Username: fmt.Sprintf("u%d", k[1])})
+		}
+	}
+	return f.filterEdges(edges, before, limit), nil
+}
+
+func (f *fakeRepo) ListFollowers(ctx context.Context, userID int64, before *Cursor, limit int) ([]FollowEdge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	edges := make([]FollowEdge, 0)
+	for k := range f.follows {
+		if k[1] == userID {
+			edges = append(edges, FollowEdge{UserID: k[0], CreatedAt: time.Now(), Username: fmt.Sprintf("u%d", k[0])})
+		}
+	}
+	return f.filterEdges(edges, before, limit), nil
+}
+
+func (f *fakeRepo) filterEdges(edges []FollowEdge, before *Cursor, limit int) []FollowEdge {
+	out := make([]FollowEdge, 0, limit+1)
+	for _, e := range edges {
+		if before != nil && !(e.CreatedAt.Before(before.CreatedAt) ||
+			(e.CreatedAt.Equal(before.CreatedAt) && e.UserID < before.UserID)) {
+			continue
+		}
+		out = append(out, e)
+		if len(out) >= limit+1 {
+			break
+		}
+	}
+	return out
+}
+
+func (f *fakeRepo) IsFollowingMany(ctx context.Context, viewerID int64, userIDs []int64) (map[int64]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	result := make(map[int64]bool, len(userIDs))
+	if viewerID <= 0 {
+		return result, nil
+	}
+	for _, id := range userIDs {
+		result[id] = f.follows[[2]int64{viewerID, id}]
+	}
+	return result, nil
+}
+
+func newTestService(repo *fakeRepo) *Service {
+	return NewService(repo, fakeAvatar{}, "test-cursor-secret")
+}
+
 func TestLike_RepeatCallsIdempotent(t *testing.T) {
-	svc := NewService(newFakeRepo())
+	svc := newTestService(newFakeRepo())
 
 	for i := 0; i < 3; i++ {
 		res, err := svc.Like(context.Background(), 1, 100)
@@ -78,7 +144,7 @@ func TestLike_RepeatCallsIdempotent(t *testing.T) {
 
 func TestLike_ConcurrentCallsNoError(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewService(repo)
+	svc := newTestService(repo)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -97,21 +163,21 @@ func TestLike_ConcurrentCallsNoError(t *testing.T) {
 }
 
 func TestFollow_SelfFollowRejected(t *testing.T) {
-	svc := NewService(newFakeRepo())
+	svc := newTestService(newFakeRepo())
 
 	_, err := svc.Follow(context.Background(), 1, 1)
 	require.ErrorIs(t, err, ErrInvalidParam)
 }
 
 func TestFollow_FolloweeNotFound(t *testing.T) {
-	svc := NewService(newFakeRepo())
+	svc := newTestService(newFakeRepo())
 
 	_, err := svc.Follow(context.Background(), 1, 999)
 	require.ErrorIs(t, err, ErrUserNotFound)
 }
 
 func TestFollow_RepeatAndUnfollow(t *testing.T) {
-	svc := NewService(newFakeRepo())
+	svc := newTestService(newFakeRepo())
 
 	for i := 0; i < 3; i++ {
 		res, err := svc.Follow(context.Background(), 1, 4)
@@ -126,4 +192,89 @@ func TestFollow_RepeatAndUnfollow(t *testing.T) {
 	res, err = svc.Follow(context.Background(), 1, 4)
 	require.NoError(t, err)
 	require.True(t, res.Following)
+}
+
+// TestListFollowing_Visibility 关注列表：匿名 is_following 全 false，
+// 登录 viewer 批量回填；is_me 正确标记。
+func TestListFollowing_Visibility(t *testing.T) {
+	repo := newFakeRepo()
+	repo.follows[[2]int64{1, 2}] = true
+	repo.follows[[2]int64{1, 3}] = true
+	repo.follows[[2]int64{1, 4}] = true
+	svc := newTestService(repo)
+
+	t.Run("anonymous", func(t *testing.T) {
+		res, err := svc.ListFollowing(context.Background(), 0, 1, 20, "")
+		require.NoError(t, err)
+		require.Len(t, res.Items, 3)
+		for _, it := range res.Items {
+			require.False(t, it.IsFollowing, "匿名 is_following 必须全 false")
+			require.False(t, it.IsMe)
+		}
+	})
+
+	t.Run("viewer follows one of them", func(t *testing.T) {
+		repo.follows[[2]int64{5, 2}] = true
+		res, err := svc.ListFollowing(context.Background(), 5, 1, 20, "")
+		require.NoError(t, err)
+		found := map[int64]bool{}
+		for _, it := range res.Items {
+			found[it.UserID] = it.IsFollowing
+		}
+		require.True(t, found[2], "viewer 关注了 u2")
+		require.False(t, found[3])
+	})
+
+	t.Run("own entry in others' follower list marks is_me", func(t *testing.T) {
+		// viewer=1 关注了 u2；查看 u2 的粉丝列表时，u1 是自己 → is_me=true
+		res, err := svc.ListFollowers(context.Background(), 1, 2, 20, "")
+		require.NoError(t, err)
+		for _, it := range res.Items {
+			if it.UserID == 1 {
+				require.True(t, it.IsMe)
+				return
+			}
+		}
+		require.Fail(t, "u1 应该在 u2 的粉丝列表里")
+	})
+}
+
+// TestListFollowers_Basic 粉丝列表 + 分页参数校验。
+func TestListFollowers_Basic(t *testing.T) {
+	repo := newFakeRepo()
+	repo.follows[[2]int64{2, 1}] = true
+	repo.follows[[2]int64{3, 1}] = true
+	svc := newTestService(repo)
+
+	res, err := svc.ListFollowers(context.Background(), 0, 1, 20, "")
+	require.NoError(t, err)
+	require.Len(t, res.Items, 2)
+
+	_, err = svc.ListFollowers(context.Background(), 0, 1, 101, "")
+	require.ErrorIs(t, err, ErrInvalidParam)
+
+	_, err = svc.ListFollowers(context.Background(), 0, 1, 20, "forged.cursor")
+	require.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+// TestCursor_RoundTrip 关注列表游标：签名 + 版本校验。
+func TestCursor_RoundTrip(t *testing.T) {
+	codec := NewCodec("test-cursor-secret")
+	cur := Cursor{CreatedAt: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC), UserID: 7, RankVersion: CurrentRankVersion}
+
+	enc, err := codec.Encode(cur)
+	require.NoError(t, err)
+	dec, err := codec.Decode(enc)
+	require.NoError(t, err)
+	require.Equal(t, cur, *dec)
+
+	_, err = codec.Decode("forged.cursor")
+	require.ErrorIs(t, err, ErrInvalidCursor)
+
+	old := cur
+	old.RankVersion = "follow-v0"
+	enc, err = codec.Encode(old)
+	require.NoError(t, err)
+	_, err = codec.Decode(enc)
+	require.ErrorIs(t, err, ErrInvalidCursor)
 }

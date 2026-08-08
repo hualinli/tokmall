@@ -146,3 +146,48 @@ func TestAuth_NonIntegerSubject(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "INVALID_TOKEN", "subject 非数字按无效 token 处理，而非 500")
 }
+
+// newOptionalEngine 构造挂了 AuthOptional 的测试引擎：回显 viewer_id，0 表示匿名。
+func newOptionalEngine(manager *token.Manager) *route.Engine {
+	r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
+	r.Use(AuthOptional(manager))
+	r.GET("/public", func(c context.Context, ctx *app.RequestContext) {
+		ctx.String(http.StatusOK, fmt.Sprintf("uid=%d", ctx.GetInt64(CtxUserIDKey)))
+	})
+	return r
+}
+
+func performOptional(engine *route.Engine, value string) *ut.ResponseRecorder {
+	if value == "" {
+		return ut.PerformRequest(engine, http.MethodGet, "/public", nil)
+	}
+	return ut.PerformRequest(engine, http.MethodGet, "/public", nil,
+		ut.Header{Key: "Authorization", Value: value})
+}
+
+func TestAuthOptional_Anonymous(t *testing.T) {
+	manager := token.NewManager(testSecret)
+	engine := newOptionalEngine(manager)
+
+	w := performOptional(engine, "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "uid=0", w.Body.String(), "无 header 必须匿名（uid=0）")
+}
+
+func TestAuthOptional_ValidToken(t *testing.T) {
+	manager := token.NewManager(testSecret)
+	engine := newOptionalEngine(manager)
+
+	w := performOptional(engine, "Bearer "+signToken(t, manager, "7", 900, token.TypeAccess))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "uid=7", w.Body.String())
+}
+
+func TestAuthOptional_InvalidTokenIs401(t *testing.T) {
+	manager := token.NewManager(testSecret)
+	engine := newOptionalEngine(manager)
+
+	// 有 header 但无效：绝不静默降级为匿名
+	w := performOptional(engine, "Bearer forged.token.value")
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}

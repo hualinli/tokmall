@@ -66,3 +66,50 @@ func (r *GormRepository) findOne(ctx context.Context, col column, value any) (*U
 	}
 	return &u, nil
 }
+
+// FollowCounts 关注/粉丝计数：跨模块只读共享 follows 表（各自的 read model），
+// 两条子查询走 PK 与 idx_follows_followee 索引。
+func (r *GormRepository) FollowCounts(ctx context.Context, userID int64) (following, followers int64, err error) {
+	var counts struct {
+		Following int64
+		Followers int64
+	}
+	err = r.db.WithContext(ctx).Raw(`
+		SELECT
+			(SELECT count(*) FROM follows WHERE follower_id = ?) AS following,
+			(SELECT count(*) FROM follows WHERE followee_id = ?) AS followers`,
+		userID, userID).Scan(&counts).Error
+	if err != nil {
+		return 0, 0, err
+	}
+	return counts.Following, counts.Followers, nil
+}
+
+// IsFollowing 判断 viewer 是否已关注目标。
+func (r *GormRepository) IsFollowing(ctx context.Context, followerID, followeeID int64) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Table("follows").
+		Where("follower_id = ? AND followee_id = ?", followerID, followeeID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// UpdateProfile 更新资料：nil 字段跳过（局部更新语义）。
+func (r *GormRepository) UpdateProfile(ctx context.Context, userID int64, bio *string, avatarKey *string) error {
+	updates := map[string]any{}
+	if bio != nil {
+		updates["bio"] = *bio
+	}
+	if avatarKey != nil {
+		updates["avatar_key"] = *avatarKey
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&User{}).
+		Where("id = ?", userID).
+		Updates(updates).Error
+}

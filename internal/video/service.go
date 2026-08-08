@@ -30,6 +30,8 @@ type Repository interface {
 	CreateTicket(ctx context.Context, t *UploadTicket) error
 	ConsumeTicket(ctx context.Context, userID int64, objectKey string) error
 	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
+	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
+	IsLiked(ctx context.Context, userID, videoID int64) (bool, error)
 }
 
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
@@ -127,6 +129,16 @@ type VideoDetail struct {
 	Status          Status     `json:"status"`
 	PublishedAt     *time.Time `json:"published_at"`
 	CreatedAt       time.Time  `json:"created_at"`
+	Author          AuthorRef  `json:"author"`
+	LikeCount       int64      `json:"like_count"`
+	IsLiked         bool       `json:"is_liked"`
+}
+
+// AuthorRef 详情页作者信息（与 feed 同形状，模块各自定义类型）。
+type AuthorRef struct {
+	UserID    int64   `json:"user_id"`
+	Username  string  `json:"username"`
+	AvatarURL *string `json:"avatar_url"`
 }
 
 type VideoListItem struct {
@@ -147,16 +159,29 @@ type VideoListResult struct {
 }
 
 // GetUploadURL 发放预签名上传 URL 并记录 ticket。
+// 支持视频与图片（封面/头像共用），文件大小上限因类型而异。
 func (s *Service) GetUploadURL(ctx context.Context, userID int64, filename string, fileSize int64, contentType string) (*UploadResult, error) {
-	if fileSize < 1<<20 || fileSize > 512<<20 {
-		return nil, ErrInvalidParam
-	}
+	var objectKey string
 	switch contentType {
 	case "video/mp4", "video/webm", "video/quicktime":
+		if fileSize < 1<<20 || fileSize > 512<<20 {
+			return nil, ErrInvalidParam
+		}
+		objectKey = fmt.Sprintf("videos/%d/%s.mp4", userID, uuid.NewString())
+	case "image/jpeg", "image/png", "image/webp":
+		if fileSize < 1<<10 || fileSize > 5<<20 {
+			return nil, ErrInvalidParam
+		}
+		ext := "jpg"
+		if contentType == "image/png" {
+			ext = "png"
+		} else if contentType == "image/webp" {
+			ext = "webp"
+		}
+		objectKey = fmt.Sprintf("covers/%d/%s.%s", userID, uuid.NewString(), ext)
 	default:
 		return nil, ErrInvalidParam
 	}
-	objectKey := fmt.Sprintf("videos/%d/%s.mp4", userID, uuid.NewString())
 	uploadURL, err := s.storage.PresignPutURL(ctx, objectKey)
 	if err != nil {
 		slog.Error("presign upload url failed", "user_id", userID, "err", err)
@@ -205,6 +230,15 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 		}
 		slog.Error("consume ticket failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("consume ticket: %w", err)
+	}
+	// 封面同样必须"真上传 + 有票证"（防伪造引用他人文件）
+	if p.CoverKey != nil {
+		if err := s.ValidateImage(ctx, userID, *p.CoverKey); err != nil {
+			if errors.Is(err, ErrUploadURLExpired) {
+				return nil, ErrUploadURLExpired
+			}
+			return nil, err
+		}
 	}
 	v := &Video{
 		AuthorID:        userID,
@@ -346,9 +380,34 @@ func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorR
 	return result, nil
 }
 
+// ValidateImage 校验图片上传凭证 + 文件真实存在，核销票证。
+// 供 user 模块 PATCH /me 的头像校验（消费侧接口由 user 定义，main 装配）。
+func (s *Service) ValidateImage(ctx context.Context, userID int64, objectKey string) error {
+	size, err := s.storage.StatObject(ctx, objectKey)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			return ErrUploadURLExpired
+		}
+		slog.Error("stat image failed", "object_key", objectKey, "err", err)
+		return fmt.Errorf("stat image: %w", err)
+	}
+	if size == 0 {
+		return ErrUploadURLExpired
+	}
+	if err := s.repo.ConsumeTicket(ctx, userID, objectKey); err != nil {
+		if errors.Is(err, ErrTicketInvalid) {
+			return ErrUploadURLExpired
+		}
+		slog.Error("consume image ticket failed", "user_id", userID, "err", err)
+		return fmt.Errorf("consume image ticket: %w", err)
+	}
+	return nil
+}
+
 // Get 按可见性策略返回详情：已删除对所有人不可见；
 // 未发布仅作者可见；已发布对所有人可见。
 // 不可见一律返回 ErrNotFound（不泄露存在性）。
+// viewerID=0（匿名）时 is_liked 恒 false。
 func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetail, error) {
 	v, err := s.repo.FindVideoByID(ctx, videoID)
 	if err != nil {
@@ -365,7 +424,7 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 		slog.Error("presign video url failed", "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("presign video url: %w", err)
 	}
-	return &VideoDetail{
+	detail := &VideoDetail{
 		VideoID:         v.ID,
 		AuthorID:        v.AuthorID,
 		Title:           v.Title,
@@ -374,5 +433,33 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 		Status:          v.Status,
 		PublishedAt:     v.PublishedAt,
 		CreatedAt:       v.CreatedAt,
-	}, nil
+		Author: AuthorRef{
+			UserID:   v.AuthorID,
+			Username: v.Username,
+		},
+	}
+	if v.AvatarKey != nil {
+		// 头像签名失败降级为 null（装饰性字段）
+		avatar, err := s.storage.PresignGetURL(ctx, *v.AvatarKey)
+		if err != nil {
+			slog.Warn("presign avatar url failed", "video_id", videoID, "err", err)
+		} else {
+			detail.Author.AvatarURL = &avatar
+		}
+	}
+	counts, err := s.repo.LikeCounts(ctx, []int64{videoID})
+	if err != nil {
+		slog.Error("like counts failed", "video_id", videoID, "err", err)
+		return nil, fmt.Errorf("like counts: %w", err)
+	}
+	detail.LikeCount = counts[videoID]
+	if viewerID > 0 {
+		liked, err := s.repo.IsLiked(ctx, viewerID, videoID)
+		if err != nil {
+			slog.Error("is liked failed", "viewer_id", viewerID, "video_id", videoID, "err", err)
+			return nil, fmt.Errorf("is liked: %w", err)
+		}
+		detail.IsLiked = liked
+	}
+	return detail, nil
 }

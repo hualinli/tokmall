@@ -3,6 +3,7 @@ package interaction
 import (
 	"context"
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -52,4 +53,69 @@ func (r *GormRepository) UserExists(ctx context.Context, userID int64) (bool, er
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// FollowEdge 关注关系行 + 对方公开资料（JOIN users）。
+type FollowEdge struct {
+	UserID    int64     `gorm:"column:user_id"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	Username  string    `gorm:"column:username"`
+	Bio       string    `gorm:"column:bio"`
+	AvatarKey *string   `gorm:"column:avatar_key"`
+}
+
+// ListFollowing 某人关注了谁：按 (created_at, followee_id) 倒序键集分页。
+// 注意：无 (follower_id, created_at) 索引，个人关注量级小，排序开销可接受。
+func (r *GormRepository) ListFollowing(ctx context.Context, userID int64, before *Cursor, limit int) ([]FollowEdge, error) {
+	q := r.db.WithContext(ctx).Table("follows f").
+		Select("f.followee_id AS user_id, f.created_at, u.username, u.bio, u.avatar_key").
+		Joins("JOIN users u ON u.id = f.followee_id").
+		Where("f.follower_id = ?", userID)
+	if before != nil {
+		q = q.Where("(f.created_at, f.followee_id) < (?, ?)", before.CreatedAt, before.UserID)
+	}
+	return r.findFollowEdges(ctx, q, "f.created_at DESC, f.followee_id DESC", limit)
+}
+
+// ListFollowers 谁关注了某人。
+func (r *GormRepository) ListFollowers(ctx context.Context, userID int64, before *Cursor, limit int) ([]FollowEdge, error) {
+	q := r.db.WithContext(ctx).Table("follows f").
+		Select("f.follower_id AS user_id, f.created_at, u.username, u.bio, u.avatar_key").
+		Joins("JOIN users u ON u.id = f.follower_id").
+		Where("f.followee_id = ?", userID)
+	if before != nil {
+		q = q.Where("(f.created_at, f.follower_id) < (?, ?)", before.CreatedAt, before.UserID)
+	}
+	return r.findFollowEdges(ctx, q, "f.created_at DESC, f.follower_id DESC", limit)
+}
+
+func (r *GormRepository) findFollowEdges(ctx context.Context, q *gorm.DB, order string, limit int) ([]FollowEdge, error) {
+	var edges []FollowEdge
+	err := q.Order(order).Limit(limit + 1).Scan(&edges).Error
+	if err != nil {
+		return nil, err
+	}
+	return edges, nil
+}
+
+// IsFollowingMany 批量查 viewer 对一批用户的关注状态（列表页"回关"按钮）。
+func (r *GormRepository) IsFollowingMany(ctx context.Context, viewerID int64, userIDs []int64) (map[int64]bool, error) {
+	result := make(map[int64]bool, len(userIDs))
+	if viewerID <= 0 || len(userIDs) == 0 {
+		return result, nil
+	}
+	var rows []struct {
+		FolloweeID int64
+	}
+	err := r.db.WithContext(ctx).Table("follows").
+		Select("followee_id").
+		Where("follower_id = ? AND followee_id IN ?", viewerID, userIDs).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.FolloweeID] = true
+	}
+	return result, nil
 }

@@ -28,6 +28,7 @@ func IsValidUsername(name string) bool {
 
 var ErrInvalidParam = errors.New("invalid param")
 var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrInvalidImageKey = errors.New("image key invalid")
 var dummyHash = []byte("$2a$10$bSPKSKJUdh257leaWepIZeXFZXWgmWxvz6UaPXUFqWCzc28m6boDm")
 
 // 业务代码不 import hertz
@@ -36,6 +37,9 @@ type Repository interface {
 	FindByID(ctx context.Context, id int64) (*User, error)
 	FindByUsername(ctx context.Context, username string) (*User, error)
 	FindByEmail(ctx context.Context, email string) (*User, error)
+	FollowCounts(ctx context.Context, userID int64) (following, followers int64, err error)
+	IsFollowing(ctx context.Context, followerID, followeeID int64) (bool, error)
+	UpdateProfile(ctx context.Context, userID int64, bio *string, avatarKey *string) error
 }
 
 type TokenManager interface {
@@ -44,17 +48,55 @@ type TokenManager interface {
 }
 
 type Service struct {
-	repo      Repository
-	tokens    TokenManager
-	blacklist RefreshTokenBlacklist
+	repo          Repository
+	tokens        TokenManager
+	blacklist     RefreshTokenBlacklist
+	avatar        AvatarURLProvider
+	imageValidator ImageUploadValidator
 }
 
-func NewService(repo Repository, tokens TokenManager, blacklist RefreshTokenBlacklist) *Service {
+func NewService(repo Repository, tokens TokenManager, blacklist RefreshTokenBlacklist, avatar AvatarURLProvider, imageValidator ImageUploadValidator) *Service {
 	return &Service{
-		repo:      repo,
-		tokens:    tokens,
-		blacklist: blacklist,
+		repo:           repo,
+		tokens:         tokens,
+		blacklist:      blacklist,
+		avatar:         avatar,
+		imageValidator: imageValidator,
 	}
+}
+
+// AvatarURLProvider 消费侧接口：公开资料把 avatar_key 转成预签名 URL
+// （与视频 URL 同一机制，不暴露 MinIO key 寻址）。
+type AvatarURLProvider interface {
+	PresignGetURL(ctx context.Context, objectKey string) (string, error)
+}
+
+// ImageUploadValidator 消费侧接口：PATCH /me 的 avatar_key 必须校验
+// "文件真实上传 + 票证未被使用"，由 video 模块实现（main 装配）。
+type ImageUploadValidator interface {
+	ValidateImage(ctx context.Context, userID int64, objectKey string) error
+}
+
+type UpdateMeParams struct {
+	Bio       *string
+	AvatarKey *string
+}
+
+// UpdateMe 更新自己的资料。avatar_key 必须通过图片上传校验，
+// 防伪造引用他人文件（与视频 object_key 同一防伪哲学）。
+// 校验失败统一映射为 ErrInvalidImageKey，不依赖 video 模块的哨兵类型。
+func (s *Service) UpdateMe(ctx context.Context, userID int64, p UpdateMeParams) (*PublicUser, error) {
+	if p.AvatarKey != nil {
+		if err := s.imageValidator.ValidateImage(ctx, userID, *p.AvatarKey); err != nil {
+			slog.Warn("validate image failed", "user_id", userID, "err", err)
+			return nil, ErrInvalidImageKey
+		}
+	}
+	if err := s.repo.UpdateProfile(ctx, userID, p.Bio, p.AvatarKey); err != nil {
+		slog.Error("update profile failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("update profile: %w", err)
+	}
+	return s.GetProfile(ctx, userID)
 }
 
 type RegisterParams struct {
@@ -81,6 +123,61 @@ type PublicUser struct {
 	Username  string  `json:"username"`
 	Bio       string  `json:"bio"`
 	AvatarKey *string `json:"avatar_key"`
+}
+
+// PublicProfile 公开资料：不含 email（隐私），带社交计数与个性化字段。
+type PublicProfile struct {
+	UserID         int64   `json:"user_id"`
+	Username       string  `json:"username"`
+	Bio            string  `json:"bio"`
+	AvatarURL      *string `json:"avatar_url"`
+	FollowingCount int64   `json:"following_count"`
+	FollowersCount int64   `json:"followers_count"`
+	IsFollowing    bool    `json:"is_following"`
+	IsMe           bool    `json:"is_me"`
+}
+
+// GetPublicProfile 公开资料：viewerID=0（匿名）时 is_following 恒 false。
+func (s *Service) GetPublicProfile(ctx context.Context, viewerID, userID int64) (*PublicProfile, error) {
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		slog.Error("find user for profile failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("find user for profile: %w", err)
+	}
+	following, followers, err := s.repo.FollowCounts(ctx, userID)
+	if err != nil {
+		slog.Error("follow counts failed", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("follow counts: %w", err)
+	}
+	p := &PublicProfile{
+		UserID:         u.UserID,
+		Username:       u.Username,
+		Bio:            u.Bio,
+		FollowingCount: following,
+		FollowersCount: followers,
+		IsMe:           viewerID == userID,
+	}
+	if viewerID > 0 && viewerID != userID {
+		following, err := s.repo.IsFollowing(ctx, viewerID, userID)
+		if err != nil {
+			slog.Error("is following failed", "viewer_id", viewerID, "user_id", userID, "err", err)
+			return nil, fmt.Errorf("is following: %w", err)
+		}
+		p.IsFollowing = following
+	}
+	if u.AvatarKey != nil {
+		// 头像签名失败只降级为 null（装饰性字段，不值得让整个资料 500）
+		url, err := s.avatar.PresignGetURL(ctx, *u.AvatarKey)
+		if err != nil {
+			slog.Warn("presign avatar url failed", "user_id", userID, "err", err)
+		} else {
+			p.AvatarURL = &url
+		}
+	}
+	return p, nil
 }
 
 func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, error) {

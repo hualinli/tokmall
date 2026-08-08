@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ type fakeRepo struct {
 	videos  map[int64]*Video
 	nextID  int64
 	tickets map[string]*UploadTicket // key: objectKey
+	likes   map[string]bool          // key: "{userID}-{videoID}"
 }
 
 func newFakeRepo() *fakeRepo {
@@ -23,6 +26,7 @@ func newFakeRepo() *fakeRepo {
 		videos:  make(map[int64]*Video),
 		nextID:  1,
 		tickets: make(map[string]*UploadTicket),
+		likes:   make(map[string]bool),
 	}
 }
 
@@ -91,6 +95,22 @@ func (f *fakeRepo) ListByAuthor(ctx context.Context, authorID int64, before *Cur
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeRepo) LikeCounts(_ context.Context, videoIDs []int64) (map[int64]int64, error) {
+	counts := map[int64]int64{}
+	for _, id := range videoIDs {
+		for k := range f.likes {
+			if strings.HasSuffix(k, "-"+strconv.FormatInt(id, 10)) {
+				counts[id]++
+			}
+		}
+	}
+	return counts, nil
+}
+
+func (f *fakeRepo) IsLiked(_ context.Context, userID, videoID int64) (bool, error) {
+	return f.likes[fmt.Sprintf("%d-%d", userID, videoID)], nil
 }
 
 type fakeStorage struct {
@@ -489,6 +509,8 @@ func TestDeleteRemovesObjects(t *testing.T) {
 	registerTicket(t, repo, 42, "videos/42/u1.mp4")
 	store.objectSizes["videos/42/u1.mp4"] = 1024
 	cover := "covers/42/c1.jpg"
+	registerTicket(t, repo, 42, cover)
+	store.objectSizes[cover] = 2048
 	res, err := svc.Create(context.Background(), 42, CreateParams{
 		Title: "t", ObjectKey: "videos/42/u1.mp4", CoverKey: &cover, DurationSeconds: 10,
 	})

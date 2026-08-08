@@ -117,10 +117,19 @@ func run() error {
 		feedInvalidator = redisFeedCache
 	}
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
+	videoService := video.NewService(
+		video.NewRepository(db),
+		storageClient,
+		cfg.UploadURLExpiry,
+		cfg.CursorSecret,
+		feedInvalidator,
+	)
 	userHandler := user.NewHandler(user.NewService(
 		user.NewRepository(db),
 		tokenManager,
 		user.NewRedisRefreshTokenBlacklist(redisClient),
+		storageClient,
+		videoService,
 	))
 	feedHandler := feed.NewHandler(feed.NewService(
 		feed.NewRepository(db),
@@ -129,14 +138,12 @@ func run() error {
 		feedCache,
 		observability.NewFeedCacheStats(metricsRegistry),
 	))
-	videoHandler := video.NewHandler(video.NewService(
-		video.NewRepository(db),
+	videoHandler := video.NewHandler(videoService)
+	interactionHandler := interaction.NewHandler(interaction.NewService(
+		interaction.NewRepository(db),
 		storageClient,
-		cfg.UploadURLExpiry,
 		cfg.CursorSecret,
-		feedInvalidator,
 	))
-	interactionHandler := interaction.NewHandler(interaction.NewService(interaction.NewRepository(db)))
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -186,6 +193,10 @@ func registerRoutes(h *server.Hertz, r routes) {
 		c.Response.SetBody(api.Spec)
 	})
 	r.user.RegisterRoutes(g)
+	optional := g.Group("/", middleware.AuthOptional(r.token))
+	r.user.RegisterOptionalRoutes(optional)
+	r.video.RegisterOptionalRoutes(optional)
+	r.interaction.RegisterOptionalRoutes(optional)
 	protected := g.Group("/", middleware.AuthMiddleware(r.token))
 	r.user.RegisterProtectedRoutes(protected)
 	r.video.RegisterProtectedRoutes(protected)
