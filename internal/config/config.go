@@ -17,8 +17,8 @@ const (
 	defaultDBSSLMode      = "disable"
 	defaultMinIOEndpoint  = "localhost:9000"
 	defaultMinIOBucket    = "tokmall"
-	defaultMinIOPublicURL = "http://localhost:9000"
 	defaultUploadExpiry   = 15 * time.Minute
+	defaultDownloadExpiry = 2 * time.Hour
 	defaultCursorSecret   = "change-me-cursor-secret"
 	defaultRedisAddr      = "localhost:6380"
 	defaultRedisDB        = 0
@@ -61,10 +61,10 @@ type MinIOConfig struct {
 	AccessKey string
 	SecretKey string
 	Bucket    string
-	PublicURL string
 	UseSSL    bool
 
-	UploadURLExpiry time.Duration
+	UploadURLExpiry   time.Duration
+	DownloadURLExpiry time.Duration
 }
 
 func Load() (*Config, error) {
@@ -85,13 +85,13 @@ func Load() (*Config, error) {
 			SSLMode:  envString("DB_SSL_MODE", defaultDBSSLMode),
 		},
 		MinIOConfig: MinIOConfig{
-			Endpoint:        envString("MINIO_ENDPOINT", defaultMinIOEndpoint),
-			AccessKey:       envString("MINIO_ACCESS_KEY", "tokmall"),
-			SecretKey:       envString("MINIO_SECRET_KEY", "tokmall123"),
-			Bucket:          envString("MINIO_BUCKET", defaultMinIOBucket),
-			PublicURL:       envString("MINIO_PUBLIC_URL", defaultMinIOPublicURL),
-			UseSSL:          envString("MINIO_USE_SSL", "") == "true",
-			UploadURLExpiry: envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
+			Endpoint:          envString("MINIO_ENDPOINT", defaultMinIOEndpoint),
+			AccessKey:         envString("MINIO_ACCESS_KEY", "tokmall"),
+			SecretKey:         envString("MINIO_SECRET_KEY", "tokmall123"),
+			Bucket:            envString("MINIO_BUCKET", defaultMinIOBucket),
+			UseSSL:            envString("MINIO_USE_SSL", "") == "true",
+			UploadURLExpiry:   envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
+			DownloadURLExpiry: envDuration("MINIO_DOWNLOAD_EXPIRY", defaultDownloadExpiry),
 		},
 		RedisConfig: RedisConfig{
 			Addr:             envString("REDIS_ADDR", defaultRedisAddr),

@@ -123,8 +123,8 @@ func (f *fakeStorage) StatObject(ctx context.Context, objectKey string) (int64, 
 	return size, nil
 }
 
-func (f *fakeStorage) PublicURL(objectKey string) string {
-	return "http://minio.local/" + objectKey
+func (f *fakeStorage) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
+	return "http://minio.local/signed/" + objectKey, nil
 }
 
 func (f *fakeStorage) DeleteObject(ctx context.Context, objectKey string) error {

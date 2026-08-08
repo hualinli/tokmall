@@ -14,10 +14,10 @@ import (
 var ErrObjectNotFound = errors.New("object not found")
 
 type Client struct {
-	mc        *minio.Client
-	bucket    string
-	publicURL string
-	expiry    time.Duration
+	mc             *minio.Client
+	bucket         string
+	uploadExpiry   time.Duration
+	downloadExpiry time.Duration
 }
 
 func New(cfg config.MinIOConfig) (*Client, error) {
@@ -29,10 +29,10 @@ func New(cfg config.MinIOConfig) (*Client, error) {
 		return nil, fmt.Errorf("init minio client: %w", err)
 	}
 	c := &Client{
-		mc:        mc,
-		bucket:    cfg.Bucket,
-		publicURL: cfg.PublicURL,
-		expiry:    cfg.UploadURLExpiry,
+		mc:             mc,
+		bucket:         cfg.Bucket,
+		uploadExpiry:   cfg.UploadURLExpiry,
+		downloadExpiry: cfg.DownloadURLExpiry,
 	}
 	if err := c.ensureBucket(context.Background()); err != nil {
 		return nil, err
@@ -56,9 +56,21 @@ func (c *Client) ensureBucket(ctx context.Context) error {
 
 // PresignPutURL 生成指定 object 的预签名 PUT URL，客户端可直传。
 func (c *Client) PresignPutURL(ctx context.Context, objectKey string) (string, error) {
-	url, err := c.mc.PresignedPutObject(ctx, c.bucket, objectKey, c.expiry)
+	url, err := c.mc.PresignedPutObject(ctx, c.bucket, objectKey, c.uploadExpiry)
 	if err != nil {
 		return "", fmt.Errorf("presign put url: %w", err)
+	}
+	return url.String(), nil
+}
+
+// PresignGetURL 生成短时效的预签名 GET URL：播放/封面的唯一出口。
+// 签名即授权——服务器在签发那一刻决定"给不给钥匙"，删除即时性由此而来：
+// 对象被删后，已发出的 URL 指向空对象（404），播放自然失败。
+// bucket 保持私有（默认），不再依赖"公开读"这种无法撤销的假设。
+func (c *Client) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
+	url, err := c.mc.PresignedGetObject(ctx, c.bucket, objectKey, c.downloadExpiry, nil)
+	if err != nil {
+		return "", fmt.Errorf("presign get url: %w", err)
 	}
 	return url.String(), nil
 }
@@ -80,9 +92,4 @@ func (c *Client) StatObject(ctx context.Context, objectKey string) (int64, error
 // DeleteObject 删除 object。
 func (c *Client) DeleteObject(ctx context.Context, objectKey string) error {
 	return c.mc.RemoveObject(ctx, c.bucket, objectKey, minio.RemoveObjectOptions{})
-}
-
-// PublicURL 拼接对象公共访问 URL。
-func (c *Client) PublicURL(objectKey string) string {
-	return fmt.Sprintf("%s/%s/%s", c.publicURL, c.bucket, objectKey)
 }

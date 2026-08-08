@@ -22,22 +22,22 @@ type Repository interface {
 	ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error)
 }
 
-// PublicURLProvider 是 storage.Client 的最小投影：只声明 feed 需要的
-// 一个方法，避免 feed 与整个 MinIO 客户端耦合。
-type PublicURLProvider interface {
-	PublicURL(objectKey string) string
+// PlayURLProvider 是 storage.Client 的最小投影：feed 只消费"签发播放 URL"
+// 这一个能力。签名即授权：URL 短时效，删除后旧 URL 指向空对象（404）。
+type PlayURLProvider interface {
+	PresignGetURL(ctx context.Context, objectKey string) (string, error)
 }
 
 type Service struct {
 	repo    Repository
 	cursor  *codec
-	storage PublicURLProvider
+	storage PlayURLProvider
 	cache   FirstPageCache
 	stats   CacheStats
 	group   singleflight.Group
 }
 
-func NewService(repo Repository, codec *codec, storage PublicURLProvider, cache FirstPageCache, stats CacheStats) *Service {
+func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache FirstPageCache, stats CacheStats) *Service {
 	if stats == nil {
 		stats = noopStats{}
 	}
@@ -147,10 +147,19 @@ func (s *Service) loadPage(ctx context.Context, before *Cursor, limit int) (*Fee
 			PublishedAt:     v.PublishedAt,
 		}
 		if v.CoverKey != nil {
-			cover := s.storage.PublicURL(*v.CoverKey)
+			cover, err := s.storage.PresignGetURL(ctx, *v.CoverKey)
+			if err != nil {
+				slog.Error("presign cover url failed", "err", err)
+				return nil, fmt.Errorf("presign cover url: %w", err)
+			}
 			item.CoverURL = &cover
 		}
-		item.VideoURL = s.storage.PublicURL(v.ObjectKey)
+		videoURL, err := s.storage.PresignGetURL(ctx, v.ObjectKey)
+		if err != nil {
+			slog.Error("presign video url failed", "err", err)
+			return nil, fmt.Errorf("presign video url: %w", err)
+		}
+		item.VideoURL = videoURL
 		result.Items = append(result.Items, item)
 	}
 	if hasMore {

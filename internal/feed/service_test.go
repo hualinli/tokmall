@@ -68,8 +68,8 @@ func (f *fakeCache) Del(ctx context.Context) error {
 
 type fakeURLProvider struct{}
 
-func (fakeURLProvider) PublicURL(objectKey string) string {
-	return "http://minio.local/" + objectKey
+func (fakeURLProvider) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
+	return "http://minio.local/signed/" + objectKey, nil
 }
 
 func ts(offset time.Duration) *time.Time {
@@ -157,7 +157,7 @@ func TestList_FirstPage(t *testing.T) {
 	require.Equal(t, int64(4), res.Items[1].VideoID)
 	require.True(t, res.HasMore)
 	require.NotEmpty(t, res.NextCursor)
-	require.Equal(t, "http://minio.local/o5", res.Items[0].VideoURL)
+	require.Equal(t, "http://minio.local/signed/o5", res.Items[0].VideoURL)
 }
 
 func TestList_NextPageNoOverlap(t *testing.T) {

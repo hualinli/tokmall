@@ -35,8 +35,8 @@ type Repository interface {
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
 type Storage interface {
 	PresignPutURL(ctx context.Context, objectKey string) (string, error)
+	PresignGetURL(ctx context.Context, objectKey string) (string, error)
 	StatObject(ctx context.Context, objectKey string) (int64, error)
-	PublicURL(objectKey string) string
 	DeleteObject(ctx context.Context, objectKey string) error
 }
 
@@ -314,10 +314,19 @@ func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorR
 			CreatedAt:       v.CreatedAt,
 		}
 		if v.CoverKey != nil {
-			cover := s.storage.PublicURL(*v.CoverKey)
+			cover, err := s.storage.PresignGetURL(ctx, *v.CoverKey)
+			if err != nil {
+				slog.Error("presign cover url failed", "err", err)
+				return nil, fmt.Errorf("presign cover url: %w", err)
+			}
 			item.CoverURL = &cover
 		}
-		item.VideoURL = s.storage.PublicURL(v.ObjectKey)
+		videoURL, err := s.storage.PresignGetURL(ctx, v.ObjectKey)
+		if err != nil {
+			slog.Error("presign video url failed", "err", err)
+			return nil, fmt.Errorf("presign video url: %w", err)
+		}
+		item.VideoURL = videoURL
 		result.Items = append(result.Items, item)
 	}
 	if hasMore {
@@ -351,11 +360,16 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 	if v.AuthorID != viewerID && v.Status != StatusPublished {
 		return nil, ErrNotFound
 	}
+	videoURL, err := s.storage.PresignGetURL(ctx, v.ObjectKey)
+	if err != nil {
+		slog.Error("presign video url failed", "video_id", videoID, "err", err)
+		return nil, fmt.Errorf("presign video url: %w", err)
+	}
 	return &VideoDetail{
 		VideoID:         v.ID,
 		AuthorID:        v.AuthorID,
 		Title:           v.Title,
-		VideoURL:        s.storage.PublicURL(v.ObjectKey),
+		VideoURL:        videoURL,
 		DurationSeconds: v.DurationSeconds,
 		Status:          v.Status,
 		PublishedAt:     v.PublishedAt,
