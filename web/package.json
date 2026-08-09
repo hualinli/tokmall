@@ -31,6 +31,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/router-cli": "^1.167.25",
     "@tanstack/router-plugin": "^1.168.27",
@@ -44,6 +45,7 @@
     "jsdom": "^30.0.1",
     "openapi-typescript": "^7.13.0",
     "oxlint": "^1.75.0",
+    "playwright": "^1.62.1",
     "prettier": "^3.9.6",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",

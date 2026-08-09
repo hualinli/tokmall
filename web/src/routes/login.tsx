@@ -1,14 +1,28 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
+import { z } from 'zod'
+import { LoginForm } from '../features/auth/login-form'
+
+const loginSearchSchema = z.object({
+  // 未登录点赞/关注/进入受保护页时回跳地址
+  redirect: z.string().optional(),
+})
 
 export const Route = createFileRoute('/login')({
+  validateSearch: loginSearchSchema,
   component: LoginPage,
 })
 
 function LoginPage() {
+  const { redirect } = Route.useSearch()
   return (
-    <div className="py-16 text-center text-zinc-400">
-      <p className="text-2xl font-semibold text-zinc-200">登录占位</p>
-      <p className="mt-2 text-sm">F1 里程碑接入 /auth/login + token 生命周期</p>
+    <div className="flex w-full flex-1 flex-col items-center justify-center py-16">
+      <LoginForm redirect={redirect} />
+      <p className="mt-4 text-sm text-zinc-500">
+        还没有账号？{' '}
+        <Link to="/register" className="text-zinc-300 hover:underline">
+          去注册
+        </Link>
+      </p>
     </div>
   )
 }
