@@ -44,7 +44,7 @@ func AuthOptional(manager *token.Manager) app.HandlerFunc {
 
 // parseBearer 解析 Bearer access token 并注入 user_id/role。
 // 失败时已 Abort 并返回 false。
-func parseBearer(c context.Context, ctx *app.RequestContext, manager *token.Manager) bool {
+func parseBearer(_ context.Context, ctx *app.RequestContext, manager *token.Manager) bool {
 	authHeader := string(ctx.GetHeader("Authorization"))
 	if authHeader == "" {
 		response.Abort(ctx, response.ErrMissingAuthHeader)

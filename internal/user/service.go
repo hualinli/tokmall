@@ -48,10 +48,10 @@ type TokenManager interface {
 }
 
 type Service struct {
-	repo          Repository
-	tokens        TokenManager
-	blacklist     RefreshTokenBlacklist
-	avatar        AvatarURLProvider
+	repo           Repository
+	tokens         TokenManager
+	blacklist      RefreshTokenBlacklist
+	avatar         AvatarURLProvider
 	imageValidator ImageUploadValidator
 }
 
@@ -326,7 +326,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResult
 	if err != nil || !claims.IsRefresh() {
 		return nil, ErrInvalidCredentials
 	}
-	remaining := claims.ExpiresAt.Time.Sub(time.Now())
+	remaining := time.Until(claims.ExpiresAt.Time)
 	if remaining <= 0 {
 		return nil, ErrInvalidCredentials
 	}
@@ -373,7 +373,7 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	if err != nil || !claims.IsRefresh() {
 		return nil
 	}
-	remaining := claims.ExpiresAt.Time.Sub(time.Now())
+	remaining := time.Until(claims.ExpiresAt.Time)
 	if remaining <= 0 {
 		return nil
 	}
