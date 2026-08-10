@@ -5,17 +5,18 @@ import type { components } from '../../api/types'
 
 export const VIDEO_MAX_SIZE = 536_870_912 // 512MB（契约上限）
 export const VIDEO_MIN_SIZE = 1_048_576 // 1MB
+export const IMAGE_MAX_SIZE = 5 * 1_048_576 // 5MB（契约：图片 1KB-5MB）
 
 export type UploadStage = 'idle' | 'requesting' | 'uploading' | 'creating' | 'done' | 'error'
 
 // 与 openapi.yaml UploadURLRequest.content_type 枚举精确对齐
-type VideoContentType = Extract<
+type UploadContentType = Extract<
   components['schemas']['UploadURLRequest']['content_type'],
   string
 >
 
 /** 文件扩展名 → 契约 content_type（与 openapi.yaml 枚举对齐） */
-export function contentTypeForFile(file: File): VideoContentType | null {
+export function contentTypeForFile(file: File): UploadContentType | null {
   const ext = file.name.split('.').pop()?.toLowerCase()
   switch (ext) {
     case 'mp4':
@@ -24,6 +25,22 @@ export function contentTypeForFile(file: File): VideoContentType | null {
       return 'video/webm'
     case 'mov':
       return 'video/quicktime'
+    default:
+      return null
+  }
+}
+
+/** 封面图片：扩展名 → image 类型 */
+export function contentTypeForImage(file: File): UploadContentType | null {
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg'
+    case 'png':
+      return 'image/png'
+    case 'webp':
+      return 'image/webp'
     default:
       return null
   }
@@ -89,7 +106,24 @@ export interface UploadFlowResult {
 }
 
 /**
+ * 上传图片到预签名 URL（封面）。小文件，无需进度条。
+ */
+async function uploadImage(
+  file: File,
+  contentType: UploadContentType,
+): Promise<string> {
+  const ticket = await client.POST('/api/v1/videos/upload-url', {
+    body: { filename: file.name, file_size: file.size, content_type: contentType },
+  })
+  if (ticket.error) throw new Error(apiErrorMessage(ticket.error))
+  if (!ticket.data) throw new Error('未获取到封面上传地址')
+  await putWithProgress(ticket.data.upload_url, file, contentType, () => {})
+  return ticket.data.object_key
+}
+
+/**
  * 三步上传状态机：票证 → PUT（进度）→ 建记录。
+ * 封面可选：若提供，先传图片票证再传视频。
  * 任一步失败进 error 态；重试从「重新申请票证」开始（旧票证可能已过期）。
  */
 export function useUploadFlow() {
@@ -98,7 +132,7 @@ export function useUploadFlow() {
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<UploadFlowResult | null>(null)
 
-  async function start(file: File, title: string) {
+  async function start(file: File, title: string, coverFile?: File | null) {
     setResult(null)
     setError(null)
 
@@ -114,6 +148,18 @@ export function useUploadFlow() {
       setError('文件大小需在 1MB - 512MB 之间')
       return false
     }
+    if (coverFile) {
+      if (!contentTypeForImage(coverFile)) {
+        setStage('error')
+        setError('封面仅支持 jpg / png / webp')
+        return false
+      }
+      if (coverFile.size > IMAGE_MAX_SIZE) {
+        setStage('error')
+        setError('封面大小需在 5MB 以内')
+        return false
+      }
+    }
 
     try {
       // 2. 读时长
@@ -124,7 +170,15 @@ export function useUploadFlow() {
         return false
       }
 
-      // 3. 申请票证
+      // 3. 封面（可选）：图片票证 + PUT
+      let coverKey: string | undefined
+      if (coverFile) {
+        setStage('uploading')
+        setProgress(0)
+        coverKey = await uploadImage(coverFile, contentTypeForImage(coverFile)!)
+      }
+
+      // 4. 申请视频票证
       setStage('requesting')
       const ticket = await client.POST('/api/v1/videos/upload-url', {
         body: { filename: file.name, file_size: file.size, content_type: contentType },
@@ -132,18 +186,19 @@ export function useUploadFlow() {
       if (ticket.error) throw new Error(apiErrorMessage(ticket.error))
       if (!ticket.data) throw new Error('未获取到上传地址')
 
-      // 4. PUT（带进度）
+      // 5. PUT（带进度）
       setStage('uploading')
       setProgress(0)
       await putWithProgress(ticket.data.upload_url, file, contentType, setProgress)
 
-      // 5. 建记录
+      // 6. 建记录
       setStage('creating')
       const created = await client.POST('/api/v1/videos', {
         body: {
           title,
           object_key: ticket.data.object_key,
           duration_seconds: duration,
+          ...(coverKey ? { cover_key: coverKey } : {}),
         },
       })
       if (created.error) {

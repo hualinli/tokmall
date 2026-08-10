@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { Play, RefreshCw, Volume2, VolumeX } from 'lucide-react'
 import type { components } from '../../api/types'
 import { LikeButton } from '../interaction/like-button'
@@ -92,18 +93,24 @@ export function FeedCard({ item, active, onActivate, onRetry }: FeedCardProps) {
       <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent px-6 pb-8 pt-20">
         <p className="line-clamp-2 text-lg font-semibold drop-shadow">{item.title}</p>
         <div className="mt-3 flex items-center gap-2">
-          {item.author.avatar_url ? (
-            <img
-              src={item.author.avatar_url}
-              alt={item.author.username}
-              className="h-7 w-7 rounded-full object-cover"
-            />
-          ) : (
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-600 text-xs font-semibold">
-              {item.author.username.slice(0, 1).toUpperCase()}
-            </span>
-          )}
-          <span className="text-sm text-zinc-200">@{item.author.username}</span>
+          <Link
+            to="/user/$id"
+            params={{ id: String(item.author.user_id) }}
+            className="pointer-events-auto flex items-center gap-2 rounded-lg hover:opacity-80"
+          >
+            {item.author.avatar_url ? (
+              <img
+                src={item.author.avatar_url}
+                alt={item.author.username}
+                className="h-7 w-7 rounded-full object-cover"
+              />
+            ) : (
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-600 text-xs font-semibold">
+                {item.author.username.slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <span className="text-sm text-zinc-200">@{item.author.username}</span>
+          </Link>
         </div>
       </div>
 

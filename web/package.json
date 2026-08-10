@@ -11,6 +11,7 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "oxlint",
     "test": "vitest",
+    "test:e2e": "playwright test",
     "gen": "pnpm gen:api && pnpm gen:routes",
     "gen:api": "openapi-typescript ../internal/api/openapi.yaml -o src/api/types.ts",
     "gen:routes": "tsr generate"

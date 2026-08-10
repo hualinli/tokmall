@@ -26,3 +26,7 @@ dist-ssr
 # generated from internal/api/openapi.yaml + routes/
 src/api/types.ts
 src/routeTree.gen.ts
+
+# playwright artifacts
+playwright-report/
+test-results/

@@ -16,9 +16,9 @@ function BackendStatus() {
     refetchInterval: 30_000,
     retry: 1,
   })
-  if (isPending) return <span className="text-xs text-zinc-600">…</span>
-  if (isError) return <span className="text-xs text-red-400">后端离线</span>
-  return <span className="text-xs text-emerald-500">●</span>
+  if (isPending) return <span className="hidden text-xs text-zinc-600 sm:inline">…</span>
+  if (isError) return <span className="hidden text-xs text-red-400 sm:inline">后端离线</span>
+  return <span className="hidden text-xs text-emerald-500 sm:inline">●</span>
 }
 
 export function Header() {
@@ -71,7 +71,7 @@ export function Header() {
                     {user?.username?.slice(0, 1).toUpperCase()}
                   </span>
                 )}
-                <span className="max-w-24 truncate">{user?.username}</span>
+                <span className="hidden max-w-24 truncate sm:inline">{user?.username}</span>
               </Link>
               <Button variant="ghost" size="sm" onClick={handleLogout}>
                 退出

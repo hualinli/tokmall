@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { CheckCircle2, Send } from 'lucide-react'
 import { Dropzone } from '../features/upload/upload-dropzone'
+import { CoverPicker } from '../features/upload/cover-picker'
 import { useUploadFlow, type UploadStage } from '../features/upload/use-upload-flow'
 import { Button } from '../components/ui/button'
 import { Card, CardTitle, Field } from '../components/ui/card'
@@ -31,6 +32,7 @@ function UploadPage() {
   const queryClient = useQueryClient()
   const flow = useUploadFlow()
   const [file, setFile] = useState<File | null>(null)
+  const [coverFile, setCoverFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
 
   const canStart =
@@ -38,7 +40,7 @@ function UploadPage() {
 
   async function handleStart() {
     if (!file || !title.trim()) return
-    const ok = await flow.start(file, title.trim())
+    const ok = await flow.start(file, title.trim(), coverFile)
     if (ok) {
       queryClient.invalidateQueries({ queryKey: ['my-videos'] })
       toast.success('上传成功，待发布')
@@ -69,6 +71,12 @@ function UploadPage() {
               disabled={flow.stage === 'uploading' || flow.stage === 'creating'}
             />
           </Field>
+
+          <CoverPicker
+            cover={coverFile}
+            onSelect={setCoverFile}
+            onClear={() => setCoverFile(null)}
+          />
 
           {/* 进度区 */}
           {(flow.stage === 'requesting' ||
