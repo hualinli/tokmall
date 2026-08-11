@@ -114,7 +114,7 @@ func TestListFollowing_WithHotRanker(t *testing.T) {
 		follows: map[int64][]int64{7: {1, 2}},
 		plays:   map[int64]int64{11: 500, 9: 400, 12: 300, 10: 200, 8: 100},
 	}
-	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil, HotRanker{})
+	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil, nil, HotRanker{})
 
 	result, err := svc.ListFollowing(context.Background(), 7, 5, "")
 	require.NoError(t, err)

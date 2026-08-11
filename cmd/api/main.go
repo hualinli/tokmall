@@ -111,10 +111,14 @@ func run() error {
 	// 关闭时会得到"typed nil"——接口判 nil 为真但方法调用即 panic。
 	var feedCache feed.FirstPageCache
 	var feedInvalidator video.FeedCacheInvalidator
+	var followingCache feed.FollowingFeedCache
 	if cfg.FeedCacheEnabled {
 		redisFeedCache := feed.NewRedisFeedCache(redisClient, cfg.FeedCacheTTL)
 		feedCache = redisFeedCache
 		feedInvalidator = redisFeedCache
+	}
+	if cfg.FollowingCacheEnabled {
+		followingCache = feed.NewRedisFollowingFeedCache(redisClient, cfg.FeedCacheTTL)
 	}
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
 	videoService := video.NewService(
@@ -136,6 +140,7 @@ func run() error {
 		feed.NewCodec(cfg.CursorSecret),
 		storageClient,
 		feedCache,
+		followingCache,
 		observability.NewFeedCacheStats(metricsRegistry),
 		newRanker(cfg.FeedRankStrategy),
 	))

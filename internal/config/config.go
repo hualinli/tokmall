@@ -8,24 +8,25 @@ import (
 )
 
 const (
-	defaultServerPort     = "8080"
-	defaultDBHost         = "localhost"
-	defaultDBPort         = "5432"
-	defaultDBUser         = "tokmall"
-	defaultDBPassword     = "tokmall"
-	defaultDBDatabase     = "tokmall"
-	defaultDBSSLMode      = "disable"
-	defaultMinIOEndpoint  = "localhost:9000"
-	defaultMinIOBucket    = "tokmall"
-	defaultUploadExpiry   = 15 * time.Minute
-	defaultDownloadExpiry = 2 * time.Hour
-	defaultAvatarExpiry   = 7 * 24 * time.Hour
-	defaultCursorSecret   = "change-me-cursor-secret"
-	defaultRedisAddr      = "localhost:6380"
-	defaultRedisDB        = 0
-	defaultFeedCacheTTL   = 60 * time.Second
-	defaultFeedCacheOn    = true
-	defaultRankStrategy   = "time"
+	defaultServerPort       = "8080"
+	defaultDBHost           = "localhost"
+	defaultDBPort           = "5432"
+	defaultDBUser           = "tokmall"
+	defaultDBPassword       = "tokmall"
+	defaultDBDatabase       = "tokmall"
+	defaultDBSSLMode        = "disable"
+	defaultMinIOEndpoint    = "localhost:9000"
+	defaultMinIOBucket      = "tokmall"
+	defaultUploadExpiry     = 15 * time.Minute
+	defaultDownloadExpiry   = 2 * time.Hour
+	defaultAvatarExpiry     = 7 * 24 * time.Hour
+	defaultCursorSecret     = "change-me-cursor-secret"
+	defaultRedisAddr        = "localhost:6380"
+	defaultRedisDB          = 0
+	defaultFeedCacheTTL     = 60 * time.Second
+	defaultFeedCacheOn      = true
+	defaultFollowingCacheOn = true
+	defaultRankStrategy     = "time"
 )
 
 type Config struct {
@@ -50,6 +51,8 @@ type RedisConfig struct {
 	// FeedCacheEnabled 是缓存开关：A/B 对照压测（同样数据量下
 	// 有缓存/无缓存）需要它，线上误配置关闭只会损失性能不失正确性。
 	FeedCacheEnabled bool
+	// FollowingCacheEnabled 关注 Feed 第一页缓存开关（同样用于 A/B 对照压测）。
+	FollowingCacheEnabled bool
 }
 
 type DBConfig struct {
@@ -103,11 +106,12 @@ func Load() (*Config, error) {
 			AvatarURLExpiry:   envDuration("MINIO_AVATAR_EXPIRY", defaultAvatarExpiry),
 		},
 		RedisConfig: RedisConfig{
-			Addr:             envString("REDIS_ADDR", defaultRedisAddr),
-			Password:         envString("REDIS_PASSWORD", ""),
-			DB:               envInt("REDIS_DB", defaultRedisDB),
-			FeedCacheTTL:     envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
-			FeedCacheEnabled: envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn),
+			Addr:                  envString("REDIS_ADDR", defaultRedisAddr),
+			Password:              envString("REDIS_PASSWORD", ""),
+			DB:                    envInt("REDIS_DB", defaultRedisDB),
+			FeedCacheTTL:          envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
+			FeedCacheEnabled:      envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn),
+			FollowingCacheEnabled: envBool("FEED_FOLLOWING_CACHE_ENABLED", defaultFollowingCacheOn),
 		},
 		FeedRankStrategy: envString("FEED_RANK_STRATEGY", defaultRankStrategy),
 	}, nil

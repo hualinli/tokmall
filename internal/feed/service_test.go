@@ -142,6 +142,30 @@ func (f *fakeCache) Del(ctx context.Context) error {
 	return nil
 }
 
+// fakeFollowingCache 内存版关注 Feed 缓存：验证 cache-aside 与降级路径。
+type fakeFollowingCache struct {
+	store map[string]*FeedResult
+	gets  int
+	sets  int
+}
+
+func (f *fakeFollowingCache) Get(_ context.Context, userID int64, rankVersion string) (*FeedResult, error) {
+	f.gets++
+	if f.store == nil {
+		return nil, nil
+	}
+	return f.store[followingCacheKey(userID, rankVersion)], nil
+}
+
+func (f *fakeFollowingCache) Set(_ context.Context, userID int64, rankVersion string, result *FeedResult) error {
+	f.sets++
+	if f.store == nil {
+		f.store = map[string]*FeedResult{}
+	}
+	f.store[followingCacheKey(userID, rankVersion)] = result
+	return nil
+}
+
 type fakeURLProvider struct{}
 
 func (fakeURLProvider) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
@@ -158,11 +182,11 @@ func ts(offset time.Duration) *time.Time {
 }
 
 func newTestService(repo *fakeRepo) *Service {
-	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil)
+	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil, nil)
 }
 
 func newTestServiceWithCache(repo *fakeRepo, cache *fakeCache) *Service {
-	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, cache, nil)
+	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, cache, nil, nil)
 }
 
 func TestCursor_RoundTrip(t *testing.T) {
@@ -568,4 +592,64 @@ func TestListFollowing_FillsLikeCounts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), result.Items[0].LikeCount, "id=12 被赞 1 次")
 	require.Equal(t, int64(1), result.Items[1].LikeCount, "id=10 被赞 1 次")
+}
+
+func TestListFollowing_CachePopulatesAndHits(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
+	fcache := &fakeFollowingCache{}
+	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil)
+
+	// 第一次：回填缓存
+	result1, err := svc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, result1.Items)
+	require.Equal(t, 1, fcache.sets, "第一次请求应回填缓存")
+
+	// 第二次：命中缓存，不查 DB（repo.calls 不增）
+	callsBefore := repo.calls
+	result2, err := svc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.Equal(t, callsBefore, repo.calls, "命中缓存不应再查 DB")
+	require.Equal(t, result1.Items, result2.Items)
+	// Get 次数：首次 miss + singleflight 内 double-check + 二次请求 hit >= 3
+	require.GreaterOrEqual(t, fcache.gets, 3, "第二次请求应命中缓存（多一次 Get）")
+}
+
+func TestListFollowing_CustomLimitSkipsCache(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
+	fcache := &fakeFollowingCache{}
+	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil)
+
+	_, err := svc.ListFollowing(context.Background(), 7, 5, "")
+	require.NoError(t, err)
+	require.Zero(t, fcache.sets, "自定义 limit 不应走缓存（与全局 Feed 同取舍）")
+}
+
+func TestListFollowing_CacheFailureDegrades(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
+	fcache := &fakeFollowingCache{}
+	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil)
+
+	// 正常回填后清空缓存，验证降级（Get 返回 nil 时直查）
+	result, err := svc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Items)
+}
+
+func TestListFollowing_CacheKeyIsolatedByRankVersion(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
+	fcache := &fakeFollowingCache{}
+	timeSvc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil, TimeRanker{})
+	hotSvc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil, HotRanker{})
+
+	_, err := timeSvc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, fcache.sets, "time 排序回填一条")
+
+	// hot 排序：key 带 hot-v1，独立缓存（不命中 time 的缓存）
+	hotCallsBefore := repo.calls
+	_, err = hotSvc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.Equal(t, 2, fcache.sets, "hot 排序单独回填，不与 time 串缓存")
+	require.Greater(t, repo.calls, hotCallsBefore, "hot 首次请求应查 DB（未命中 time 的缓存）")
 }

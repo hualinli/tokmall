@@ -38,18 +38,20 @@ type PlayURLProvider interface {
 }
 
 type Service struct {
-	repo    Repository
-	cursor  *codec
-	storage PlayURLProvider
-	cache   FirstPageCache
-	stats   CacheStats
-	group   singleflight.Group
-	ranker  Ranker
+	repo           Repository
+	cursor         *codec
+	storage        PlayURLProvider
+	cache          FirstPageCache
+	followingCache FollowingFeedCache
+	stats          CacheStats
+	group          singleflight.Group
+	ranker         Ranker
 }
 
-// NewService 构造 feed 服务。ranker 可选（variadic）：缺省 TimeRanker（现状语义）。
-// 排序演进（M8）时从 main 装配 HotRanker，并同步递增 CurrentRankVersion。
-func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache FirstPageCache, stats CacheStats, rankers ...Ranker) *Service {
+// NewService 构造 feed 服务。cache/followingCache 可为 nil（缓存禁用时降级直查）；
+// ranker 可选（variadic）：缺省 TimeRanker（现状语义）。
+// 排序演进（M8）时从 main 装配 HotRanker，并同步递增 rank_version。
+func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache FirstPageCache, followingCache FollowingFeedCache, stats CacheStats, rankers ...Ranker) *Service {
 	if stats == nil {
 		stats = noopStats{}
 	}
@@ -58,12 +60,13 @@ func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache Fi
 		ranker = rankers[0]
 	}
 	return &Service{
-		repo:    repo,
-		cursor:  codec,
-		storage: storage,
-		cache:   cache,
-		stats:   stats,
-		ranker:  ranker,
+		repo:           repo,
+		cursor:         codec,
+		storage:        storage,
+		cache:          cache,
+		followingCache: followingCache,
+		stats:          stats,
+		ranker:         ranker,
 	}
 }
 
@@ -161,6 +164,60 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 	if err != nil {
 		return nil, err
 	}
+	// 只缓存"无游标 + 默认 limit"的第一页：自定义 limit 与缓存内容绑定，
+	// 混用会串数据；深层翻页命中率低（与全局首页缓存 ADR-012 同取舍）。
+	var result *FeedResult
+	if before == nil && limit == defaultLimit && s.followingCache != nil {
+		result, err = s.followingFirstPage(ctx, viewerID)
+	} else {
+		result, err = s.loadFollowingPage(ctx, viewerID, before, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// like_count 不进缓存（点赞高频，避免失效风暴），每次请求实时批量查。
+	if err := s.fillLikeCounts(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// followingFirstPage 关注 Feed 第一页缓存：cache-aside + singleflight + double-check，
+// 与 firstPage 同模式（防击穿；缓存故障降级直查，Set 失败不影响本次响应）。
+// key 含 rank_version：切排序规则后旧缓存自然隔离。空关注用户的空结果也缓存
+// （避免 0 关注用户每次都查 DB）。
+func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*FeedResult, error) {
+	version := s.ranker.Version()
+	cached, err := s.followingCache.Get(ctx, viewerID, version)
+	if err != nil {
+		slog.Warn("following feed cache get failed", "user_id", viewerID, "err", err)
+	} else if cached != nil {
+		return cached, nil
+	}
+	v, err, _ := s.group.Do(followingCacheKey(viewerID, version), func() (any, error) {
+		// double-check：singleflight 只合并时间上重叠的调用，等待期间可能已回填。
+		cached, err := s.followingCache.Get(ctx, viewerID, version)
+		if err == nil && cached != nil {
+			return cached, nil
+		}
+		result, err := s.loadFollowingPage(ctx, viewerID, nil, defaultLimit)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.followingCache.Set(ctx, viewerID, version, result); err != nil {
+			slog.Warn("following feed cache set failed", "user_id", viewerID, "err", err)
+		}
+		return result, nil
+	})
+	if err != nil {
+		slog.Error("following first page load failed", "user_id", viewerID, "err", err)
+		return nil, err
+	}
+	return v.(*FeedResult), nil
+}
+
+// loadFollowingPage 关注 Feed 的查询 + 排序 + 拼 URL（无缓存路径，翻页共用）。
+func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before *Cursor, limit int) (*FeedResult, error) {
 	// 空关注列表短路：避免无谓的子查询（IN (SELECT ...) 返回空集仍有一次开销）。
 	followeeIDs, err := s.repo.ListFollowingIDs(ctx, viewerID)
 	if err != nil {
@@ -208,14 +265,7 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 	for i, c := range ranked {
 		sorted[i] = c.Video
 	}
-	result, err := s.assemble(ctx, sorted, limit, s.ranker.Version())
-	if err != nil {
-		return nil, err
-	}
-	if err := s.fillLikeCounts(ctx, result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return s.assemble(ctx, sorted, limit, s.ranker.Version())
 }
 
 // decodeCursor 解码游标并校验排序版本与调用方的排序语义一致。
