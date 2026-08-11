@@ -92,3 +92,65 @@ DB_PORT=5433 JWT_SECRET=test MINIO_ENDPOINT=localhost:9000 ./tokmall-api &
 curl -s localhost:8080/api/v1/feed > /dev/null && curl -s localhost:8080/api/v1/feed > /dev/null
 vegeta attack -targets=/tmp/feed-targets.txt -duration=10s -rate=0 -max-workers=50 | vegeta report
 ```
+
+---
+
+# M6 关注 Feed 压测基线（2026-08-11）
+
+> 同一台机器、同一个 e2e 容器。**个性化接口**：50 用户 token 轮换（vegeta target 文件），
+> 关注数分档造数（`scripts/seed_follows.sql`，幂等）。关注 Feed 无缓存（个性化未做缓存）。
+
+## 方法
+
+| 项 | 值 |
+|---|---|
+| 工具 | vegeta（`-duration=10s -rate=0 -max-workers=50`，与 M4 同口径） |
+| 端点 | `GET /api/v1/feed/following?limit=20`（Bearer 认证） |
+| 数据 | 30k 用户 / 1M 视频 / follows 分档（0/10/100/1000，各 50 压测用户） |
+| token | 本地 HS256 签发（`JWT_SECRET=e2e-secret`，sub=seed 用户 id） |
+| 服务 | `./bin/api`（debug 构建，time 模式；场景 E 为 hot 模式） |
+
+## 结果
+
+| 场景 | 关注数 | QPS | p50 | p90 | p99 | 备注 |
+|---|---|---|---|---|---|---|
+| A | 0（空短路） | **20,414** | 1.7ms | 4.2ms | 12.5ms | 一次索引查询 + 空返回，纯框架开销 |
+| B | 10 | 4,813 | 9.7ms | 14.4ms | 23.6ms | |
+| C | 100 | 1,601 | 29.4ms | 44.7ms | 64.5ms | |
+| D | 1000（上限） | **204** | 240ms | 353ms | 490ms | p50 是 DB 查询时间的 10 倍（连接池排队） |
+| E | 100 + HotRanker | 1,171 | 40.9ms | 57.5ms | 81.1ms | +PlayCounts/LikeCounts 聚合，-27% QPS |
+| 对照 | 全局 Feed 无缓存（M4） | 6,576 | 5.4ms | 14.1ms | - | 匿名 + 单表查询 |
+| 对照 | 全局 Feed 缓存（M4） | 11,337 | 3.1ms | 6.9ms | - | |
+
+## 瓶颈分析（EXPLAIN + 指标）
+
+1. **关注数增长 → 超线性退化**：10→1000 关注，QPS 从 4.8k 崩到 204（23 倍）。1000 关注（手册设定上限）当前不可用。
+2. **SQL 结构不是主瓶颈**：窗口函数（扫 34k 行截断 5k）与 LATERAL 每作者 LIMIT 5（5k 行、页读少 4.5 倍）实测耗时相近（22.8 vs 27.2ms）——1000 次索引 seek 的迭代开销抵消了页读收益。
+3. **每请求 3 次 DB 往返 + 连接池排队是主因**：`ListFollowingIDs`（0.2ms）+ `ListFollowingCandidates`（22.8ms）+ `LikeCounts`（20 条 IN GROUP BY）+ assemble 40 次预签名（本地 HMAC，CPU）。25 连接池 × 25ms/请求 ≈ 理论 1000 QPS，实测 204 说明还有排队放大。
+4. **空短路设计有效**：0 关注 20k QPS，框架开销可忽略——退化完全来自查询路径本身。
+5. **db_pool_wait_count 压测期间累计 ~115 万**：连接池硬饱和（与 M3 基线同症状，这次是关注 Feed 独有的查询重）。
+
+## 决策（由数据驱动，不在本次实现）
+
+| 候选 | 预期收益 | 判断 |
+|---|---|---|
+| **关注 Feed 第一页缓存**（个性化 key，TTL 30s，cache-aside + TTL 兜底，与 ADR-012 同哲学） | 最大：3 次 DB + 40 次签名 → 1 次 Redis GET，预计 100 关注从 1.6k → >5k | ✅ 下一步做 |
+| 合并 `ListFollowingIDs` 与候选查询（IN 子查询重复查 follows） | 小（省 0.2ms/请求） | 顺手做 |
+| LATERAL 替代窗口函数 | 无显著收益（27 vs 22.8ms） | ❌ 不值得，窗口函数可读性更好 |
+| 关注列表缓存（Redis） | 中，但结果缓存已覆盖 | 依赖上一个 |
+| 加连接池 | 掩耳盗铃（根因是每请求 DB 时间） | ❌ |
+
+## 可复现命令
+
+```bash
+# 造数（幂等）
+docker exec -i tokmall-postgres-e2e psql -U tokmall -d tokmall < scripts/seed_perf.sql
+docker exec -i tokmall-postgres-e2e psql -U tokmall -d tokmall < scripts/seed_follows.sql
+
+# 起服务 + 压测（target 文件生成见下）
+DB_PORT=5433 JWT_SECRET=e2e-secret MINIO_ENDPOINT=localhost:9000 ./bin/api &
+vegeta attack -targets=/tmp/feedbench/follow1000.targets -duration=10s -rate=0 -max-workers=50 | vegeta report
+
+# token/target 生成（python3，HS256，sub=seed 用户 id 9..208）
+# 档位: follow0=id 159..208, follow10=109..158, follow100=59..108, follow1000=9..58
+```
