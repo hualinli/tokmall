@@ -4,6 +4,7 @@ import { Play, RefreshCw, Volume2, VolumeX } from 'lucide-react'
 import type { components } from '../../api/types'
 import { LikeButton } from '../interaction/like-button'
 import { formatDuration } from './format'
+import { usePlayReport } from '../video/use-play-report'
 
 type FeedItem = components['schemas']['FeedItem']
 
@@ -27,6 +28,8 @@ export function FeedCard({ item, active, onActivate, onRetry }: FeedCardProps) {
   const [muted, setMuted] = useState(true)
   const [playing, setPlaying] = useState(false)
   const [failed, setFailed] = useState(false)
+  // 视频被激活（进入屏幕开始播放）即上报一次播放事件
+  usePlayReport(item.video_id, active)
 
   // 可见性 → 活跃（回调引用稳定，observer 只挂一次）
   const onActivateRef = useRef(onActivate)

@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX } from 'lucide-react'
+import { usePlayReport } from './use-play-report'
 
 /**
  * 详情页播放器：静音自动播放 + 手动开声（与 Feed 相同的浏览器策略处理）。
  * controls 保留给用户拖动进度条/全屏。
+ * 挂载即上报一次播放事件（videoId 由调用方传入）。
  */
-export function VideoPlayer({ src, autoPlay = true }: { src: string; autoPlay?: boolean }) {
+export function VideoPlayer({ src, videoId, autoPlay = true }: { src: string; videoId: number; autoPlay?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null)
   const [muted, setMuted] = useState(true)
+  usePlayReport(videoId, true)
 
   useEffect(() => {
     if (!autoPlay) return

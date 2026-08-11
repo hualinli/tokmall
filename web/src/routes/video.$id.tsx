@@ -89,7 +89,7 @@ function VideoPage() {
 
   return (
     <div className="mx-auto w-full max-w-2xl px-4 py-8">
-      <VideoPlayer src={data.video_url} />
+      <VideoPlayer src={data.video_url} videoId={data.video_id} />
 
       <div className="mt-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
