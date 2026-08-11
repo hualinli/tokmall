@@ -49,3 +49,20 @@ type UploadTicket struct {
 func (UploadTicket) TableName() string {
 	return "upload_tickets"
 }
+
+// PlayEvent 对应 play_events 表：播放事件流水。
+// EventID 由客户端生成（UUID v7），唯一约束提供幂等去重（网络重试不重复计数）。
+// 非去重语义：同一用户不同 event_id 的多次播放各自计数（产品层定义有效播放）。
+type PlayEvent struct {
+	EventID   string    `gorm:"column:event_id;primaryKey"`
+	UserID    int64     `gorm:"column:user_id"`
+	VideoID   int64     `gorm:"column:video_id"`
+	SessionID *string   `gorm:"column:session_id"`
+	PlayedAt  time.Time `gorm:"column:played_at"`
+	TraceID   *string   `gorm:"column:trace_id"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+}
+
+func (PlayEvent) TableName() string {
+	return "play_events"
+}

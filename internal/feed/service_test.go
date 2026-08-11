@@ -13,10 +13,12 @@ import (
 )
 
 type fakeRepo struct {
-	mu     sync.Mutex
-	calls  int
-	videos []Video // 已按 (published_at, id) 倒序排好，模拟索引顺序
-	likes  map[string]bool // key: "{userID}-{videoID}"
+	mu      sync.Mutex
+	calls   int
+	videos  []Video           // 已按 (published_at, id) 倒序排好，模拟索引顺序
+	likes   map[string]bool   // key: "{userID}-{videoID}"
+	follows map[int64][]int64 // userID -> followeeIDs（已按关注时间倒序）
+	plays   map[int64]int64   // videoID -> 播放数
 }
 
 func (f *fakeRepo) ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error) {
@@ -48,6 +50,47 @@ func (f *fakeRepo) LikeCounts(_ context.Context, videoIDs []int64) (map[int64]in
 				counts[id]++
 			}
 		}
+	}
+	return counts, nil
+}
+
+// ListFollowingIDs 模拟关注列表（nil map 读安全：未关注返回空）。
+func (f *fakeRepo) ListFollowingIDs(_ context.Context, userID int64) ([]int64, error) {
+	return f.follows[userID], nil
+}
+
+// ListFollowingCandidates 模拟窗口函数召回：每作者取（游标后）前 perAuthor 条，
+// 不排序不截断（召回与排序分离，排序交给 Ranker）。
+func (f *fakeRepo) ListFollowingCandidates(_ context.Context, userID int64, before *Cursor, perAuthor int) ([]Video, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	var candidates []Video
+	for _, followeeID := range f.follows[userID] {
+		k := 0
+		for _, v := range f.videos {
+			if v.AuthorID != followeeID {
+				continue
+			}
+			if before != nil && !(v.PublishedAt.Before(before.PublishedAt) ||
+				(v.PublishedAt.Equal(before.PublishedAt) && v.ID < before.VideoID)) {
+				continue
+			}
+			candidates = append(candidates, v)
+			k++
+			if k >= perAuthor {
+				break
+			}
+		}
+	}
+	return candidates, nil
+}
+
+// PlayCounts 从 plays map 聚合（与生产 SQL 语义一致）。
+func (f *fakeRepo) PlayCounts(_ context.Context, videoIDs []int64) (map[int64]int64, error) {
+	counts := map[int64]int64{}
+	for _, id := range videoIDs {
+		counts[id] = f.plays[id]
 	}
 	return counts, nil
 }
@@ -157,13 +200,20 @@ func TestCursor_WrongKey(t *testing.T) {
 }
 
 func TestCursor_OldRankVersion(t *testing.T) {
+	// 版本校验在 service 层：codec 只验签名与格式，旧版本游标由 service 拒绝。
 	c := NewCodec("test-cursor-secret")
 	cur := Cursor{PublishedAt: *ts(0), VideoID: 1, RankVersion: "rank-v0"}
 
 	enc, err := c.Encode(cur)
 	require.NoError(t, err)
-	_, err = c.Decode(enc)
-	require.ErrorIs(t, err, ErrInvalidCursor)
+	dec, err := c.Decode(enc)
+	require.NoError(t, err, "codec 不判版本")
+	require.Equal(t, "rank-v0", dec.RankVersion)
+
+	repo := &fakeRepo{videos: fiveVideos()}
+	svc := newTestService(repo)
+	_, err = svc.List(context.Background(), 0, enc)
+	require.ErrorIs(t, err, ErrInvalidCursor, "service 校验：旧排序版本游标失效")
 }
 
 func mustEncode(t *testing.T, c *codec) string {
@@ -408,4 +458,114 @@ func TestListByAuthor_OnlyPublished(t *testing.T) {
 
 func ptr(s string) *string {
 	return &s
+}
+
+// mixedAuthorVideos 两个作者的交错视频（已按全局 (published_at, id) 倒序）：
+// 作者 1 有 6 条（id 12,10,8,6,4,2），作者 2 有 4 条（id 11,9,7,5）。
+func mixedAuthorVideos() []Video {
+	return []Video{
+		{ID: 12, AuthorID: 1, Title: "a6", ObjectKey: "o12", PublishedAt: ts(0)},
+		{ID: 11, AuthorID: 2, Title: "b4", ObjectKey: "o11", PublishedAt: ts(-time.Minute)},
+		{ID: 10, AuthorID: 1, Title: "a5", ObjectKey: "o10", PublishedAt: ts(-2 * time.Minute)},
+		{ID: 9, AuthorID: 2, Title: "b3", ObjectKey: "o9", PublishedAt: ts(-3 * time.Minute)},
+		{ID: 8, AuthorID: 1, Title: "a4", ObjectKey: "o8", PublishedAt: ts(-4 * time.Minute)},
+		{ID: 7, AuthorID: 2, Title: "b2", ObjectKey: "o7", PublishedAt: ts(-5 * time.Minute)},
+		{ID: 6, AuthorID: 1, Title: "a3", ObjectKey: "o6", PublishedAt: ts(-6 * time.Minute)},
+		{ID: 5, AuthorID: 2, Title: "b1", ObjectKey: "o5", PublishedAt: ts(-7 * time.Minute)},
+		{ID: 4, AuthorID: 1, Title: "a2", ObjectKey: "o4", PublishedAt: ts(-8 * time.Minute)},
+		{ID: 2, AuthorID: 1, Title: "a1", ObjectKey: "o2", PublishedAt: ts(-9 * time.Minute)},
+	}
+}
+
+func TestListFollowing_EmptyFollows(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{}}
+	svc := newTestService(repo)
+
+	result, err := svc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.Empty(t, result.Items, "未关注任何人：空 Feed")
+	require.False(t, result.HasMore)
+	require.Empty(t, result.NextCursor)
+}
+
+func TestListFollowing_TopKPerAuthor(t *testing.T) {
+	// 作者 1 有 6 条，作者 2 有 4 条；K=5 -> 作者 1 只出现 5 条（最旧的 a1 被截断）
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
+	svc := newTestService(repo)
+
+	result, err := svc.ListFollowing(context.Background(), 7, 0, "")
+	require.NoError(t, err)
+	require.Len(t, result.Items, 9, "6+4=10 条中作者1被截到 5，共 9 条")
+	titles := make([]string, 0, len(result.Items))
+	for _, it := range result.Items {
+		titles = append(titles, it.Title)
+	}
+	require.Equal(t, []string{"a6", "b4", "a5", "b3", "a4", "b2", "a3", "b1", "a2"}, titles,
+		"全局 (published_at,id) 倒序，且作者1最旧的 a1 被 TOP K 截断")
+}
+
+func TestListFollowing_CursorPagination(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
+	svc := newTestService(repo)
+
+	// 第一页 limit=3
+	page1, err := svc.ListFollowing(context.Background(), 7, 3, "")
+	require.NoError(t, err)
+	require.Len(t, page1.Items, 3)
+	require.True(t, page1.HasMore)
+	require.NotEmpty(t, page1.NextCursor)
+
+	// 第二页：不重复、不丢
+	seen := map[int64]bool{}
+	for _, it := range page1.Items {
+		seen[it.VideoID] = true
+	}
+	page2, err := svc.ListFollowing(context.Background(), 7, 3, page1.NextCursor)
+	require.NoError(t, err)
+	require.Len(t, page2.Items, 3)
+	for _, it := range page2.Items {
+		require.False(t, seen[it.VideoID], "翻页不重复")
+		seen[it.VideoID] = true
+	}
+
+	// 第三页翻到底
+	page3, err := svc.ListFollowing(context.Background(), 7, 3, page2.NextCursor)
+	require.NoError(t, err)
+	for _, it := range page3.Items {
+		require.False(t, seen[it.VideoID], "翻页不重复")
+		seen[it.VideoID] = true
+	}
+	require.Len(t, seen, 9, "所有作者 TOP K 全被遍历")
+}
+
+func TestListFollowing_InvalidLimit(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1}}}
+	svc := newTestService(repo)
+
+	_, err := svc.ListFollowing(context.Background(), 7, 101, "")
+	require.ErrorIs(t, err, ErrInvalidLimit)
+	_, err = svc.ListFollowing(context.Background(), 7, -1, "")
+	require.ErrorIs(t, err, ErrInvalidLimit)
+}
+
+func TestListFollowing_TamperedCursor(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1}}}
+	svc := newTestService(repo)
+
+	_, err := svc.ListFollowing(context.Background(), 7, 0, "forged.cursor")
+	require.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestListFollowing_FillsLikeCounts(t *testing.T) {
+	repo := &fakeRepo{
+		videos:  mixedAuthorVideos(),
+		follows: map[int64][]int64{7: {1}},
+		likes:   map[string]bool{"3-12": true, "3-10": true},
+	}
+	svc := newTestService(repo)
+
+	result, err := svc.ListFollowing(context.Background(), 7, 2, "")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), result.Items[0].LikeCount, "id=12 被赞 1 次")
+	require.Equal(t, int64(1), result.Items[1].LikeCount, "id=10 被赞 1 次")
 }

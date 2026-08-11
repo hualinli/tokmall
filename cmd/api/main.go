@@ -137,6 +137,7 @@ func run() error {
 		storageClient,
 		feedCache,
 		observability.NewFeedCacheStats(metricsRegistry),
+		newRanker(cfg.FeedRankStrategy),
 	))
 	videoHandler := video.NewHandler(videoService)
 	interactionHandler := interaction.NewHandler(interaction.NewService(
@@ -173,6 +174,16 @@ func run() error {
 	}
 }
 
+// newRanker 根据配置装配排序器（M8 实验开关）：
+// time = 时间排序（现状，游标版本 time-v1）；hot = 热度排序（游标版本 hot-v1）。
+// 切换 hot 后旧 time 游标失效，客户端重新拉第一页——这是有意的版本语义。
+func newRanker(strategy string) feed.Ranker {
+	if strategy == "hot" {
+		return feed.HotRanker{}
+	}
+	return feed.TimeRanker{}
+}
+
 // routes 集中持有各模块 handler，registerRoutes 是唯一的路由注册点：
 // 同步测试（main_test.go）用 nil handler 复用同一注册逻辑，
 // 保证 openapi.yaml 与代码路由不脱节。
@@ -201,5 +212,6 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.user.RegisterProtectedRoutes(protected)
 	r.video.RegisterProtectedRoutes(protected)
 	r.feed.RegisterRoutes(g)
+	r.feed.RegisterProtectedRoutes(protected)
 	r.interaction.RegisterProtectedRoutes(protected)
 }

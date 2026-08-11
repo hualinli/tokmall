@@ -13,15 +13,21 @@ import (
 const (
 	defaultLimit = 20
 	maxLimit     = 100
+	// followingPerAuthorK 关注 Feed 每位作者最多取 K 条（M6 拉模式核心参数）：
+	// 1000 关注上限下窗口内最多 5000 行，内存排序开销可忽略。
+	followingPerAuthorK = 5
 )
 
 var ErrInvalidLimit = errors.New("limit out of range")
 
-// Repository 消费侧接口：目前只有一个查询方法。
+// Repository 消费侧接口：feed 只消费这几个查询，不拥有视频事实数据。
 type Repository interface {
 	ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error)
 	ListPublishedByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
+	ListFollowingIDs(ctx context.Context, userID int64) ([]int64, error)
+	ListFollowingCandidates(ctx context.Context, userID int64, before *Cursor, perAuthor int) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
+	PlayCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 }
 
 // PlayURLProvider 是 storage.Client 的最小投影：feed 只消费
@@ -38,11 +44,18 @@ type Service struct {
 	cache   FirstPageCache
 	stats   CacheStats
 	group   singleflight.Group
+	ranker  Ranker
 }
 
-func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache FirstPageCache, stats CacheStats) *Service {
+// NewService 构造 feed 服务。ranker 可选（variadic）：缺省 TimeRanker（现状语义）。
+// 排序演进（M8）时从 main 装配 HotRanker，并同步递增 CurrentRankVersion。
+func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache FirstPageCache, stats CacheStats, rankers ...Ranker) *Service {
 	if stats == nil {
 		stats = noopStats{}
+	}
+	ranker := Ranker(TimeRanker{})
+	if len(rankers) > 0 {
+		ranker = rankers[0]
 	}
 	return &Service{
 		repo:    repo,
@@ -50,6 +63,7 @@ func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache Fi
 		storage: storage,
 		cache:   cache,
 		stats:   stats,
+		ranker:  ranker,
 	}
 }
 
@@ -88,18 +102,11 @@ func (s *Service) List(ctx context.Context, limit int, cursorRaw string) (*FeedR
 	if limit < 1 || limit > maxLimit {
 		return nil, ErrInvalidLimit
 	}
-	var before *Cursor
-	if cursorRaw != "" {
-		cur, err := s.cursor.Decode(cursorRaw)
-		if err != nil {
-			return nil, ErrInvalidCursor
-		}
-		before = cur
+	before, err := s.decodeCursor(cursorRaw, CurrentRankVersion)
+	if err != nil {
+		return nil, err
 	}
-	var (
-		result *FeedResult
-		err    error
-	)
+	var result *FeedResult
 	if before == nil && limit == defaultLimit && s.cache != nil {
 		result, err = s.firstPage(ctx)
 	} else {
@@ -123,13 +130,9 @@ func (s *Service) ListByAuthor(ctx context.Context, authorID int64, limit int, c
 	if limit < 1 || limit > maxLimit {
 		return nil, ErrInvalidLimit
 	}
-	var before *Cursor
-	if cursorRaw != "" {
-		cur, err := s.cursor.Decode(cursorRaw)
-		if err != nil {
-			return nil, ErrInvalidCursor
-		}
-		before = cur
+	before, err := s.decodeCursor(cursorRaw, CurrentRankVersion)
+	if err != nil {
+		return nil, err
 	}
 	result, err := s.loadAuthorPage(ctx, authorID, before, limit)
 	if err != nil {
@@ -139,6 +142,97 @@ func (s *Service) ListByAuthor(ctx context.Context, authorID int64, limit int, c
 		return nil, err
 	}
 	return result, nil
+}
+
+// ListFollowing 关注 Feed（拉模式）：
+// 召回（每作者 TOP K，窗口函数一次 SQL）-> 填充排序计数（ranker 需要时）->
+// Ranker 排序 -> 分页截断。排序与召回分离（M8）：
+// 换排序规则只换装配的 Ranker + 递增 CurrentRankVersion，不动查询。
+// 不缓存：个性化内容（每个用户一份），且关注列表查询本身是主键索引；
+// 关注数增长后的缓存策略留给 M6 演进（缓存关注列表 / inbox 推模式）。
+func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, cursorRaw string) (*FeedResult, error) {
+	if limit == 0 {
+		limit = defaultLimit
+	}
+	if limit < 1 || limit > maxLimit {
+		return nil, ErrInvalidLimit
+	}
+	before, err := s.decodeCursor(cursorRaw, s.ranker.Version())
+	if err != nil {
+		return nil, err
+	}
+	// 空关注列表短路：避免无谓的子查询（IN (SELECT ...) 返回空集仍有一次开销）。
+	followeeIDs, err := s.repo.ListFollowingIDs(ctx, viewerID)
+	if err != nil {
+		slog.Error("list following ids failed", "user_id", viewerID, "err", err)
+		return nil, fmt.Errorf("list following ids: %w", err)
+	}
+	if len(followeeIDs) == 0 {
+		return &FeedResult{Items: []FeedItem{}, NextCursor: "", HasMore: false}, nil
+	}
+	videos, err := s.repo.ListFollowingCandidates(ctx, viewerID, before, followingPerAuthorK)
+	if err != nil {
+		slog.Error("list following candidates failed", "user_id", viewerID, "err", err)
+		return nil, fmt.Errorf("list following candidates: %w", err)
+	}
+	candidates := make([]Candidate, len(videos))
+	for i, v := range videos {
+		candidates[i] = Candidate{Video: v}
+	}
+	if s.ranker.NeedsCounts() {
+		ids := make([]int64, len(videos))
+		for i, v := range videos {
+			ids[i] = v.ID
+		}
+		playCounts, err := s.repo.PlayCounts(ctx, ids)
+		if err != nil {
+			slog.Error("play counts failed", "err", err)
+			return nil, fmt.Errorf("play counts: %w", err)
+		}
+		likeCounts, err := s.repo.LikeCounts(ctx, ids)
+		if err != nil {
+			slog.Error("like counts failed", "err", err)
+			return nil, fmt.Errorf("like counts: %w", err)
+		}
+		for i := range candidates {
+			candidates[i].PlayCount = playCounts[candidates[i].Video.ID]
+			candidates[i].LikeCount = likeCounts[candidates[i].Video.ID]
+		}
+	}
+	ranked, err := s.ranker.Rank(ctx, candidates, SceneFollowing)
+	if err != nil {
+		slog.Error("rank following candidates failed", "err", err)
+		return nil, fmt.Errorf("rank following: %w", err)
+	}
+	sorted := make([]Video, len(ranked))
+	for i, c := range ranked {
+		sorted[i] = c.Video
+	}
+	result, err := s.assemble(ctx, sorted, limit, s.ranker.Version())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.fillLikeCounts(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// decodeCursor 解码游标并校验排序版本与调用方的排序语义一致。
+// 每个端点传自己的期望版本：全局/作者 Feed 固定 time-v1（SQL 排序，不随 ranker 变）；
+// 关注 Feed 传 s.ranker.Version()（切换排序规则后旧游标失效，客户端重新请求第一页）。
+func (s *Service) decodeCursor(cursorRaw, expectedVersion string) (*Cursor, error) {
+	if cursorRaw == "" {
+		return nil, nil
+	}
+	cur, err := s.cursor.Decode(cursorRaw)
+	if err != nil {
+		return nil, ErrInvalidCursor
+	}
+	if cur.RankVersion != expectedVersion {
+		return nil, ErrInvalidCursor
+	}
+	return cur, nil
 }
 
 // fillLikeCounts 批量查点赞数并写入 items。关键取舍：
@@ -208,7 +302,7 @@ func (s *Service) loadPage(ctx context.Context, before *Cursor, limit int) (*Fee
 		slog.Error("list published videos failed", "err", err)
 		return nil, fmt.Errorf("list published: %w", err)
 	}
-	return s.assemble(ctx, videos, limit)
+	return s.assemble(ctx, videos, limit, CurrentRankVersion)
 }
 
 // loadAuthorPage 作者主页页：与 loadPage 唯一的区别是查询带 author 过滤。
@@ -218,11 +312,13 @@ func (s *Service) loadAuthorPage(ctx context.Context, authorID int64, before *Cu
 		slog.Error("list videos by author failed", "author_id", authorID, "err", err)
 		return nil, fmt.Errorf("list by author: %w", err)
 	}
-	return s.assemble(ctx, videos, limit)
+	return s.assemble(ctx, videos, limit, CurrentRankVersion)
 }
 
 // assemble 视频行 -> FeedItem（拼预签名 URL + 作者信息）+ 游标。
-func (s *Service) assemble(ctx context.Context, videos []Video, limit int) (*FeedResult, error) {
+// rankVersion 由调用方传入：排序语义决定游标版本（全局/作者页固定 time-v1，
+// 关注 Feed 跟随装配的 ranker）。
+func (s *Service) assemble(ctx context.Context, videos []Video, limit int, rankVersion string) (*FeedResult, error) {
 	result := &FeedResult{Items: make([]FeedItem, 0, limit)}
 	hasMore := len(videos) > limit
 	if hasMore {
@@ -270,7 +366,7 @@ func (s *Service) assemble(ctx context.Context, videos []Video, limit int) (*Fee
 		next, err := s.cursor.Encode(Cursor{
 			PublishedAt: *last.PublishedAt,
 			VideoID:     last.ID,
-			RankVersion: CurrentRankVersion,
+			RankVersion: rankVersion,
 		})
 		if err != nil {
 			slog.Error("encode next cursor failed", "err", err)

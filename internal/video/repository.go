@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrNotFound = errors.New("record not found")
@@ -125,6 +126,13 @@ func (r *GormRepository) IsLiked(ctx context.Context, userID, videoID int64) (bo
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// CreatePlayEvent 幂等记录播放事件：event_id 唯一冲突时静默忽略
+// （网络重试不重复计数），永远不报错。
+func (r *GormRepository) CreatePlayEvent(ctx context.Context, e *PlayEvent) error {
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(e).Error
 }
 
 // ConsumeTicket 原子核销 ticket：未被使用、未过期、属于该用户时标记 used，

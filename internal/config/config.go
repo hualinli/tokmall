@@ -25,6 +25,7 @@ const (
 	defaultRedisDB        = 0
 	defaultFeedCacheTTL   = 60 * time.Second
 	defaultFeedCacheOn    = true
+	defaultRankStrategy   = "time"
 )
 
 type Config struct {
@@ -34,6 +35,9 @@ type Config struct {
 	DBConfig
 	MinIOConfig
 	RedisConfig
+	// FeedRankStrategy 关注 Feed 排序策略：time（默认，保持现状）| hot（播放+点赞热度）。
+	// 切换 hot 会使 rank_version 变为 hot-v1，旧 time-v1 游标失效（客户端重新拉第一页）。
+	FeedRankStrategy string
 }
 
 type RedisConfig struct {
@@ -105,6 +109,7 @@ func Load() (*Config, error) {
 			FeedCacheTTL:     envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
 			FeedCacheEnabled: envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn),
 		},
+		FeedRankStrategy: envString("FEED_RANK_STRATEGY", defaultRankStrategy),
 	}, nil
 }
 

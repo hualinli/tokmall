@@ -11,8 +11,10 @@ import (
 	"time"
 )
 
-// CurrentRankVersion 当前排序规则版本。排序规则变化时递增，
+// CurrentRankVersion 当前排序规则版本（时间排序 v1）。排序规则变化时递增，
 // 旧游标因版本不匹配而失效（客户端重新请求第一页）。
+// 版本校验在 service 层（codec 只验签名与格式）：游标携带的版本必须与
+// 当前装配的 Ranker.Version() 一致，见 service.List/ListFollowing。
 const CurrentRankVersion = "time-v1"
 
 var ErrInvalidCursor = errors.New("cursor malformed, tampered or expired")
@@ -46,6 +48,8 @@ func (c *codec) Encode(cur Cursor) (string, error) {
 }
 
 // Decode 校验签名、解析 JSON，并核对排序版本。
+// 注意：版本与当前 Ranker 的一致性由调用方（service）校验，这里只做
+// 签名/格式/字段合法性检查——codec 不感知排序策略。
 func (c *codec) Decode(s string) (*Cursor, error) {
 	payloadB64, sig, ok := strings.Cut(s, ".")
 	if !ok {
@@ -60,9 +64,6 @@ func (c *codec) Decode(s string) (*Cursor, error) {
 	}
 	var cur Cursor
 	if err := json.Unmarshal(payload, &cur); err != nil {
-		return nil, ErrInvalidCursor
-	}
-	if cur.RankVersion != CurrentRankVersion {
 		return nil, ErrInvalidCursor
 	}
 	if cur.PublishedAt.IsZero() || cur.VideoID <= 0 {

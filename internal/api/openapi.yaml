@@ -156,6 +156,25 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidArgument"
 
+  /api/v1/feed/following:
+    get:
+      tags: [feed]
+      summary: 关注 Feed（拉模式：每作者 TOP 5 + 全局排序，需登录）
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 一页关注作者的已发布视频
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
   /api/v1/me:
     get:
       tags: [user]
@@ -396,6 +415,27 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "409":
           $ref: "#/components/responses/DuplicateAction"
+  /api/v1/videos/{id}/play:
+    post:
+      tags: [videos]
+      summary: 上报播放事件（幂等：event_id 去重；M5 前同步落库，之后改 Kafka）
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlayRequest"
+      responses:
+        "204":
+          description: 事件已接收（重复 event_id 同样 204，不重复计数）
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/VideoNotFound"
   /api/v1/videos/{id}/like:
     post:
       tags: [interactions]
@@ -911,6 +951,23 @@ components:
           format: int64
         liked:
           type: boolean
+    PlayRequest:
+      type: object
+      required: [event_id]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          description: 客户端生成 UUID v7，幂等去重
+        session_id:
+          type: string
+          nullable: true
+          description: 会话标识（可选，防同一会话刷量的统计维度）
+        played_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 客户端事件时间 RFC3339，缺省服务端 now()
     FollowResult:
       type: object
       properties:

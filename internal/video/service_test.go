@@ -15,18 +15,20 @@ import (
 )
 
 type fakeRepo struct {
-	videos  map[int64]*Video
-	nextID  int64
-	tickets map[string]*UploadTicket // key: objectKey
-	likes   map[string]bool          // key: "{userID}-{videoID}"
+	videos     map[int64]*Video
+	nextID     int64
+	tickets    map[string]*UploadTicket // key: objectKey
+	likes      map[string]bool          // key: "{userID}-{videoID}"
+	playEvents map[string]bool          // key: eventID（幂等去重）
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		videos:  make(map[int64]*Video),
-		nextID:  1,
-		tickets: make(map[string]*UploadTicket),
-		likes:   make(map[string]bool),
+		videos:     make(map[int64]*Video),
+		nextID:     1,
+		tickets:    make(map[string]*UploadTicket),
+		likes:      make(map[string]bool),
+		playEvents: make(map[string]bool),
 	}
 }
 
@@ -111,6 +113,14 @@ func (f *fakeRepo) LikeCounts(_ context.Context, videoIDs []int64) (map[int64]in
 
 func (f *fakeRepo) IsLiked(_ context.Context, userID, videoID int64) (bool, error) {
 	return f.likes[fmt.Sprintf("%d-%d", userID, videoID)], nil
+}
+
+func (f *fakeRepo) CreatePlayEvent(_ context.Context, e *PlayEvent) error {
+	if f.playEvents[e.EventID] {
+		return nil
+	}
+	f.playEvents[e.EventID] = true
+	return nil
 }
 
 type fakeStorage struct {
@@ -574,4 +584,94 @@ func TestCursor_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	_, err = codec.Decode(enc)
 	require.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+// publishTestVideo 走完整 Create+Publish 流程，返回一个 PUBLISHED 视频。
+func publishTestVideo(t *testing.T, svc *Service, repo *fakeRepo, store *fakeStorage, userID int64, objectKey string) int64 {
+	t.Helper()
+	registerTicket(t, repo, userID, objectKey)
+	store.objectSizes[objectKey] = 1024
+	res, err := svc.Create(context.Background(), userID, CreateParams{
+		Title: "t", ObjectKey: objectKey, DurationSeconds: 10,
+	})
+	require.NoError(t, err)
+	_, err = svc.Publish(context.Background(), userID, res.VideoID)
+	require.NoError(t, err)
+	return res.VideoID
+}
+
+func TestPlay_RecordsEvent(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/u1.mp4")
+
+	playedAt := time.Now().Add(-30 * time.Second)
+	err := svc.Play(context.Background(), 7, videoID, "event-1", nil, &playedAt, nil)
+	require.NoError(t, err)
+	require.True(t, repo.playEvents["event-1"], "事件应已落库")
+}
+
+func TestPlay_IdempotentDuplicate(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/u1.mp4")
+
+	err := svc.Play(context.Background(), 7, videoID, "same-event", nil, nil, nil)
+	require.NoError(t, err)
+	err = svc.Play(context.Background(), 7, videoID, "same-event", nil, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(repo.playEvents), "同一 event_id 重放只记一次")
+}
+
+func TestPlay_NotPublishedRejected(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	registerTicket(t, repo, 42, "videos/42/u1.mp4")
+	store.objectSizes["videos/42/u1.mp4"] = 1024
+	res, err := svc.Create(context.Background(), 42, CreateParams{
+		Title: "t", ObjectKey: "videos/42/u1.mp4", DurationSeconds: 10,
+	})
+	require.NoError(t, err)
+	// 未发布（PENDING_REVIEW）：不接受播放事件
+	err = svc.Play(context.Background(), 7, res.VideoID, "event-pending", nil, nil, nil)
+	require.ErrorIs(t, err, ErrNotFound)
+	require.Empty(t, repo.playEvents)
+
+	// 已删除：同样拒绝
+	_, err = svc.Publish(context.Background(), 42, res.VideoID)
+	require.NoError(t, err)
+	require.NoError(t, svc.Delete(context.Background(), 42, res.VideoID))
+	err = svc.Play(context.Background(), 7, res.VideoID, "event-deleted", nil, nil, nil)
+	require.ErrorIs(t, err, ErrNotFound)
+	require.Empty(t, repo.playEvents)
+}
+
+func TestPlay_InvalidInputs(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/u1.mp4")
+
+	err := svc.Play(context.Background(), 7, videoID, "", nil, nil, nil)
+	require.ErrorIs(t, err, ErrInvalidParam, "空 event_id 拒绝")
+
+	future := time.Now().Add(1 * time.Hour)
+	err = svc.Play(context.Background(), 7, videoID, "event-future", nil, &future, nil)
+	require.ErrorIs(t, err, ErrInvalidParam, "未来事件时间拒绝")
+}
+
+func TestPlay_RespectsClientPlayedAt(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/u1.mp4")
+
+	playedAt := time.Now().Add(-2 * time.Hour)
+	session := "sess-1"
+	err := svc.Play(context.Background(), 7, videoID, "event-2", &session, &playedAt, nil)
+	require.NoError(t, err)
+	require.True(t, repo.playEvents["event-2"])
 }

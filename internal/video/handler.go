@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/hertz-contrib/requestid"
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
@@ -25,6 +27,14 @@ type CreateVideoRequest struct {
 	DurationSeconds int     `json:"duration_seconds" binding:"required"`
 }
 
+// PlayRequest 播放事件上报。EventID 客户端生成 UUID v7（幂等去重）；
+// PlayedAt 是客户端事件时间（RFC3339），缺省服务端 now()。
+type PlayRequest struct {
+	EventID   string     `json:"event_id" binding:"required"`
+	SessionID *string    `json:"session_id"`
+	PlayedAt  *time.Time `json:"played_at"`
+}
+
 type Handler struct {
 	service *Service
 }
@@ -39,6 +49,7 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	videos.POST("", h.create)
 	videos.GET("/me", h.listMine)
 	videos.POST("/:id/publish", h.publish)
+	videos.POST("/:id/play", h.play)
 	videos.DELETE("/:id", h.delete)
 }
 
@@ -158,6 +169,41 @@ func (h *Handler) publish(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response.OK(c, result)
+}
+
+// play 上报播放事件（受保护）：事件异步语义的同步落库版（M5 前）。
+// 成功返回 204；幂等重放（同一 event_id）同样 204，不重复计数。
+func (h *Handler) play(ctx context.Context, c *app.RequestContext) {
+	videoID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	var req PlayRequest
+	if err := c.BindAndValidate(&req); err != nil {
+		slog.Debug("bind failed", "err", err)
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	var sessionID, traceID *string
+	if req.SessionID != nil && *req.SessionID != "" {
+		sessionID = req.SessionID
+	}
+	if rid := requestid.Get(c); rid != "" {
+		traceID = &rid
+	}
+	if err := h.service.Play(ctx, h.userID(c), videoID, req.EventID, sessionID, req.PlayedAt, traceID); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidParam):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrNotFound):
+			response.Error(c, response.ErrVideoNotFound)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
+		return
+	}
+	response.NoContent(c)
 }
 
 func (h *Handler) delete(ctx context.Context, c *app.RequestContext) {

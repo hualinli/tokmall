@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
 
@@ -24,8 +25,31 @@ func (h *Handler) RegisterRoutes(g *route.RouterGroup) {
 	g.GET("/users/:id/videos", h.listByAuthor)
 }
 
+// RegisterProtectedRoutes 挂需登录路由：关注 Feed 个性化，viewerID 来自 token。
+func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
+	g.GET("/feed/following", h.listFollowing)
+}
+
 func (h *Handler) list(ctx context.Context, c *app.RequestContext) {
 	result, err := h.service.List(ctx, queryLimit(c), c.Query("cursor"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidLimit):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrInvalidCursor):
+			response.Error(c, response.ErrInvalidCursor)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
+		return
+	}
+	response.OK(c, result)
+}
+
+// listFollowing 关注 Feed：仅登录可见（viewerID 从 token 注入）。
+func (h *Handler) listFollowing(ctx context.Context, c *app.RequestContext) {
+	viewerID := c.GetInt64(middleware.CtxUserIDKey)
+	result, err := h.service.ListFollowing(ctx, viewerID, queryLimit(c), c.Query("cursor"))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidLimit):

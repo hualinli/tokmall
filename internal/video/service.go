@@ -32,6 +32,7 @@ type Repository interface {
 	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 	IsLiked(ctx context.Context, userID, videoID int64) (bool, error)
+	CreatePlayEvent(ctx context.Context, e *PlayEvent) error
 }
 
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
@@ -379,6 +380,46 @@ func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorR
 		result.HasMore = true
 	}
 	return result, nil
+}
+
+// Play 记录一次播放事件。幂等语义：event_id（客户端 UUID v7）重复提交只记一次，
+// 网络重试不重复计数；不同 event_id 的多次播放各自计数（有效播放由产品层定义）。
+// 只接受 PUBLISHED 视频的播放事件，未发布/已删除一律 ErrNotFound（不泄露存在性）。
+// playedAt 为客户端事件时间（与网络延迟无关），缺省服务端 now()；
+// 未来时间（容忍 5 分钟时钟偏差）拒绝，防止脏数据污染后续排序分数。
+func (s *Service) Play(ctx context.Context, userID, videoID int64, eventID string, sessionID *string, playedAt *time.Time, traceID *string) error {
+	if eventID == "" {
+		return ErrInvalidParam
+	}
+	now := time.Now()
+	if playedAt != nil {
+		if playedAt.After(now.Add(5 * time.Minute)) {
+			return ErrInvalidParam
+		}
+	}
+	v, err := s.repo.FindVideoByID(ctx, videoID)
+	if err != nil {
+		return err
+	}
+	if v.Status != StatusPublished {
+		return ErrNotFound
+	}
+	played := now
+	if playedAt != nil {
+		played = *playedAt
+	}
+	if err := s.repo.CreatePlayEvent(ctx, &PlayEvent{
+		EventID:   eventID,
+		UserID:    userID,
+		VideoID:   videoID,
+		SessionID: sessionID,
+		PlayedAt:  played,
+		TraceID:   traceID,
+	}); err != nil {
+		slog.Error("create play event failed", "user_id", userID, "video_id", videoID, "err", err)
+		return fmt.Errorf("create play event: %w", err)
+	}
+	return nil
 }
 
 // ValidateImage 校验图片上传凭证 + 文件真实存在，核销票证。
