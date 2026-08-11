@@ -1,8 +1,11 @@
+# 构建产物 / 本地工具
 bin/
-*.env
-.DS_Store
-docs/
 .reasonix/
-AGENTS.md
 reasonix.toml
+
+# 密钥与日志（不入库）
+*.env
 logs/
+
+# 系统文件
+.DS_Store
