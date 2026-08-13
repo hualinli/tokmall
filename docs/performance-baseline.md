@@ -194,3 +194,48 @@ vegeta attack -targets=/tmp/feedbench/follow1000.targets -duration=10s -rate=0 -
 | 翻页缓存 | 不做（命中率低，与首页缓存同取舍） |
 | like_count 进缓存 | 不做（高频写，失效风暴，与首页缓存同取舍） |
 | 关注列表缓存 / SQL 重写 | 不需要（缓存后不再是瓶颈） |
+
+---
+
+# 播放事件压测与 Kafka 决策（2026-08-13）
+
+> 目标：验证"同步写 play 拖慢读路径"（M5-Kafka 的引入动机）是否成立。
+> 方法：play 是 POST + 每请求唯一 event_id（vegeta 不支持动态 body，用 python 并发脚本），
+> feed 用 vegeta。限流关闭（RATE_LIMIT_ENABLED=false，避免干扰）。单实例 debug 构建。
+
+## 结果
+
+| 场景 | QPS | p50 | p90 | p99 | 说明 |
+|---|---|---|---|---|---|
+| 读 feed（follow0 缓存命中） | 37,946 | 1.2ms | 1.8ms | 2.4ms | 纯 Redis GET（空结果无 LikeCounts） |
+| 读 feed（follow1000 缓存） | 6,249 | 5.2ms | 13.7ms | 22.3ms | 每请求 1 次 LikeCounts DB 查询 |
+| 写 play（40 workers 单独） | 1,640 | 17.2ms | 20.9ms | 25.2ms | 真实 INSERT（16,400 条入表） |
+| **混合：feed + play 并行** | feed 5,840 / play 528 | 5.5 / 29.3ms | 14.8 / 45.4ms | 29.1 / 75.7ms | db_pool_wait 40k→179k |
+
+## 结论（数据驱动）
+
+1. **"写拖慢读"证伪**：混合场景下 feed 读只降 6.5%（6,249→5,840），p50 基本不变。
+   原因：feed 命中缓存后每请求只占一次 LikeCounts 短查询；play 写虽然每条 INSERT 17ms
+   占连接池，但读路径的 DB 占用极短，写排队没有传导到读延迟。
+   **缓存（ADR-012 + 关注 Feed 缓存）已经把读写路径隔离了。**
+
+2. **真实瓶颈是写吞吐自身**：play 单独 1.6k QPS，混合下被拖到 528 QPS（连接池竞争）。
+   若播放量真到每秒数千次，play 接口自身会先成为瓶颈（排队/超时），而不是拖慢读。
+
+3. **Kafka 决策：继续搁置**。M5-Kafka 的动机（写阻塞读）在当前架构下不成立；
+   引入 Kafka 的前提是"写吞吐成为可测量瓶颈"（每秒数千播放量级），学习项目达不到。
+   若将来要做，正确叙事是"异步化提升写吞吐 + 削峰"，而非"防止拖慢读"。
+
+4. **play 写降本的候选（若未来需要）**：删 play_events FK（ADR-013 已评估为可讨论）、
+   批量攒批落库（本地队列即可，不必 Kafka）、event_id 用 DB 生成的紧凑主键。
+
+5. **压测方法论记录**：vegeta 不支持每请求动态 body（target body 是静态的），
+   play 类写压测需脚本生成唯一幂等键——这是后续写压测的通用约束。
+
+## 可复现
+
+```bash
+python3 /tmp/feedbench/play_bench.py 40 10   # play 写压测（每请求唯一 event_id）
+vegeta attack -targets=/tmp/feedbench/follow1000.targets -duration=10s -rate=0 -max-workers=50  # feed 读
+# 混合：两个并行
+```
