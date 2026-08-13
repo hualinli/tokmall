@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -49,6 +50,19 @@ func NewRedisFeedCache(client *redis.Client, ttl time.Duration) *RedisFeedCache 
 	return &RedisFeedCache{client: client, ttl: ttl}
 }
 
+// jitterWindow 缓存 TTL 随机抖动幅度。TTL 固定会导致大量 key 同一时刻过期
+// （雪崩：所有用户同时 miss → 同时打 DB）。抖动把过期时间在
+// [base-window, base+window] 内错开，DB 压力平摊。
+// 关键：必须在每次 Set 时独立抖动——构造时抖动一次会让所有 key 用同一个值，
+// 仍然同时过期，抖动失去意义。
+const jitterWindow = 20 * time.Second
+
+// jitteredTTL 返回抖动后的 TTL。rand 全局函数在 Go 1.20+ 自动播种且并发安全。
+func jitteredTTL(base time.Duration) time.Duration {
+	offset := time.Duration(rand.Int63n(int64(2*jitterWindow))) - jitterWindow
+	return base + offset
+}
+
 // RedisFollowingFeedCache 关注 Feed 第一页缓存的 Redis 实现（个性化 key）。
 type RedisFollowingFeedCache struct {
 	client *redis.Client
@@ -83,7 +97,7 @@ func (c *RedisFollowingFeedCache) Set(ctx context.Context, userID int64, rankVer
 	if err != nil {
 		return err
 	}
-	return c.client.Set(ctx, followingCacheKey(userID, rankVersion), data, c.ttl).Err()
+	return c.client.Set(ctx, followingCacheKey(userID, rankVersion), data, jitteredTTL(c.ttl)).Err()
 }
 
 func (c *RedisFeedCache) Get(ctx context.Context) (*FeedResult, error) {
@@ -106,7 +120,7 @@ func (c *RedisFeedCache) Set(ctx context.Context, result *FeedResult) error {
 	if err != nil {
 		return err
 	}
-	return c.client.Set(ctx, firstPageKey, data, c.ttl).Err()
+	return c.client.Set(ctx, firstPageKey, data, jitteredTTL(c.ttl)).Err()
 }
 
 func (c *RedisFeedCache) Del(ctx context.Context) error {
