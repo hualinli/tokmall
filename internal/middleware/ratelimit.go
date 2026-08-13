@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -28,17 +29,49 @@ type RateLimitRule struct {
 	ByUser bool          // true=按 user_id 限（需已认证）；false=按 IP 限
 }
 
+// KeyExtractor 从请求中提取限流维度：用于按账号限流（auth 场景，
+// 暴力破解的维度是账号而非 IP——NAT 下多人共享 IP，按 IP 会误伤真实用户）。
+// 返回 (dimension, id, ok)；ok=false 时回退规则默认维度。
+type KeyExtractor func(c *app.RequestContext) (dimension, id string, ok bool)
+
+// AccountKeyExtractor 解析 auth 请求体中的账号标识（login: identifier；
+// register: email/username），作为限流 key。refresh/logout 无标识 → 回退 IP。
+// 注意：hertz 的 Body() 是 lazy 缓存，中间件读取后 handler 的 BindAndValidate 仍可读。
+func AccountKeyExtractor(c *app.RequestContext) (string, string, bool) {
+	var payload struct {
+		Identifier string `json:"identifier"`
+		Email      string `json:"email"`
+		Username   string `json:"username"`
+	}
+	body, _ := c.Body()
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", "", false
+	}
+	for _, account := range []string{payload.Identifier, payload.Email, payload.Username} {
+		if account != "" {
+			return "account", account, true
+		}
+	}
+	return "", "", false
+}
+
 // RateLimit 限流中间件。维度选择：
+//   - 传入 extractor 且提取成功 → 用提取的维度（如按账号）
 //   - ByUser=true 且已登录 → 按 user_id（写接口：每个用户自己的配额）
 //   - ByUser=true 但匿名   → 回退按 IP（未登录用户共享 IP 配额）
-//   - ByUser=false         → 一律按 IP（认证接口防暴力破解：未登录只能按 IP）
+//   - 其余                → 按 IP
 //
 // 被限流 → 429 RATE_LIMITED（response 已定义映射）。
 // 限流依赖故障（Redis 挂）→ fail-open 放行 + Warn：限流失效比接口不可用好，
 // 认证类场景（login）若要 fail-closed（拒绝所有请求防暴力破解）需另行配置。
-func RateLimit(l Limiter, rule RateLimitRule) app.HandlerFunc {
+func RateLimit(l Limiter, rule RateLimitRule, extract ...KeyExtractor) app.HandlerFunc {
 	return func(c context.Context, ctx *app.RequestContext) {
 		key := rateLimitKey(ctx, rule)
+		if len(extract) > 0 && !rule.ByUser {
+			if dim, id, ok := extract[0](ctx); ok {
+				key = fmt.Sprintf("ratelimit:%s:%s:%s", rule.Scope, dim, id)
+			}
+		}
 		allowed, err := l.Allow(c, key, rule.Limit, rule.Window)
 		if err != nil {
 			// fail-open：不阻塞请求，但必须留痕（限流防线失效本身是事故）

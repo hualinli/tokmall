@@ -164,9 +164,10 @@ func run() error {
 		interaction: interactionHandler,
 		rateLimiter: rateLimiter,
 		rateRules: rateRules{
-			auth:  middleware.RateLimitRule{Scope: "auth", Limit: cfg.AuthRateLimit, Window: time.Minute},
-			read:  middleware.RateLimitRule{Scope: "read", Limit: cfg.ReadRateLimit, Window: 10 * time.Second},
-			write: middleware.RateLimitRule{Scope: "write", Limit: cfg.WriteRateLimit, Window: 10 * time.Second, ByUser: true},
+			authAccount: middleware.RateLimitRule{Scope: "auth-account", Limit: cfg.AuthAccountLimit, Window: time.Minute},
+			authIP:      middleware.RateLimitRule{Scope: "auth-ip", Limit: cfg.AuthIPLimit, Window: time.Minute},
+			read:        middleware.RateLimitRule{Scope: "read", Limit: cfg.ReadRateLimit, Window: time.Minute},
+			write:       middleware.RateLimitRule{Scope: "write", Limit: cfg.WriteRateLimit, Window: 10 * time.Second, ByUser: true},
 		},
 	})
 	errCh := make(chan error, 1)
@@ -215,21 +216,29 @@ type routes struct {
 	rateRules   rateRules
 }
 
-// rateRules 三档限流规则（挂载点见 registerRoutes）：
-// auth 比 read 更严（IP 级 10/min 防暴力破解），read 覆盖全部公开读，
-// write 按用户（登录写操作）。
+// rateRules 限流规则（挂载点见 registerRoutes）：
+//   - authAccount：按账号 10/min（防暴力破解——爆破的维度是账号不是 IP，NAT 下多人
+//     共享 IP 按 IP 限会误伤真实用户）；
+//   - authIP：按 IP 100/min（放宽版，防单一来源洪峰）；
+//   - read：按 IP 6000/min（只挡爬虫/洪峰，阈值远高于真实用户行为）；
+//   - write：按用户 100/10s（登录写操作，天然低频）。
 type rateRules struct {
-	auth  middleware.RateLimitRule
-	read  middleware.RateLimitRule
-	write middleware.RateLimitRule
+	authAccount middleware.RateLimitRule
+	authIP      middleware.RateLimitRule
+	read        middleware.RateLimitRule
+	write       middleware.RateLimitRule
 }
 
 // authMW 构造 auth 子组的限流中间件（未启用限流时为空，行为与现状一致）。
+// 双规则叠加：按账号（精确打击）+ 按 IP（洪峰防护），两道独立计数。
 func authMW(r routes) []app.HandlerFunc {
 	if r.rateLimiter == nil {
 		return nil
 	}
-	return []app.HandlerFunc{middleware.RateLimit(r.rateLimiter, r.rateRules.auth)}
+	return []app.HandlerFunc{
+		middleware.RateLimit(r.rateLimiter, r.rateRules.authAccount, middleware.AccountKeyExtractor),
+		middleware.RateLimit(r.rateLimiter, r.rateRules.authIP),
+	}
 }
 
 func registerRoutes(h *server.Hertz, r routes) {

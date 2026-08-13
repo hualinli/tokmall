@@ -28,9 +28,10 @@ const (
 	defaultFollowingCacheOn = true
 	defaultRankStrategy     = "time"
 	rateLimitOn             = true
-	defaultAuthLimit        = 10  // 认证接口：10 次/分钟/IP（防暴力破解演示值）
-	defaultWriteLimit       = 100 // 写接口：100 次/10s/用户
-	defaultReadLimit        = 200 // 读接口：200 次/10s/IP
+	defaultAuthAccountLimit = 10   // 认证接口：10 次/分钟/账号（防暴力破解，按账号维度）
+	defaultAuthIPLimit      = 100  // 认证接口：100 次/分钟/IP（防单一来源洪峰，NAT 下放宽）
+	defaultWriteLimit       = 100  // 写接口：100 次/10s/用户
+	defaultReadLimit        = 6000 // 读接口：6000 次/分钟/IP（只挡爬虫/洪峰，NAT 多人共享不误伤）
 )
 
 type Config struct {
@@ -45,10 +46,14 @@ type Config struct {
 	FeedRankStrategy string
 	// RateLimitEnabled 限流总开关：压测/调试时关闭（feed 压测 50 并发会被 IP 限流挡住）。
 	RateLimitEnabled bool
-	// AuthRateLimit / WriteRateLimit / ReadRateLimit 三档规则配额（见 main 挂载点）。
-	AuthRateLimit  int
+	// AuthAccountLimit 认证接口按账号配额（NAT 下多人共享 IP，按账号才能精确防暴力破解）。
+	AuthAccountLimit int
+	// AuthIPLimit 认证接口按 IP 配额（放宽版，防单一来源洪峰）。
+	AuthIPLimit int
+	// WriteRateLimit 写接口按用户配额。
 	WriteRateLimit int
-	ReadRateLimit  int
+	// ReadRateLimit 读接口按 IP 配额（高阈值：只挡爬虫/异常洪峰，不误伤真实用户）。
+	ReadRateLimit int
 }
 
 type RedisConfig struct {
@@ -125,7 +130,8 @@ func Load() (*Config, error) {
 		},
 		FeedRankStrategy: envString("FEED_RANK_STRATEGY", defaultRankStrategy),
 		RateLimitEnabled: envBool("RATE_LIMIT_ENABLED", rateLimitOn),
-		AuthRateLimit:    envInt("RATE_LIMIT_AUTH", defaultAuthLimit),
+		AuthAccountLimit: envInt("RATE_LIMIT_AUTH_ACCOUNT", defaultAuthAccountLimit),
+		AuthIPLimit:      envInt("RATE_LIMIT_AUTH_IP", defaultAuthIPLimit),
 		WriteRateLimit:   envInt("RATE_LIMIT_WRITE", defaultWriteLimit),
 		ReadRateLimit:    envInt("RATE_LIMIT_READ", defaultReadLimit),
 	}, nil

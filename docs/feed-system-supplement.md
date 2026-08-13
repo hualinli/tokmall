@@ -1448,16 +1448,18 @@ return c
 **为什么固定窗口而不是令牌桶**：单命令、可解释；令牌桶的"突发容忍"对学习项目过度。
 已知代价：窗口边界有毛刺（59s 打满 + 1s 打满 = 两倍突发），演进条件=需要平滑时换令牌桶 lua。
 
-### 13.2 三档规则（main 挂载）
+### 13.2 规则（main 挂载，生产正确性修正版）
 
 | 规则 | 维度 | 配额 | 挂载 | 场景 |
 |---|---|---|---|---|
-| auth | IP | 10/min | /auth 子组 | 防暴力破解（bcrypt 慢但可被刷，必须限） |
-| read | IP | 200/10s | g 组（全部公开读继承） | feed/主页/详情防刷 |
+| auth-account | 账号 | 10/min | /auth 子组 | 防暴力破解——**爆破的维度是账号不是 IP**（NAT 下多人共享 IP，按 IP 限会误伤真实用户），解析 login body 的 identifier/email/username |
+| auth-ip | IP | 100/min | /auth 子组 | 防单一来源洪峰（放宽版） |
+| read | IP | 6000/min | g 组（全部公开读继承） | 只挡爬虫/异常洪峰，阈值远高于真实用户行为（含 NAT 多人共享 + 客户端预加载） |
 | write | user | 100/10s | protected 组 | 上传/发布/点赞/关注（登录后按 user_id） |
 
-- auth 请求过两道（read 200 继承 + auth 10），10/min 先触发，两道独立计数
-- write 的 ByUser=true：匿名回退按 IP
+- auth 双规则叠加（按账号精确 + 按 IP 洪峰防护），两道独立计数，账号 10/min 先触发
+- auth 请求还继承 read（6000/min），不会误伤
+- 部署前置：反向代理/CDN 后需处理 X-Forwarded-For（否则 ClientIP 拿到代理 IP，全员共享一个限流 key）
 
 ### 13.3 降级与错误
 

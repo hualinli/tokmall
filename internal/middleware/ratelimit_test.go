@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"testing"
@@ -97,4 +98,43 @@ func TestRateLimitKey_ByUserAnonymousFallsBackToIP(t *testing.T) {
 
 	ut.PerformRequest(engine, http.MethodGet, "/echo", nil)
 	require.Contains(t, limiter.lastKey, "ratelimit:write:ip:", "匿名回退按 IP 限流")
+}
+
+func TestAccountKeyExtractor_LoginIdentifier(t *testing.T) {
+	r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
+	r.POST("/login", func(ctx context.Context, c *app.RequestContext) {
+		dim, id, ok := AccountKeyExtractor(c)
+		require.True(t, ok)
+		require.Equal(t, "account", dim)
+		require.Equal(t, "alice31", id)
+		c.String(http.StatusOK, "ok")
+	})
+	ut.PerformRequest(r, http.MethodPost, "/login",
+		&ut.Body{Body: bytes.NewBufferString(`{"identifier":"alice31","password":"x"}`), Len: 39},
+		ut.Header{Key: "Content-Type", Value: "application/json"})
+}
+
+func TestAccountKeyExtractor_RegisterEmailFallback(t *testing.T) {
+	r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
+	r.POST("/register", func(ctx context.Context, c *app.RequestContext) {
+		_, id, ok := AccountKeyExtractor(c)
+		require.True(t, ok)
+		require.Equal(t, "bob@test.dev", id)
+		c.String(http.StatusOK, "ok")
+	})
+	ut.PerformRequest(r, http.MethodPost, "/register",
+		&ut.Body{Body: bytes.NewBufferString(`{"email":"bob@test.dev","username":"bob","password":"x"}`), Len: 56},
+		ut.Header{Key: "Content-Type", Value: "application/json"})
+}
+
+func TestAccountKeyExtractor_NoIdentifierFallsBack(t *testing.T) {
+	r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
+	r.POST("/refresh", func(ctx context.Context, c *app.RequestContext) {
+		_, _, ok := AccountKeyExtractor(c)
+		require.False(t, ok, "refresh 无账号标识 → 回退 IP")
+		c.String(http.StatusOK, "ok")
+	})
+	ut.PerformRequest(r, http.MethodPost, "/refresh",
+		&ut.Body{Body: bytes.NewBufferString(`{"refresh_token":"x"}`), Len: 21},
+		ut.Header{Key: "Content-Type", Value: "application/json"})
 }
