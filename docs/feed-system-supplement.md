@@ -1432,3 +1432,43 @@ func GetFollowingFeed(ctx, viewerID, cursor, limit) (items, nextCursor, hasMore)
 - [ ] 实现 JWT 中间件（解析 + 注入 context）——直接使用 §1.3 的中间件骨架
 - [ ] 实现请求 ID 中间件（UUID v7）
 - [ ] 实现结构化日志中间件
+
+## 13. 限流（M7 实现记录）
+
+### 13.1 方案
+
+Redis 固定窗口计数：`INCR` + 首个请求 `EXPIRE`（lua 原子），计数超过配额拒绝。
+
+```lua
+local c = redis.call('INCR', KEYS[1])
+if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return c
+```
+
+**为什么固定窗口而不是令牌桶**：单命令、可解释；令牌桶的"突发容忍"对学习项目过度。
+已知代价：窗口边界有毛刺（59s 打满 + 1s 打满 = 两倍突发），演进条件=需要平滑时换令牌桶 lua。
+
+### 13.2 三档规则（main 挂载）
+
+| 规则 | 维度 | 配额 | 挂载 | 场景 |
+|---|---|---|---|---|
+| auth | IP | 10/min | /auth 子组 | 防暴力破解（bcrypt 慢但可被刷，必须限） |
+| read | IP | 200/10s | g 组（全部公开读继承） | feed/主页/详情防刷 |
+| write | user | 100/10s | protected 组 | 上传/发布/点赞/关注（登录后按 user_id） |
+
+- auth 请求过两道（read 200 继承 + auth 10），10/min 先触发，两道独立计数
+- write 的 ByUser=true：匿名回退按 IP
+
+### 13.3 降级与错误
+
+- Redis 故障 → **fail-open** 放行 + Warn 日志（限流失效比接口不可用好）；
+  认证类场景（login）若要 fail-closed（拒绝所有请求防爆破）需另行配置，注释已标注
+- 超限 → 429 `RATE_LIMITED`（response.Abort 按 statusByCode 映射——修复了
+  Abort 硬编码 401 的既有 bug：auth 场景全是 401 掩盖了它）
+- `RATE_LIMIT_ENABLED` 总开关：压测/调试时关闭（feed 压测 50 并发会被 read 限流挡）
+
+### 13.4 验证
+
+- 单测：允许/拒绝(429)/fail-open 降级/key 维度（user vs IP 回退）
+- e2e：连续 login 11 次 → 前 10 次 401、第 11 次起 429；vegeta 360 req 打 feed →
+  200×200 + 160×429（窗口边界精确）

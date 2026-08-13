@@ -1,8 +1,6 @@
 package response
 
 import (
-	"net/http"
-
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 )
@@ -77,7 +75,12 @@ func Error(ctx *app.RequestContext, bizErr *BizError) {
 }
 
 func Abort(ctx *app.RequestContext, bizErr *BizError) {
-	ctx.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
+	status := statusByCode[bizErr.Code]
+	if status == 0 {
+		// Abort 是中间件拒绝路径（认证/限流等），未映射时默认 401 而非 500
+		status = consts.StatusUnauthorized
+	}
+	ctx.AbortWithStatusJSON(status, map[string]any{
 		"error":      bizErr,
 		"request_id": string(ctx.Response.Header.Get("X-Request-ID")),
 	})

@@ -44,8 +44,8 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(g *route.RouterGroup) {
-	authGroup := g.Group("/auth")
+func (h *Handler) RegisterRoutes(g *route.RouterGroup, authMW ...app.HandlerFunc) {
+	authGroup := g.Group("/auth", authMW...)
 	authGroup.POST("/register", h.register)
 	authGroup.POST("/login", h.login)
 	authGroup.POST("/refresh", h.refresh)

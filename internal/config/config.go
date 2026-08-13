@@ -27,6 +27,10 @@ const (
 	defaultFeedCacheOn      = true
 	defaultFollowingCacheOn = true
 	defaultRankStrategy     = "time"
+	rateLimitOn             = true
+	defaultAuthLimit        = 10  // 认证接口：10 次/分钟/IP（防暴力破解演示值）
+	defaultWriteLimit       = 100 // 写接口：100 次/10s/用户
+	defaultReadLimit        = 200 // 读接口：200 次/10s/IP
 )
 
 type Config struct {
@@ -39,6 +43,12 @@ type Config struct {
 	// FeedRankStrategy 关注 Feed 排序策略：time（默认，保持现状）| hot（播放+点赞热度）。
 	// 切换 hot 会使 rank_version 变为 hot-v1，旧 time-v1 游标失效（客户端重新拉第一页）。
 	FeedRankStrategy string
+	// RateLimitEnabled 限流总开关：压测/调试时关闭（feed 压测 50 并发会被 IP 限流挡住）。
+	RateLimitEnabled bool
+	// AuthRateLimit / WriteRateLimit / ReadRateLimit 三档规则配额（见 main 挂载点）。
+	AuthRateLimit  int
+	WriteRateLimit int
+	ReadRateLimit  int
 }
 
 type RedisConfig struct {
@@ -114,6 +124,10 @@ func Load() (*Config, error) {
 			FollowingCacheEnabled: envBool("FEED_FOLLOWING_CACHE_ENABLED", defaultFollowingCacheOn),
 		},
 		FeedRankStrategy: envString("FEED_RANK_STRATEGY", defaultRankStrategy),
+		RateLimitEnabled: envBool("RATE_LIMIT_ENABLED", rateLimitOn),
+		AuthRateLimit:    envInt("RATE_LIMIT_AUTH", defaultAuthLimit),
+		WriteRateLimit:   envInt("RATE_LIMIT_WRITE", defaultWriteLimit),
+		ReadRateLimit:    envInt("RATE_LIMIT_READ", defaultReadLimit),
 	}, nil
 }
 

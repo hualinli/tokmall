@@ -62,12 +62,13 @@ docs/                   mentor 手册 + ADR + 性能基线（gitignore，仅本�
 | M5 播放事件（同步版） | ✅ | play_events 表 + POST /videos/{id}/play：event_id 幂等（UUID v7）、仅 PUBLISHED、未来时间拒绝；Kafka 异步化待做 |
 | M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 游标下推 + 空关注短路；hot 模式有真实消费方 |
 | M8 排序演进 | ✅（基础） | Ranker 接口（召回/排序分离）+ Time/Hot + rank_version 按端点绑定 + FEED_RANK_STRATEGY 实验开关；HybridRanker 待做 |
-| M5-Kafka / M7 | 待做 | play 事件异步化（Kafka + Worker）、限流/熔断/降级 |
+| M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
+| M5-Kafka | 待做 | play 事件异步化（Kafka + Worker）：前置条件=播放高峰压测证明同步写是瓶颈 |
 
 > 注：M4+ 三行不在原里程碑规划内（按 mentor 手册"出现可测量问题再引入技术"，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
-> M5/M6/M8 为方向 1 交付（详见 docs/feed-system-mentor-guide.md §9-12），
-> 下一步候选：M5 Kafka 异步化、M7 限流、Commerce v1（docs/content-commerce-backend-agent-guide.md）。
+> M5/M6/M8/M7 为方向 1 + 治理交付（详见 docs/feed-system-mentor-guide.md §9-12、§7），
+> 下一步候选：播放高峰压测 → M5 Kafka（先证明瓶颈）、Commerce v1（docs/content-commerce-backend-agent-guide.md）。
 
 ## 关键设计约定（改代码前必读）
 

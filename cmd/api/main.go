@@ -120,6 +120,11 @@ func run() error {
 	if cfg.FollowingCacheEnabled {
 		followingCache = feed.NewRedisFollowingFeedCache(redisClient, cfg.FeedCacheTTL)
 	}
+	// 限流器（M7）：Redis 固定窗口计数；关闭（压测/调试）时 nil，registerRoutes 不挂载。
+	var rateLimiter middleware.Limiter
+	if cfg.RateLimitEnabled {
+		rateLimiter = middleware.NewRedisLimiter(redisClient)
+	}
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
 	videoService := video.NewService(
 		video.NewRepository(db),
@@ -157,6 +162,12 @@ func run() error {
 		video:       videoHandler,
 		feed:        feedHandler,
 		interaction: interactionHandler,
+		rateLimiter: rateLimiter,
+		rateRules: rateRules{
+			auth:  middleware.RateLimitRule{Scope: "auth", Limit: cfg.AuthRateLimit, Window: time.Minute},
+			read:  middleware.RateLimitRule{Scope: "read", Limit: cfg.ReadRateLimit, Window: 10 * time.Second},
+			write: middleware.RateLimitRule{Scope: "write", Limit: cfg.WriteRateLimit, Window: 10 * time.Second, ByUser: true},
+		},
 	})
 	errCh := make(chan error, 1)
 	go func() {
@@ -191,7 +202,8 @@ func newRanker(strategy string) feed.Ranker {
 
 // routes 集中持有各模块 handler，registerRoutes 是唯一的路由注册点：
 // 同步测试（main_test.go）用 nil handler 复用同一注册逻辑，
-// 保证 openapi.yaml 与代码路由不脱节。
+// 保证 openapi.yaml 与代码路由不脱节。rateLimiter 为 nil 时（限流关闭）
+// 不挂任何限流中间件，route-sync 测试不受影响。
 type routes struct {
 	db          *gorm.DB
 	token       *token.Manager
@@ -199,6 +211,25 @@ type routes struct {
 	video       *video.Handler
 	feed        *feed.Handler
 	interaction *interaction.Handler
+	rateLimiter middleware.Limiter
+	rateRules   rateRules
+}
+
+// rateRules 三档限流规则（挂载点见 registerRoutes）：
+// auth 比 read 更严（IP 级 10/min 防暴力破解），read 覆盖全部公开读，
+// write 按用户（登录写操作）。
+type rateRules struct {
+	auth  middleware.RateLimitRule
+	read  middleware.RateLimitRule
+	write middleware.RateLimitRule
+}
+
+// authMW 构造 auth 子组的限流中间件（未启用限流时为空，行为与现状一致）。
+func authMW(r routes) []app.HandlerFunc {
+	if r.rateLimiter == nil {
+		return nil
+	}
+	return []app.HandlerFunc{middleware.RateLimit(r.rateLimiter, r.rateRules.auth)}
 }
 
 func registerRoutes(h *server.Hertz, r routes) {
@@ -208,12 +239,21 @@ func registerRoutes(h *server.Hertz, r routes) {
 		c.Response.Header.SetContentType("application/yaml")
 		c.Response.SetBody(api.Spec)
 	})
-	r.user.RegisterRoutes(g)
+	// 读接口限流（IP 级）：挂在 g 上，auth 子组与 optional/protected 组自动继承；
+	// auth 子组再叠加更严的 auth 规则（10/min 先于 read 200/10s 触发，两道都独立计数）。
+	if r.rateLimiter != nil {
+		g.Use(middleware.RateLimit(r.rateLimiter, r.rateRules.read))
+	}
+	r.user.RegisterRoutes(g, authMW(r)...)
 	optional := g.Group("/", middleware.AuthOptional(r.token))
 	r.user.RegisterOptionalRoutes(optional)
 	r.video.RegisterOptionalRoutes(optional)
 	r.interaction.RegisterOptionalRoutes(optional)
 	protected := g.Group("/", middleware.AuthMiddleware(r.token))
+	if r.rateLimiter != nil {
+		// 写接口：用户级限流（ByUser，登录后按 user_id）
+		protected.Use(middleware.RateLimit(r.rateLimiter, r.rateRules.write))
+	}
 	r.user.RegisterProtectedRoutes(protected)
 	r.video.RegisterProtectedRoutes(protected)
 	r.feed.RegisterRoutes(g)
