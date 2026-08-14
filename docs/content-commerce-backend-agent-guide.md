@@ -11,6 +11,9 @@
 1. 用户浏览视频 Feed，并产生点赞、关注、播放等行为。
 2. 用户在活动期间购买限量商品，系统保证不超卖、不重复下单。
 3. 用户向 AI 客服咨询商品、订单和售后，Agent 通过受控业务工具完成处理。
+4. 作者通过视频为商家带货，系统能统计每个作者带来的订单、人数和 GMV。
+
+> 商城业务的产品视角（角色、流程、范围、验收标准）见 [docs/commerce-business.md](./commerce-business.md)。
 
 ## 1. 范围控制
 
@@ -19,7 +22,7 @@
 不要把三大能力定义为同一个 v1。每个阶段都必须能独立运行、演示和复盘：
 
 - **Feed v1**：登录、视频元数据、对象存储、时间排序 Feed、点赞/关注、播放事件。
-- **Commerce v1**：商品、SKU、库存、订单、模拟支付、单商品秒杀。
+- **Commerce v1**：商品、SKU、库存、普通订单、模拟支付、视频挂商品、订单归因、作者带货统计；秒杀作为后续阶段。
 - **Agent v1**：商品查询、订单查询、售后规则、转人工和工具调用审计。
 
 公共基础设施可以逐步引入：Feed 先用 PostgreSQL + Redis + MinIO；Commerce 再引入 Kafka；Agent 最后接入向量检索和 LLM。不要为了“完整技术栈”提前部署所有中间件。
@@ -128,7 +131,7 @@ internal/observability/
 
 ### 第 5-7 周：商城与订单
 
-交付：商品、SKU、库存、订单状态机、模拟支付、幂等请求、订单超时关闭。
+交付：商品、SKU、库存、订单状态机、模拟支付、幂等请求、订单超时关闭、视频挂商品、作者带货归因与统计。
 
 验收：重复请求只产生一个订单；非法状态转换被拒绝；数据库事务边界有文档和测试。
 
@@ -274,6 +277,23 @@ Feed v1 的完成标准：分页稳定、内容可见性正确、缓存有命中
 
 先完成普通订单，再加入秒杀。库存不是唯一风险，交易系统的核心是状态、幂等和补偿。
 
+### 11.0 业务角色与归因
+
+Commerce v1 必须明确：**作者不是商家，作者是带货渠道。**
+
+- 商家/平台拥有商品、SKU、库存和订单。
+- 作者是内容创作者，通过视频挂商品链接帮商家带货。
+- 系统需要在订单上记录来源 `author_id` / `video_id` / `product_id`，用于作者带货统计。
+- 作者带货数据不是“店铺数据”，而是“渠道效果数据”。
+
+因此 Commerce v1 的范围不只是“能下单”，还要包括：
+
+- 视频挂商品：`video_products` 关联表
+- 订单归因：下单时保存来源作者/视频/商品快照
+- 作者统计：按作者维度统计订单数、购买人数、GMV
+
+详细业务梳理见 [docs/commerce-business.md](./commerce-business.md)。
+
 ### 11.1 订单状态机
 
 ```text
@@ -312,7 +332,7 @@ CREATED -> PENDING_PAYMENT -> PAID -> FULFILLING -> COMPLETED
 
 项目实现第二种，但保留第一种作为对照实验。面试时重点讲清楚“最终一致性如何收敛”，不要只说“用了 Redis 所以不会超卖”。
 
-Commerce v1 的完成标准：状态机完整、请求和消费幂等、超卖与少卖都有测试、订单超时可回补、压测中有可重复的库存对账结果。
+Commerce v1 的完成标准：状态机完整、请求和消费幂等、超卖与少卖都有测试、订单超时可回补、压测中有可重复的库存对账结果、订单归因准确、作者带货统计可对账。
 
 ## 12. Agent v1 详细拆解
 
@@ -342,8 +362,8 @@ Agent v1 的完成标准：每个工具有权限、超时和幂等定义；固�
 Feed v1:
 Hertz + PostgreSQL + Redis + MinIO + 基础观测
 
-Commerce v1:
-复用以上组件 + Kafka + Worker + 幂等/补偿
+Commerce v1（普通交易 + 带货归因）:
+复用现有组件 + 事务/幂等/补偿；秒杀阶段再按需引入 Kafka/Worker
 
 Agent v1:
 复用业务 API + LLM + 工具层 + 会话库 + RAG/评测
@@ -359,10 +379,10 @@ Kitex + IDL + OpenSearch + ClickHouse + Kubernetes
 三个模块通过业务链路连接，而不是共享所有内部代码：
 
 ```text
-店铺/商家创建商品
+商家/平台创建商品、SKU、库存
         |
         v
-商家发布视频 -----> 视频详情页挂载商品卡
+作者发布视频 -----> 视频挂载商品卡
         |                         |
         v                         v
 用户浏览/点击 -------> 商品详情/秒杀活动
@@ -371,7 +391,10 @@ Kitex + IDL + OpenSearch + ClickHouse + Kubernetes
                               下单支付
                                   |
                                   v
-                    AI 客服查询商品、订单、售后
+        系统记录订单归因（作者/视频/商品）
+                                  |
+                                  v
+        作者带货统计 + AI 客服查询订单/售后
 ```
 
 ### 14.1 统一产品定位
@@ -379,34 +402,40 @@ Kitex + IDL + OpenSearch + ClickHouse + Kubernetes
 产品名称可以叫“短视频内容电商平台”或“内容电商交易系统”。核心角色：
 
 - 普通用户：浏览视频、点击商品、下单、咨询客服
-- 商家：创建店铺和商品、发布带商品的视频、查看订单
-- 平台运营：审核内容、创建活动、处理售后
+- 作者 / 创作者：发布视频、挂商品链接、查看自己的带货数据；不是商家
+- 商家 / 平台：创建商品、管理库存、处理订单、创建活动
+- 平台运营：审核内容、创建活动、处理售后、查看转化漏斗
 
 演示时不要展示三个互不相关的 Demo，而是展示一条闭环：
 
 1. 商家创建一个商品和一个秒杀活动。
-2. 商家发布一个带商品链接的视频。
+2. 作者发布一个带商品链接的视频。
 3. 用户从 Feed 看到视频并点击商品卡。
-4. 用户进入商品页并参加秒杀。
-5. 用户打开 AI 客服询问订单状态或退款规则。
-6. 后台查看播放、点击、下单和转化事件。
+4. 用户进入商品页并完成下单/秒杀。
+5. 系统记录该订单来自哪个作者、哪个视频。
+6. 作者在带货中心看到订单数、购买人数和 GMV。
+7. 用户打开 AI 客服询问订单状态或退款规则。
+8. 后台查看播放、点击、下单和转化事件。
 
 ### 14.2 最小领域模型
 
 建议先使用明确的 ID 引用连接领域，不要让模块直接读取彼此的数据库表：
 
-- `shop`：`shop_id`, `owner_id`, `status`
+- `shop`：`shop_id`, `owner_id`, `status`（商家店铺，与作者无关）
 - `product`：`product_id`, `shop_id`, `title`, `status`
-- `sku`：`sku_id`, `product_id`, `price`
+- `sku`：`sku_id`, `product_id`, `price`, `stock`
 - `video`：`video_id`, `author_id`, `status`
-- `video_product`：`video_id`, `product_id`, `position`
+- `video_product`：`video_id`, `author_id`, `product_id`, `position`, `status`
 - `campaign`：`campaign_id`, `sku_id`, `start_at`, `end_at`, `stock`
-- `click_event`：`event_id`, `user_id`, `video_id`, `product_id`, `request_id`
-- `order`：`order_id`, `user_id`, `shop_id`, `source_video_id`, `status`
+- `click_event`：`event_id`, `user_id`, `video_id`, `author_id`, `product_id`, `request_id`
+- `order`：`order_id`, `user_id`, `shop_id`, `source_video_id`, `source_author_id`, `status`
+- `author_sales_stats`：`author_id`, `order_count`, `buyer_count`, `gmv`, `updated_at`
 
-`video_product` 是最重要的连接表，它支持一个视频挂一个或多个商品，也允许商品下架后视频仍然存在但商品卡显示不可购买。
+`video_product` 是最重要的连接表，它支持一个视频挂一个或多个商品，也允许商品下架后视频仍然存在但商品卡显示不可购买。<br>
+它同时冗余 `author_id`，方便按作者维度统计带货效果。
 
-`orders.source_video_id` 用于最简单的内容归因。后续需要更精确时，再引入短期 attribution token，而不是一开始设计复杂的营销归因系统。
+`orders.source_video_id` + `orders.source_author_id` 用于最简单的内容归因。下单时保存快照，之后不随视频/作者信息变化而改变。<br>
+后续需要更精确时，再引入短期 attribution token，而不是一开始设计复杂的营销归因系统。
 
 ### 14.3 三阶段如何逐步接入
 
@@ -414,7 +443,7 @@ Kitex + IDL + OpenSearch + ClickHouse + Kubernetes
 
 Feed 阶段可以先不实现真实下单，但数据模型预留商品关联：
 
-- 发布视频时可选择商品
+- 作者发布视频时可选择要推广的商品
 - 视频详情返回商品卡的基本信息
 - 点击商品卡记录 `click_event`
 - 商品卡暂时跳转到一个静态商品详情页
@@ -425,13 +454,16 @@ Feed 阶段可以先不实现真实下单，但数据模型预留商品关联：
 
 商城阶段实现：
 
+- 商品/SKU/库存
 - 商品详情页
 - 普通下单
-- 秒杀活动
-- 从 `source_video_id` 记录订单来源
+- 视频挂商品：`video_product` 关联表
+- 从 `source_video_id` + `source_author_id` 记录订单来源
+- 作者带货统计：订单数、购买人数、GMV
+- 秒杀活动（后续阶段）
 - 点击到下单的转化查询
 
-Feed 不需要知道库存扣减细节，只负责返回 `product_id` 和跳转入口。Commerce 也不需要依赖 Feed 的内部表，只接收可选的来源视频 ID。
+Feed 不需要知道库存扣减细节，只负责返回 `product_id` 和跳转入口。Commerce 也不需要依赖 Feed 的内部表，只接收可选的来源视频 ID 和来源作者 ID。
 
 #### Agent v1：让客服理解完整业务上下文
 
@@ -477,8 +509,9 @@ AfterSaleCreated
 
 ```text
 internal/
-  content/       视频、关注、点赞
-  commerce/      店铺、商品、库存、订单
+  content/       视频、关注、点赞、视频挂商品
+  commerce/      店铺、商品、库存、订单、支付
+  attribution/   订单归因、作者带货统计、转化分析
   customer/      会话和客服
   integration/   领域事件和跨模块适配
 ```
@@ -496,7 +529,7 @@ internal/
 
 - 一个商家和一个店铺
 - 两个商品，其中一个参与秒杀
-- 三条视频，其中两条挂载商品
+- 一个作者（不等于商家），发布三条视频，其中两条挂载商品
 - 一个普通用户和一个客服用户
 - 一组可重复执行的秒杀库存
 - 一组客服评测问题

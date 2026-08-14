@@ -43,7 +43,7 @@ internal/
 migrations/             SQL 迁移（001 users、002 软删、003 videos+tickets、004 follows+likes、005 作者索引、006 play_events）
 web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
 scripts/                seed_perf.sql 百万数据造数（压测用）
-docs/                   mentor 手册 + ADR + 性能基线（gitignore，仅本地）
+docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部使用）
 ```
 
 ## 里程碑状态
@@ -63,12 +63,13 @@ docs/                   mentor 手册 + ADR + 性能基线（gitignore，仅本�
 | M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 游标下推 + 空关注短路；hot 模式有真实消费方 |
 | M8 排序演进 | ✅（基础） | Ranker 接口（召回/排序分离）+ Time/Hot + rank_version 按端点绑定 + FEED_RANK_STRATEGY 实验开关；HybridRanker 待做 |
 | M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
-| M5-Kafka | 待做 | play 事件异步化（Kafka + Worker）：前置条件=播放高峰压测证明同步写是瓶颈 |
+| M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
 
 > 注：M4+ 三行不在原里程碑规划内（按 mentor 手册"出现可测量问题再引入技术"，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
 > M5/M6/M8/M7 为方向 1 + 治理交付（详见 docs/feed-system-mentor-guide.md §9-12、§7），
-> 下一步候选：播放高峰压测 → M5 Kafka（先证明瓶颈）、Commerce v1（docs/content-commerce-backend-agent-guide.md）。
+> 下一步候选：Commerce v1（先做普通商品/订单/视频挂商品/作者带货归因，业务梳理见 docs/commerce-business.md，
+> 技术指南见 docs/content-commerce-backend-agent-guide.md）。M5-Kafka 已通过压测搁置，不再作为近期候选。
 
 ## 关键设计约定（改代码前必读）
 
@@ -84,9 +85,10 @@ docs/                   mentor 手册 + ADR + 性能基线（gitignore，仅本�
 ## 常用命令
 
 ```bash
-docker compose up -d postgres minio redis   # 起依赖（本机 5432/6379 被 go-oj 占用时用 5433 e2e 实例 / 6380 redis）
-DB_PORT=5433 JWT_SECRET=test MINIO_ENDPOINT=localhost:9000 go run ./cmd/api
-cd web && pnpm dev                          # 前端（5173，代理 /api -> 8080）
+make dev                                    # 一键：依赖容器 + 后端 + 前端（全部后台，日志 logs/）
+make stop                                   # 停前后端（幂等）
+make dev-backend / make dev-web             # 只起后端 / 只起前端（JWT_SECRET 等已内置，可 make dev JWT_SECRET=xxx 覆盖）
+tail -f logs/api.log logs/web.log           # 看日志
 go test ./...                               # 后端全量测试
 cd web && pnpm test:e2e                     # Playwright e2e（需后端 + 依赖容器在跑）
 curl localhost:9091/metrics                 # 指标
@@ -95,10 +97,14 @@ wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # 压测（基线见 docs
 
 ## 环境陷阱
 
-- 本机 5432/6379 被另一个项目（go-oj）占用：e2e 用 5433 的 `tokmall-postgres-e2e` 容器、Redis 用 6380（docker-compose 已映射）。
-- 重启服务：`kill -9 $(lsof -ti :8080)`（`pkill -f "exe/api"` 不可靠，go run 子进程名会变）。
+- PostgreSQL 标准端口 5432（docker-compose 已映射）；本机 6379 被 go-oj 占用，Redis 走 6380（compose 已映射）。
+  **不要额外创建 5433 之类的 PG 实例**：早前文档里的 5433 e2e 实例是 5432 被临时占用时手动 `docker run` 的权宜之物，非标准配置，已清理。
+- 重启服务：`make stop && make dev`（后端即 bin/api 进程；**不要用 `lsof -ti :8080 | xargs kill -9`**——本机
+  Shadowrocket/微信也监听 8080，会一起误杀；`make stop` 只匹配 bin/api 和 vite 进程）。
+  go run 子进程名会变，压测一律用 `make build` 的 `./bin/api` 起服务。
 - macOS 无 `setsid`，后台起服务用 `nohup ... & disown`，且 E2E 尽量在同一命令内完成。
-- `docs/`、`AGENTS.md` 在 .gitignore 中，纯本地。
+- `docs/`、`AGENTS.md` 由 git 跟踪（早前误写为 gitignore，已修正）：AGENTS.md 是项目记忆、
+  docs/ 是 mentor 手册 + 压测基线等内部文档，内容偏本项目使用，不面向外部读者。
 
 ## 工作方式（Mentor 模式）
 
