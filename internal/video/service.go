@@ -156,7 +156,7 @@ type VideoListItem struct {
 
 type VideoListResult struct {
 	Items      []VideoListItem `json:"items"`
-	NextCursor string          `json:"next_cursor"`
+	NextCursor *string         `json:"next_cursor"`
 	HasMore    bool            `json:"has_more"`
 }
 
@@ -376,7 +376,7 @@ func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorR
 			slog.Error("encode next cursor failed", "err", err)
 			return nil, fmt.Errorf("encode next cursor: %w", err)
 		}
-		result.NextCursor = next
+		result.NextCursor = &next
 		result.HasMore = true
 	}
 	return result, nil

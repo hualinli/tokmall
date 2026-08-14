@@ -115,7 +115,7 @@ type ProfileItem struct {
 
 type ProfileListResult struct {
 	Items      []ProfileItem `json:"items"`
-	NextCursor string        `json:"next_cursor"`
+	NextCursor *string       `json:"next_cursor"`
 	HasMore    bool          `json:"has_more"`
 }
 
@@ -214,7 +214,7 @@ func (s *Service) assemble(ctx context.Context, viewerID int64, edges []FollowEd
 			slog.Error("encode next cursor failed", "err", err)
 			return nil, fmt.Errorf("encode next cursor: %w", err)
 		}
-		result.NextCursor = next
+		result.NextCursor = &next
 		result.HasMore = true
 	}
 	return result, nil

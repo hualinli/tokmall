@@ -470,7 +470,7 @@ func TestListMine_Pagination(t *testing.T) {
 	require.Equal(t, ids[3], page1.Items[1].VideoID)
 	require.True(t, page1.HasMore)
 
-	page2, err := svc.ListMine(context.Background(), 42, 2, page1.NextCursor)
+	page2, err := svc.ListMine(context.Background(), 42, 2, cursorOrEmpty(page1.NextCursor))
 	require.NoError(t, err)
 	require.Len(t, page2.Items, 2)
 	require.Equal(t, ids[2], page2.Items[0].VideoID)
@@ -674,4 +674,12 @@ func TestPlay_RespectsClientPlayedAt(t *testing.T) {
 	err := svc.Play(context.Background(), 7, videoID, "event-2", &session, &playedAt, nil)
 	require.NoError(t, err)
 	require.True(t, repo.playEvents["event-2"])
+}
+
+// cursorOrEmpty 解引用可空游标（nil → ""，适配 *string 的 NextCursor）。
+func cursorOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

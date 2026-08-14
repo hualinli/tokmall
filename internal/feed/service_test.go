@@ -277,14 +277,14 @@ func TestList_NextPageNoOverlap(t *testing.T) {
 	page1, err := svc.List(context.Background(), 2, "")
 	require.NoError(t, err)
 
-	page2, err := svc.List(context.Background(), 2, page1.NextCursor)
+	page2, err := svc.List(context.Background(), 2, cursorOrEmpty(page1.NextCursor))
 	require.NoError(t, err)
 	require.Len(t, page2.Items, 2)
 	require.Equal(t, int64(3), page2.Items[0].VideoID)
 	require.Equal(t, int64(2), page2.Items[1].VideoID)
 	require.True(t, page2.HasMore)
 
-	page3, err := svc.List(context.Background(), 2, page2.NextCursor)
+	page3, err := svc.List(context.Background(), 2, cursorOrEmpty(page2.NextCursor))
 	require.NoError(t, err)
 	require.Len(t, page3.Items, 1)
 	require.Equal(t, int64(1), page3.Items[0].VideoID)
@@ -315,7 +315,7 @@ func TestList_NewVideoInsertedDoesNotBreakPagination(t *testing.T) {
 		{ID: 6, AuthorID: 1, Title: "v6", ObjectKey: "o6", PublishedAt: ts(time.Minute)},
 	}, repo.videos...)
 
-	page2, err := svc.List(context.Background(), 2, page1.NextCursor)
+	page2, err := svc.List(context.Background(), 2, cursorOrEmpty(page1.NextCursor))
 	require.NoError(t, err)
 	require.Equal(t, int64(3), page2.Items[0].VideoID, "游标语义：翻页不回看新内容，游标本身已消费")
 	require.Equal(t, int64(2), page2.Items[1].VideoID)
@@ -544,7 +544,7 @@ func TestListFollowing_CursorPagination(t *testing.T) {
 	for _, it := range page1.Items {
 		seen[it.VideoID] = true
 	}
-	page2, err := svc.ListFollowing(context.Background(), 7, 3, page1.NextCursor)
+	page2, err := svc.ListFollowing(context.Background(), 7, 3, cursorOrEmpty(page1.NextCursor))
 	require.NoError(t, err)
 	require.Len(t, page2.Items, 3)
 	for _, it := range page2.Items {
@@ -553,7 +553,7 @@ func TestListFollowing_CursorPagination(t *testing.T) {
 	}
 
 	// 第三页翻到底
-	page3, err := svc.ListFollowing(context.Background(), 7, 3, page2.NextCursor)
+	page3, err := svc.ListFollowing(context.Background(), 7, 3, cursorOrEmpty(page2.NextCursor))
 	require.NoError(t, err)
 	for _, it := range page3.Items {
 		require.False(t, seen[it.VideoID], "翻页不重复")
@@ -652,4 +652,12 @@ func TestListFollowing_CacheKeyIsolatedByRankVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, fcache.sets, "hot 排序单独回填，不与 time 串缓存")
 	require.Greater(t, repo.calls, hotCallsBefore, "hot 首次请求应查 DB（未命中 time 的缓存）")
+}
+
+// cursorOrEmpty 解引用可空游标（nil → ""，适配 *string 的 NextCursor）。
+func cursorOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

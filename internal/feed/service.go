@@ -91,7 +91,7 @@ type FeedItem struct {
 
 type FeedResult struct {
 	Items      []FeedItem `json:"items"`
-	NextCursor string     `json:"next_cursor"`
+	NextCursor *string    `json:"next_cursor"`
 	HasMore    bool       `json:"has_more"`
 }
 
@@ -225,7 +225,7 @@ func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before 
 		return nil, fmt.Errorf("list following ids: %w", err)
 	}
 	if len(followeeIDs) == 0 {
-		return &FeedResult{Items: []FeedItem{}, NextCursor: "", HasMore: false}, nil
+		return &FeedResult{Items: []FeedItem{}, NextCursor: nil, HasMore: false}, nil
 	}
 	videos, err := s.repo.ListFollowingCandidates(ctx, viewerID, before, followingPerAuthorK)
 	if err != nil {
@@ -422,7 +422,7 @@ func (s *Service) assemble(ctx context.Context, videos []Video, limit int, rankV
 			slog.Error("encode next cursor failed", "err", err)
 			return nil, fmt.Errorf("encode next cursor: %w", err)
 		}
-		result.NextCursor = next
+		result.NextCursor = &next
 		result.HasMore = true
 	}
 	return result, nil
