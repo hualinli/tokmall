@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { FeedCard } from '../features/feed/feed-card'
 import { FeedSkeleton } from '../features/feed/feed-skeleton'
@@ -131,6 +131,9 @@ interface TimelineProps {
  * 整屏滚动时间线（推荐/关注共用）：
  * - IntersectionObserver 哨兵到底加载下一页
  * - 首屏数据到达 → 默认激活第一条
+ * - 窗口化渲染：每屏高度固定（= 容器高度），滚动时只保留当前屏前后各 1 屏的真卡片，
+ *   其余位置用等高占位 div 撑住总高度。总高度不变 → 滚动条/位置不跳动；
+ *   DOM 内 video 元素恒为窗口大小（3 个），刷过的视频不驻留内存。
  */
 function FeedTimeline({
   items,
@@ -144,6 +147,9 @@ function FeedTimeline({
   emptyHint,
 }: TimelineProps) {
   const [activeId, setActiveId] = useState<number | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const windowIndexRef = useRef(0) // 避免高频 scroll 事件反复 setState
+  const [windowIndex, setWindowIndex] = useState(0)
 
   useEffect(() => {
     if (activeId === null && items[0]) {
@@ -156,6 +162,22 @@ function FeedTimeline({
       onLoadMore()
     }
   })
+
+  // 整屏高度固定 → 滚动位置直接换算当前第几屏（0 基）
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el || el.clientHeight === 0) return
+    const idx = Math.round(el.scrollTop / el.clientHeight)
+    if (idx !== windowIndexRef.current) {
+      windowIndexRef.current = idx
+      setWindowIndex(idx)
+    }
+  }
+
+  // 渲染窗口：当前屏前后各 1 屏（邻屏预渲染，滑动时 video 提前就绪）
+  const PAD = 1
+  const from = Math.max(0, windowIndex - PAD)
+  const to = Math.min(items.length - 1, windowIndex + PAD)
 
   if (isPending) {
     return (
@@ -183,16 +205,21 @@ function FeedTimeline({
   }
 
   return (
-    <div className="h-full snap-y snap-mandatory overflow-y-auto">
-      {items.map((item) => (
-        <FeedCard
-          key={item.video_id}
-          item={item}
-          active={item.video_id === activeId}
-          onActivate={(id) => setActiveId(id)}
-          onRetry={onRetry}
-        />
-      ))}
+    <div ref={scrollRef} onScroll={handleScroll} className="h-full snap-y snap-mandatory overflow-y-auto">
+      {items.map((item, i) =>
+        i >= from && i <= to ? (
+          <FeedCard
+            key={item.video_id}
+            item={item}
+            active={item.video_id === activeId}
+            onActivate={(id) => setActiveId(id)}
+            onRetry={onRetry}
+          />
+        ) : (
+          // 窗口外的等高占位：撑住总高度，保持 snap 吸附点与滚动条不变
+          <div key={item.video_id} className="h-full snap-start bg-black" />
+        ),
+      )}
       <div ref={sentinelRef} className="h-24 snap-none" />
       {isFetchingNextPage && (
         <div className="flex h-24 snap-none items-center justify-center text-sm text-zinc-500">
