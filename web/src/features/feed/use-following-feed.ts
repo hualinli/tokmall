@@ -23,6 +23,6 @@ export function useFollowingFeedQuery(enabled: boolean) {
       if (res.error) throw new Error(apiErrorMessage(res.error))
       return res.data
     },
-    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    getNextPageParam: (last) => last.next_cursor || undefined,
   })
 }
