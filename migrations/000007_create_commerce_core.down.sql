@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS inventory_transactions;
+DROP TABLE IF EXISTS inventory;
+DROP TABLE IF EXISTS skus;
+DROP TABLE IF EXISTS products;
