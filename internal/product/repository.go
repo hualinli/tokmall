@@ -41,15 +41,16 @@ func (r *GormRepository) FindProductByID(ctx context.Context, id int64) (*Produc
 	return &p, nil
 }
 
+// merchantID 作为写入前置条件：归属校验由 service 决策，这里保证并发下的原子兜底。
 func (r *GormRepository) UpdateProductStatus(
 	ctx context.Context,
-	id int64,
+	id, merchantID int64,
 	from ProductStatus,
 	to ProductStatus,
 ) error {
 	res := r.db.WithContext(ctx).
 		Model(&Product{}).
-		Where("id = ? AND status = ?", id, string(from)).
+		Where("id = ? AND merchant_id = ? AND status = ?", id, merchantID, string(from)).
 		Update("status", string(to))
 
 	if res.Error != nil {

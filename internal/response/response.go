@@ -17,6 +17,7 @@ var (
 	ErrVideoNotFound         = &BizError{Code: "VIDEO_NOT_FOUND", Message: "video not found"}
 	ErrVideoNotPublished     = &BizError{Code: "VIDEO_NOT_PUBLISHED", Message: "video not published"}
 	ErrUserNotFound          = &BizError{Code: "USER_NOT_FOUND", Message: "user not found"}
+	ErrProductNotFound       = &BizError{Code: "PRODUCT_NOT_FOUND", Message: "product not found"}
 	ErrUnauthenticated       = &BizError{Code: "UNAUTHENTICATED", Message: "invalid credentials"}
 	ErrForbidden             = &BizError{Code: "FORBIDDEN", Message: "forbidden"}
 	ErrRateLimited           = &BizError{Code: "RATE_LIMITED", Message: "too many requests"}
