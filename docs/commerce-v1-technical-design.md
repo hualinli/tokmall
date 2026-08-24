@@ -105,7 +105,7 @@ CREATE TABLE products (
     merchant_id BIGINT NOT NULL,
     title       TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    cover_url   TEXT NOT NULL DEFAULT '',
+    cover_key   TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL DEFAULT 'ON_SALE'
                 CHECK (status IN ('ON_SALE', 'OFF_SALE', 'DELETED')),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -639,7 +639,7 @@ WHERE video_id IN (...)
 ORDER BY video_id, sort_order;
 
 -- 查商品摘要
-SELECT id, title, cover_url, status
+SELECT id, title, cover_key, status
 FROM products
 WHERE id IN (...);
 

@@ -25,7 +25,7 @@ type Product struct {
 	MerchantID  int64         `gorm:"column:merchant_id"`
 	Title       string        `gorm:"column:title"`
 	Description string        `gorm:"column:description"`
-	CoverURL    string        `gorm:"column:cover_url"`
+	CoverKey    string        `gorm:"column:cover_key"`
 	Status      ProductStatus `gorm:"column:status"`
 	CreatedAt   time.Time     `gorm:"column:created_at"`
 	UpdatedAt   time.Time     `gorm:"column:updated_at"`

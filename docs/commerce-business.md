@@ -196,7 +196,7 @@ products
   merchant_id
   title
   description
-  cover_url
+  cover_key       -- 对象存储 key；API 返回动态签发的 cover_url
   status          -- ON_SALE / OFF_SALE
   created_at
 
