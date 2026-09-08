@@ -25,8 +25,10 @@ import (
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/interaction"
+	"github.com/lihualin/tokmall/internal/inventory"
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/observability"
+	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
@@ -155,6 +157,14 @@ func run() error {
 		storageClient,
 		cfg.CursorSecret,
 	))
+	productHandler := product.NewHandler(product.NewService(
+		product.NewRepository(db),
+		storageClient,
+		videoService, // ImageTicketValidator：封面防伪造复用视频模块的凭证核销
+	))
+	inventoryHandler := inventory.NewHandler(inventory.NewService(
+		inventory.NewRepository(db),
+	))
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -162,6 +172,8 @@ func run() error {
 		video:       videoHandler,
 		feed:        feedHandler,
 		interaction: interactionHandler,
+		product:     productHandler,
+		inventory:   inventoryHandler,
 		rateLimiter: rateLimiter,
 		rateRules: rateRules{
 			authAccount: middleware.RateLimitRule{Scope: "auth-account", Limit: cfg.AuthAccountLimit, Window: time.Minute},
@@ -212,6 +224,8 @@ type routes struct {
 	video       *video.Handler
 	feed        *feed.Handler
 	interaction *interaction.Handler
+	product     *product.Handler
+	inventory   *inventory.Handler
 	rateLimiter middleware.Limiter
 	rateRules   rateRules
 }
@@ -258,6 +272,7 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.user.RegisterOptionalRoutes(optional)
 	r.video.RegisterOptionalRoutes(optional)
 	r.interaction.RegisterOptionalRoutes(optional)
+	r.product.RegisterOptionalRoutes(optional)
 	protected := g.Group("/", middleware.AuthMiddleware(r.token))
 	if r.rateLimiter != nil {
 		// 写接口：用户级限流（ByUser，登录后按 user_id）
@@ -268,4 +283,6 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.feed.RegisterRoutes(g)
 	r.feed.RegisterProtectedRoutes(protected)
 	r.interaction.RegisterProtectedRoutes(protected)
+	r.product.RegisterProtectedRoutes(protected)
+	r.inventory.RegisterProtectedRoutes(protected)
 }
