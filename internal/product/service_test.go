@@ -12,10 +12,17 @@ type fakeProductRepository struct {
 	findProductByIDFn     func(context.Context, int64) (*Product, error)
 	updateProductStatusFn func(context.Context, int64, int64, ProductStatus, ProductStatus) error
 	listProductsFn        func(context.Context, ProductFilter, int64, int) ([]Product, error)
+	createSKUFn           func(context.Context, *SKU) error
+	findSKUByIDFn         func(context.Context, int64) (*SKU, error)
+	updateSKUStatusFn     func(context.Context, int64, SKUStatus, SKUStatus) error
+	listSKUsByProductFn   func(context.Context, int64) ([]SKU, error)
 	createProductCalls    int
 	findProductByIDCalls  int
 	updateStatusCalls     int
 	listProductsCalls     int
+	createSKUCalls        int
+	findSKUByIDCalls      int
+	updateSKUStatusCalls  int
 }
 
 type fakeProductURLProvider struct {
@@ -27,6 +34,15 @@ func (f fakeProductURLProvider) PresignGetURL(ctx context.Context, objectKey str
 		return "signed://" + objectKey, nil
 	}
 	return f.presignGetURLFn(ctx, objectKey)
+}
+
+// fakeImageValidator 封面上传凭证校验假实现，默认放行。
+type fakeImageValidator struct {
+	err error
+}
+
+func (f *fakeImageValidator) ValidateImage(_ context.Context, _ int64, _ string) error {
+	return f.err
 }
 
 func (f *fakeProductRepository) CreateProduct(ctx context.Context, p *Product) error {
@@ -70,6 +86,50 @@ func (f *fakeProductRepository) ListProducts(
 	return f.listProductsFn(ctx, filter, beforeID, limit)
 }
 
+func testSKU() *SKU {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	return &SKU{
+		ID:        11,
+		ProductID: 101,
+		Spec:      "黑色 / L",
+		Price:     9900,
+		Status:    SKUStatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func (f *fakeProductRepository) CreateSKU(ctx context.Context, s *SKU) error {
+	f.createSKUCalls++
+	if f.createSKUFn == nil {
+		return nil
+	}
+	return f.createSKUFn(ctx, s)
+}
+
+func (f *fakeProductRepository) FindSKUByID(ctx context.Context, id int64) (*SKU, error) {
+	f.findSKUByIDCalls++
+	if f.findSKUByIDFn == nil {
+		return nil, ErrNotFound
+	}
+	return f.findSKUByIDFn(ctx, id)
+}
+
+func (f *fakeProductRepository) UpdateSKUStatus(ctx context.Context, id int64, from, to SKUStatus) error {
+	f.updateSKUStatusCalls++
+	if f.updateSKUStatusFn == nil {
+		return nil
+	}
+	return f.updateSKUStatusFn(ctx, id, from, to)
+}
+
+func (f *fakeProductRepository) ListSKUsByProduct(ctx context.Context, productID int64) ([]SKU, error) {
+	if f.listSKUsByProductFn == nil {
+		return nil, nil
+	}
+	return f.listSKUsByProductFn(ctx, productID)
+}
+
 func testProduct() *Product {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	return &Product{
@@ -91,7 +151,7 @@ func TestServiceToProductItemPresignsCoverKey(t *testing.T) {
 			gotObjectKey = objectKey
 			return "https://minio.local/signed/product-cover", nil
 		},
-	})
+	}, &fakeImageValidator{})
 
 	item, err := service.toProductItem(context.Background(), testProduct())
 
@@ -110,6 +170,40 @@ func TestServiceToProductItemPresignsCoverKey(t *testing.T) {
 }
 
 func TestServiceCreateProduct(t *testing.T) {
+	t.Run("cover key must pass ticket validation", func(t *testing.T) {
+		repo := &fakeProductRepository{}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{
+			err: errors.New("ticket invalid"),
+		})
+
+		_, err := service.CreateProduct(context.Background(), CreateProductParams{
+			MerchantID: 7,
+			Title:      "valid",
+			CoverKey:   "covers/7/forged.png",
+		})
+
+		if !errors.Is(err, ErrInvalidCoverKey) {
+			t.Fatalf("error = %v, want ErrInvalidCoverKey", err)
+		}
+		if repo.createProductCalls != 0 {
+			t.Fatalf("repository calls = %d, want 0", repo.createProductCalls)
+		}
+	})
+
+	t.Run("empty cover key skips validation", func(t *testing.T) {
+		repo := &fakeProductRepository{}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		_, err := service.CreateProduct(context.Background(), CreateProductParams{
+			MerchantID: 7,
+			Title:      "valid",
+		})
+
+		if err != nil {
+			t.Fatalf("CreateProduct() error = %v", err)
+		}
+	})
+
 	t.Run("valid params delegate to repository and set initial status", func(t *testing.T) {
 		var saved *Product
 		repo := &fakeProductRepository{
@@ -119,7 +213,7 @@ func TestServiceCreateProduct(t *testing.T) {
 				return nil
 			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		got, err := service.CreateProduct(context.Background(), CreateProductParams{
 			MerchantID:  7,
@@ -164,7 +258,7 @@ func TestServiceCreateProduct(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeProductRepository{}
-			service := NewService(repo, fakeProductURLProvider{})
+			service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 			_, err := service.CreateProduct(context.Background(), tt.params)
 
@@ -187,8 +281,15 @@ func TestServiceGetProduct(t *testing.T) {
 				}
 				return testProduct(), nil
 			},
+			listSKUsByProductFn: func(context.Context, int64) ([]SKU, error) {
+				active := testSKU()
+				disabled := testSKU()
+				disabled.ID = 12
+				disabled.Status = SKUStatusDisabled
+				return []SKU{*active, *disabled}, nil
+			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		got, err := service.GetProduct(context.Background(), 101)
 
@@ -197,6 +298,10 @@ func TestServiceGetProduct(t *testing.T) {
 		}
 		if got == nil || got.ID != 101 || got.Status != ProductStatusOnSale {
 			t.Errorf("GetProduct() = %#v, want mapped product", got)
+		}
+		// 详情只暴露在售 SKU，DISABLED 对外不可见
+		if len(got.SKUs) != 1 || got.SKUs[0].ID != 11 {
+			t.Errorf("skus = %#v, want only active sku 11", got.SKUs)
 		}
 	})
 
@@ -208,12 +313,179 @@ func TestServiceGetProduct(t *testing.T) {
 				return deleted, nil
 			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		_, err := service.GetProduct(context.Background(), deleted.ID)
 
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("GetProduct() error = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestServiceAddSKU(t *testing.T) {
+	t.Run("valid params create active sku", func(t *testing.T) {
+		var saved *SKU
+		repo := &fakeProductRepository{
+			findProductByIDFn: func(context.Context, int64) (*Product, error) {
+				return testProduct(), nil // merchant 7, ON_SALE
+			},
+			createSKUFn: func(_ context.Context, s *SKU) error {
+				saved = s
+				s.ID = 11
+				return nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		got, err := service.AddSKU(context.Background(), AddSKUParams{
+			ProductID: 101, MerchantID: 7, Spec: " 黑色 / L ", PriceCents: 9900,
+		})
+
+		if err != nil {
+			t.Fatalf("AddSKU() error = %v", err)
+		}
+		if saved == nil || saved.Status != SKUStatusActive || saved.Price != 9900 {
+			t.Errorf("saved = %#v, want ACTIVE sku with price 9900", saved)
+		}
+		if saved.Spec != "黑色 / L" {
+			t.Errorf("spec = %q, want trimmed", saved.Spec)
+		}
+		if got == nil || got.ID != 11 {
+			t.Errorf("result = %#v, want sku 11", got)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		setup   func(repo *fakeProductRepository)
+		params  AddSKUParams
+		wantErr error
+	}{
+		{
+			name:    "price must be positive",
+			params:  AddSKUParams{ProductID: 101, MerchantID: 7, PriceCents: 0},
+			wantErr: ErrInvalidParam,
+		},
+		{
+			name: "other merchant's product hides as not found",
+			setup: func(repo *fakeProductRepository) {
+				repo.findProductByIDFn = func(context.Context, int64) (*Product, error) {
+					return testProduct(), nil
+				}
+			},
+			params:  AddSKUParams{ProductID: 101, MerchantID: 8, PriceCents: 100},
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "deleted product rejects new skus",
+			setup: func(repo *fakeProductRepository) {
+				repo.findProductByIDFn = func(context.Context, int64) (*Product, error) {
+					p := testProduct()
+					p.Status = ProductStatusDeleted
+					return p, nil
+				}
+			},
+			params:  AddSKUParams{ProductID: 101, MerchantID: 7, PriceCents: 100},
+			wantErr: ErrNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeProductRepository{}
+			if tt.setup != nil {
+				tt.setup(repo)
+			}
+			service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+			_, err := service.AddSKU(context.Background(), tt.params)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestServiceChangeSKUStatus(t *testing.T) {
+	t.Run("valid transition uses compare and set", func(t *testing.T) {
+		var gotFrom, gotTo SKUStatus
+		repo := &fakeProductRepository{
+			findSKUByIDFn: func(context.Context, int64) (*SKU, error) { return testSKU(), nil },
+			findProductByIDFn: func(context.Context, int64) (*Product, error) {
+				return testProduct(), nil
+			},
+			updateSKUStatusFn: func(_ context.Context, _ int64, from, to SKUStatus) error {
+				gotFrom, gotTo = from, to
+				return nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		got, err := service.ChangeSKUStatus(context.Background(), 7, 101, 11, SKUStatusDisabled)
+
+		if err != nil {
+			t.Fatalf("ChangeSKUStatus() error = %v", err)
+		}
+		if gotFrom != SKUStatusActive || gotTo != SKUStatusDisabled {
+			t.Errorf("transition = %q -> %q, want ACTIVE -> DISABLED", gotFrom, gotTo)
+		}
+		if got == nil || got.Status != SKUStatusDisabled {
+			t.Errorf("result = %#v, want DISABLED", got)
+		}
+	})
+
+	t.Run("sku under different product is not found", func(t *testing.T) {
+		repo := &fakeProductRepository{
+			findSKUByIDFn: func(context.Context, int64) (*SKU, error) { return testSKU(), nil },
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		_, err := service.ChangeSKUStatus(context.Background(), 7, 999, 11, SKUStatusDisabled)
+
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("error = %v, want ErrNotFound", err)
+		}
+		if repo.updateSKUStatusCalls != 0 {
+			t.Fatalf("update calls = %d, want 0", repo.updateSKUStatusCalls)
+		}
+	})
+
+	t.Run("other merchant is not found", func(t *testing.T) {
+		repo := &fakeProductRepository{
+			findSKUByIDFn: func(context.Context, int64) (*SKU, error) { return testSKU(), nil },
+			findProductByIDFn: func(context.Context, int64) (*Product, error) {
+				return testProduct(), nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		_, err := service.ChangeSKUStatus(context.Background(), 8, 101, 11, SKUStatusDisabled)
+
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("error = %v, want ErrNotFound", err)
+		}
+		if repo.updateSKUStatusCalls != 0 {
+			t.Fatalf("update calls = %d, want 0", repo.updateSKUStatusCalls)
+		}
+	})
+
+	t.Run("rejects invalid transition without update", func(t *testing.T) {
+		repo := &fakeProductRepository{
+			findSKUByIDFn: func(context.Context, int64) (*SKU, error) { return testSKU(), nil },
+			findProductByIDFn: func(context.Context, int64) (*Product, error) {
+				return testProduct(), nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		_, err := service.ChangeSKUStatus(context.Background(), 7, 101, 11, SKUStatusActive)
+
+		if !errors.Is(err, ErrInvalidStatusTransition) {
+			t.Fatalf("error = %v, want ErrInvalidStatusTransition", err)
+		}
+		if repo.updateSKUStatusCalls != 0 {
+			t.Fatalf("update calls = %d, want 0", repo.updateSKUStatusCalls)
 		}
 	})
 }
@@ -231,7 +503,7 @@ func TestServiceChangeProductStatus(t *testing.T) {
 				return nil
 			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		got, err := service.ChangeProductStatus(context.Background(), product.MerchantID, product.ID, ProductStatusOffSale)
 
@@ -253,7 +525,7 @@ func TestServiceChangeProductStatus(t *testing.T) {
 				return product, nil
 			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		_, err := service.ChangeProductStatus(context.Background(), product.MerchantID, product.ID, ProductStatusOnSale)
 
@@ -272,7 +544,7 @@ func TestServiceChangeProductStatus(t *testing.T) {
 				return product, nil
 			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		_, err := service.ChangeProductStatus(context.Background(), product.MerchantID+1, product.ID, ProductStatusOffSale)
 
@@ -294,7 +566,7 @@ func TestServiceChangeProductStatus(t *testing.T) {
 				return conflict
 			},
 		}
-		service := NewService(repo, fakeProductURLProvider{})
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 		_, err := service.ChangeProductStatus(context.Background(), 7, 101, ProductStatusOffSale)
 
@@ -317,7 +589,7 @@ func TestServiceListProducts(t *testing.T) {
 			return []Product{*first, *second}, nil
 		},
 	}
-	service := NewService(repo, fakeProductURLProvider{})
+	service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
 
 	got, err := service.ListProducts(context.Background(), ProductListParams{
 		MerchantID: 7,
@@ -333,10 +605,127 @@ func TestServiceListProducts(t *testing.T) {
 	if gotFilter.MerchantID != 7 || gotFilter.Status != ProductStatusOnSale || gotFilter.Keyword != "demo" {
 		t.Errorf("filter = %#v, want passed filter", gotFilter)
 	}
-	if gotBeforeID != 200 || gotLimit != 2 {
-		t.Errorf("pagination = beforeID %d, limit %d; want 200, 2", gotBeforeID, gotLimit)
+	// 多取一条探测 has_more
+	if gotBeforeID != 200 || gotLimit != 3 {
+		t.Errorf("pagination = beforeID %d, limit %d; want 200, 3", gotBeforeID, gotLimit)
 	}
 	if got == nil || len(got.Items) != 2 {
 		t.Errorf("result = %#v, want 2 items", got)
 	}
+}
+
+func TestServiceListPagination(t *testing.T) {
+	t.Run("has_more true with next_before_id", func(t *testing.T) {
+		repo := &fakeProductRepository{
+			listProductsFn: func(_ context.Context, _ ProductFilter, _ int64, limit int) ([]Product, error) {
+				products := make([]Product, 0, limit)
+				for i := 0; i < limit; i++ {
+					p := testProduct()
+					p.ID = int64(100 - i)
+					products = append(products, *p)
+				}
+				return products, nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		got, err := service.ListProducts(context.Background(), ProductListParams{MerchantID: 7, Limit: 2})
+
+		if err != nil {
+			t.Fatalf("ListProducts() error = %v", err)
+		}
+		if !got.HasMore {
+			t.Error("HasMore = false, want true")
+		}
+		if got.NextBeforeID == nil || *got.NextBeforeID != 99 {
+			t.Errorf("NextBeforeID = %v, want 99", got.NextBeforeID)
+		}
+		if len(got.Items) != 2 {
+			t.Errorf("items = %d, want 2 (limit 截断)", len(got.Items))
+		}
+	})
+
+	t.Run("last page clears cursor", func(t *testing.T) {
+		repo := &fakeProductRepository{
+			listProductsFn: func(_ context.Context, _ ProductFilter, _ int64, _ int) ([]Product, error) {
+				only := testProduct()
+				return []Product{*only}, nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		got, err := service.SearchProducts(context.Background(), "demo", 0, 20)
+
+		if err != nil {
+			t.Fatalf("SearchProducts() error = %v", err)
+		}
+		if got.HasMore || got.NextBeforeID != nil {
+			t.Errorf("HasMore/NextBeforeID = %v/%v, want false/nil", got.HasMore, got.NextBeforeID)
+		}
+	})
+
+	t.Run("limit normalized", func(t *testing.T) {
+		var gotLimit int
+		repo := &fakeProductRepository{
+			listProductsFn: func(_ context.Context, _ ProductFilter, _ int64, limit int) ([]Product, error) {
+				gotLimit = limit
+				return nil, nil
+			},
+		}
+		service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		if _, err := service.ListProducts(context.Background(), ProductListParams{MerchantID: 7}); err != nil {
+			t.Fatalf("default limit: %v", err)
+		}
+		if gotLimit != defaultListLimit+1 {
+			t.Errorf("default limit = %d, want %d", gotLimit, defaultListLimit+1)
+		}
+		if _, err := service.ListProducts(context.Background(), ProductListParams{MerchantID: 7, Limit: 9999}); err != nil {
+			t.Fatalf("over max limit: %v", err)
+		}
+		if gotLimit != maxListLimit+1 {
+			t.Errorf("capped limit = %d, want %d", gotLimit, maxListLimit+1)
+		}
+	})
+}
+
+func TestServiceSearchProducts(t *testing.T) {
+	var gotFilter ProductFilter
+	repo := &fakeProductRepository{
+		listProductsFn: func(_ context.Context, filter ProductFilter, _ int64, _ int) ([]Product, error) {
+			gotFilter = filter
+			only := testProduct()
+			return []Product{*only}, nil
+		},
+	}
+	service := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+	got, err := service.SearchProducts(context.Background(), "  demo  ", 50, 10)
+
+	if err != nil {
+		t.Fatalf("SearchProducts() error = %v", err)
+	}
+	// 搜索强制只看 ON_SALE，且不限定商家；keyword 去除首尾空白
+	if gotFilter.Status != ProductStatusOnSale || gotFilter.MerchantID != 0 {
+		t.Errorf("filter = %#v, want ON_SALE without merchant", gotFilter)
+	}
+	if gotFilter.Keyword != "demo" {
+		t.Errorf("keyword = %q, want trimmed \"demo\"", gotFilter.Keyword)
+	}
+	if got == nil || len(got.Items) != 1 {
+		t.Errorf("result = %#v, want 1 item", got)
+	}
+
+	t.Run("rejects invalid status filter", func(t *testing.T) {
+		service := NewService(&fakeProductRepository{}, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		_, err := service.ListProducts(context.Background(), ProductListParams{
+			MerchantID: 7,
+			Status:     ProductStatusDeleted,
+		})
+
+		if !errors.Is(err, ErrInvalidParam) {
+			t.Fatalf("error = %v, want ErrInvalidParam", err)
+		}
+	})
 }

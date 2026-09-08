@@ -503,6 +503,235 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthenticated"
 
+  /api/v1/products:
+    post:
+      tags: [products]
+      summary: 创建商品（商家；初始 ON_SALE）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "200":
+          description: 创建成功（cover_url 为预签名 URL，短时效）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductItem"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+    get:
+      tags: [products]
+      summary: 我的商品列表（商家管理视图，不含已删除；id 倒序 + before_id 游标）
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/BeforeID"
+        - name: status
+          in: query
+          description: 状态过滤（缺省返回全部非删除状态）
+          schema:
+            type: string
+            enum: [ON_SALE, OFF_SALE]
+        - name: keyword
+          in: query
+          description: 标题模糊匹配
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 商品列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /api/v1/products/search:
+    get:
+      tags: [products]
+      summary: 商品搜索（用户侧，仅 ON_SALE；匿名可用）
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/BeforeID"
+        - name: keyword
+          in: query
+          description: 标题模糊匹配（可选，缺省浏览全部在售商品）
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 在售商品列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+
+  /api/v1/products/{id}:
+    get:
+      tags: [products]
+      summary: 商品详情（公开可看；DELETED 对外 404；skus 仅含在售规格）
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+      responses:
+        "200":
+          description: 商品详情（含在售 SKU 列表）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+
+  /api/v1/products/{id}/status:
+    post:
+      tags: [products]
+      summary: 变更商品状态（仅商家本人；ON_SALE/OFF_SALE 互转或软删 DELETED）
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeStatusRequest"
+      responses:
+        "200":
+          description: 状态变更成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductItem"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+  /api/v1/products/{id}/skus:
+    post:
+      tags: [products]
+      summary: 给商品新增 SKU（仅商家本人；初始 ACTIVE）
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSKURequest"
+      responses:
+        "201":
+          description: 创建成功（价格为分）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SKUItem"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+
+  /api/v1/products/{id}/skus/{sku_id}/status:
+    post:
+      tags: [products]
+      summary: 变更 SKU 状态（仅商家本人；ACTIVE/DISABLED 互转）
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+        - $ref: "#/components/parameters/SkuID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeSKUStatusRequest"
+      responses:
+        "200":
+          description: 状态变更成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SKUItem"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+        "409":
+          description: 状态已被并发修改
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/products/{id}/skus/{sku_id}/stock:
+    get:
+      tags: [products]
+      summary: 查询 SKU 库存（仅商家本人；未初始化按 0 返回）
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+        - $ref: "#/components/parameters/SkuID"
+      responses:
+        "200":
+          description: 当前库存
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockView"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+    post:
+      tags: [products]
+      summary: 调整 SKU 库存（仅商家本人；正数入库、负数扣减；以 idempotency_key 幂等）
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+        - $ref: "#/components/parameters/SkuID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdjustStockRequest"
+      responses:
+        "200":
+          description: 调整后的当前库存（重复 key 幂等重放也返回 200）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockView"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+        "409":
+          description: 库存不足
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -527,6 +756,27 @@ components:
         type: string
     VideoID:
       name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    ProductID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    BeforeID:
+      name: before_id
+      in: query
+      description: 上一页最后一条的商品 ID（无则取第一页）
+      schema:
+        type: integer
+        format: int64
+    SkuID:
+      name: sku_id
       in: path
       required: true
       schema:
@@ -577,6 +827,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    ProductNotFound:
+      description: 商品不存在或不可见（404 不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     DuplicateAction:
       description: 重复操作（邮箱/用户名已存在、状态冲突）
       content:
@@ -597,9 +853,9 @@ components:
             code:
               type: string
               enum: [INVALID_ARGUMENT, INVALID_CURSOR, VIDEO_NOT_FOUND, VIDEO_NOT_PUBLISHED,
-                USER_NOT_FOUND, UNAUTHENTICATED, FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION,
-                UPLOAD_URL_EXPIRED, INTERNAL, DEPENDENCY_UNAVAILABLE, MISSING_AUTH_HEADER,
-                INVALID_AUTH_TYPE, INVALID_TOKEN]
+                USER_NOT_FOUND, PRODUCT_NOT_FOUND, INSUFFICIENT_STOCK, UNAUTHENTICATED,
+                FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION, UPLOAD_URL_EXPIRED, INTERNAL,
+                DEPENDENCY_UNAVAILABLE, MISSING_AUTH_HEADER, INVALID_AUTH_TYPE, INVALID_TOKEN]
             message:
               type: string
             details:
@@ -951,6 +1207,154 @@ components:
           format: int64
         liked:
           type: boolean
+
+    CreateProductRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        cover_key:
+          type: string
+          nullable: true
+          description: MinIO key，来自图片上传凭证
+    ChangeStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/ProductStatus"
+    ProductStatus:
+      type: string
+      enum: [ON_SALE, OFF_SALE, DELETED]
+    ProductItem:
+      type: object
+      required: [product_id, merchant_id, title, description, cover_url, status,
+        created_at, updated_at]
+      properties:
+        product_id:
+          type: integer
+          format: int64
+        merchant_id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        description:
+          type: string
+        cover_url:
+          type: string
+          nullable: true
+          description: 预签名 URL（短时效），直接用于展示
+        status:
+          $ref: "#/components/schemas/ProductStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProductListResult:
+      type: object
+      required: [items, next_before_id, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductItem"
+        next_before_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: 下一页请求携带的游标（本页最后一条 ID；null 表示没有下一页）
+        has_more:
+          type: boolean
+    CreateSKURequest:
+      type: object
+      required: [price]
+      properties:
+        spec:
+          type: string
+          description: 规格描述，如“黑色 / L”，可为空（单规格商品）
+        price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 单价，单位分
+    ChangeSKUStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/SkuStatus"
+    SkuStatus:
+      type: string
+      enum: [ACTIVE, DISABLED]
+    SKUItem:
+      type: object
+      required: [sku_id, product_id, spec, price, status, created_at, updated_at]
+      properties:
+        sku_id:
+          type: integer
+          format: int64
+        product_id:
+          type: integer
+          format: int64
+        spec:
+          type: string
+        price:
+          type: integer
+          format: int64
+          description: 单价，单位分
+        status:
+          $ref: "#/components/schemas/SkuStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ProductDetail:
+      type: object
+      allOf:
+        - $ref: "#/components/schemas/ProductItem"
+        - type: object
+          required: [skus]
+          properties:
+            skus:
+              type: array
+              description: 在售（ACTIVE）SKU 列表；已停用规格不对外暴露
+              items:
+                $ref: "#/components/schemas/SKUItem"
+    AdjustStockRequest:
+      type: object
+      required: [change, idempotency_key]
+      properties:
+        change:
+          type: integer
+          format: int64
+          description: 正数入库、负数扣减；扣减超过当前库存返回 409 INSUFFICIENT_STOCK
+        idempotency_key:
+          type: string
+          description: 客户端生成，同一 key 重复提交不重复变更（幂等重放返回当前库存）
+    StockView:
+      type: object
+      required: [sku_id, quantity]
+      properties:
+        sku_id:
+          type: integer
+          format: int64
+        quantity:
+          type: integer
+          format: int64
+          minimum: 0
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
     PlayRequest:
       type: object
       required: [event_id]

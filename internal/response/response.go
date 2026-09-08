@@ -18,6 +18,7 @@ var (
 	ErrVideoNotPublished     = &BizError{Code: "VIDEO_NOT_PUBLISHED", Message: "video not published"}
 	ErrUserNotFound          = &BizError{Code: "USER_NOT_FOUND", Message: "user not found"}
 	ErrProductNotFound       = &BizError{Code: "PRODUCT_NOT_FOUND", Message: "product not found"}
+	ErrInsufficientStock     = &BizError{Code: "INSUFFICIENT_STOCK", Message: "insufficient stock"}
 	ErrUnauthenticated       = &BizError{Code: "UNAUTHENTICATED", Message: "invalid credentials"}
 	ErrForbidden             = &BizError{Code: "FORBIDDEN", Message: "forbidden"}
 	ErrRateLimited           = &BizError{Code: "RATE_LIMITED", Message: "too many requests"}
@@ -36,6 +37,8 @@ var statusByCode = map[string]int{
 	"VIDEO_NOT_FOUND":        consts.StatusNotFound,
 	"VIDEO_NOT_PUBLISHED":    consts.StatusNotFound,
 	"USER_NOT_FOUND":         consts.StatusNotFound,
+	"PRODUCT_NOT_FOUND":      consts.StatusNotFound,
+	"INSUFFICIENT_STOCK":     consts.StatusConflict,
 	"UNAUTHENTICATED":        consts.StatusUnauthorized,
 	"MISSING_AUTH_HEADER":    consts.StatusUnauthorized,
 	"INVALID_AUTH_TYPE":      consts.StatusUnauthorized,

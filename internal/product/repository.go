@@ -19,15 +19,7 @@ func NewRepository(db *gorm.DB) *GormRepository {
 }
 
 func (r *GormRepository) CreateProduct(ctx context.Context, p *Product) error {
-	if err := r.db.WithContext(ctx).Create(p).Error; err != nil {
-		// var pgErr *pgconn.PgError
-		// if errors.As(err,&pgErr) && pgErr.Code == "23505" {
-
-		// }
-		// TODO:测试可能会出现的err
-		return err
-	}
-	return nil
+	return r.db.WithContext(ctx).Create(p).Error
 }
 
 func (r *GormRepository) FindProductByID(ctx context.Context, id int64) (*Product, error) {
@@ -81,6 +73,9 @@ func (r *GormRepository) ListProducts(
 
 	if filter.Status != "" {
 		q = q.Where("status = ?", string(filter.Status))
+	} else {
+		// 不指定状态时排除软删商品：列表（商家/搜索）都不应翻出 DELETED
+		q = q.Where("status <> ?", string(ProductStatusDeleted))
 	}
 
 	if filter.Keyword != "" {
@@ -100,15 +95,7 @@ func (r *GormRepository) ListProducts(
 }
 
 func (r *GormRepository) CreateSKU(ctx context.Context, s *SKU) error {
-	if err := r.db.WithContext(ctx).Create(s).Error; err != nil {
-		// var pgErr *pgconn.PgError
-		// if errors.As(err,&pgErr) && pgErr.Code == "23505" {
-
-		// }
-		// TODO:测试可能会出现的err
-		return err
-	}
-	return nil
+	return r.db.WithContext(ctx).Create(s).Error
 }
 
 func (r *GormRepository) FindSKUByID(ctx context.Context, id int64) (*SKU, error) {
