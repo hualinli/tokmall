@@ -46,11 +46,13 @@ dev:
 # 子 shell + </dev/null：后台进程彻底脱离进程树，避免父 shell/管道等待挂起
 dev-backend:
 	$(MAKE) build
+	@mkdir -p $(dir $(API_LOG))
 	(env JWT_SECRET=$(JWT_SECRET) nohup $(BIN) > $(API_LOG) 2>&1 < /dev/null &)
 	@sleep 2 && echo "✅ 后端已起 (PID $$(pgrep -f 'bin/api')，JWT_SECRET=$(JWT_SECRET))"
 
 # 仅起前端（Vite dev server，日志落 logs/web.log）
 dev-web:
+	@mkdir -p $(dir $(WEB_LOG))
 	(cd web && nohup pnpm dev > ../$(WEB_LOG) 2>&1 < /dev/null &)
 	@sleep 4 && echo "✅ 前端已起 (http://localhost:5173)"
 
