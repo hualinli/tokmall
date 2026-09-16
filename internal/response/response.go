@@ -23,6 +23,7 @@ var (
 	ErrForbidden             = &BizError{Code: "FORBIDDEN", Message: "forbidden"}
 	ErrRateLimited           = &BizError{Code: "RATE_LIMITED", Message: "too many requests"}
 	ErrDuplicateAction       = &BizError{Code: "DUPLICATE_ACTION", Message: "duplicate action"}
+	ErrIdempotencyConflict   = &BizError{Code: "IDEMPOTENCY_CONFLICT", Message: "idempotency key conflicts with an existing request"}
 	ErrUploadURLExpired      = &BizError{Code: "UPLOAD_URL_EXPIRED", Message: "upload url expired"}
 	ErrInternal              = &BizError{Code: "INTERNAL", Message: "internal error"}
 	ErrDependencyUnavailable = &BizError{Code: "DEPENDENCY_UNAVAILABLE", Message: "dependency unavailable"}
@@ -46,6 +47,7 @@ var statusByCode = map[string]int{
 	"FORBIDDEN":              consts.StatusForbidden,
 	"RATE_LIMITED":           consts.StatusTooManyRequests,
 	"DUPLICATE_ACTION":       consts.StatusConflict,
+	"IDEMPOTENCY_CONFLICT":   consts.StatusConflict,
 	"UPLOAD_URL_EXPIRED":     consts.StatusBadRequest,
 	"INTERNAL":               consts.StatusInternalServerError,
 	"DEPENDENCY_UNAVAILABLE": consts.StatusServiceUnavailable,

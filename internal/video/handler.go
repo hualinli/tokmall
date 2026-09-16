@@ -27,7 +27,7 @@ type CreateVideoRequest struct {
 	DurationSeconds int     `json:"duration_seconds" binding:"required"`
 }
 
-// PlayRequest 播放事件上报。EventID 客户端生成 UUID v7（幂等去重）；
+// PlayRequest 播放事件上报。EventID 客户端生成标准 UUID（v4/v7 均接受，幂等去重）；
 // PlayedAt 是客户端事件时间（RFC3339），缺省服务端 now()。
 type PlayRequest struct {
 	EventID   string     `json:"event_id" binding:"required"`
@@ -200,6 +200,8 @@ func (h *Handler) play(ctx context.Context, c *app.RequestContext) {
 			response.Error(c, response.ErrInvalidArgument)
 		case errors.Is(err, ErrNotFound):
 			response.Error(c, response.ErrVideoNotFound)
+		case errors.Is(err, ErrIdempotencyConflict):
+			response.Error(c, response.ErrIdempotencyConflict)
 		default:
 			response.Error(c, response.ErrInternal)
 		}

@@ -425,7 +425,7 @@ paths:
   /api/v1/videos/{id}/play:
     post:
       tags: [videos]
-      summary: 上报播放事件（幂等：event_id 去重；M5 前同步落库，之后改 Kafka）
+      summary: 上报播放事件（event_id UUID 幂等；仅相同业务载荷重放成功）
       parameters:
         - $ref: "#/components/parameters/VideoID"
       requestBody:
@@ -436,13 +436,15 @@ paths:
               $ref: "#/components/schemas/PlayRequest"
       responses:
         "204":
-          description: 事件已接收（重复 event_id 同样 204，不重复计数）
+          description: 事件已接收（相同 event_id 且业务载荷一致的重放同样 204，不重复计数）
         "400":
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/VideoNotFound"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
   /api/v1/videos/{id}/like:
     post:
       tags: [interactions]
@@ -854,6 +856,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    IdempotencyConflict:
+      description: 幂等键已被不同业务载荷占用
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Error:
@@ -869,7 +877,8 @@ components:
               type: string
               enum: [INVALID_ARGUMENT, INVALID_CURSOR, VIDEO_NOT_FOUND, VIDEO_NOT_PUBLISHED,
                 USER_NOT_FOUND, PRODUCT_NOT_FOUND, INSUFFICIENT_STOCK, UNAUTHENTICATED,
-                FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION, UPLOAD_URL_EXPIRED, INTERNAL,
+                FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION, IDEMPOTENCY_CONFLICT,
+                UPLOAD_URL_EXPIRED, INTERNAL,
                 DEPENDENCY_UNAVAILABLE, MISSING_AUTH_HEADER, INVALID_AUTH_TYPE, INVALID_TOKEN]
             message:
               type: string
@@ -1377,7 +1386,7 @@ components:
         event_id:
           type: string
           format: uuid
-          description: 客户端生成 UUID v7，幂等去重
+          description: 客户端生成标准 UUID（v4/v7 均接受）；相同 event_id 仅允许重放相同业务载荷
         session_id:
           type: string
           nullable: true

@@ -5,13 +5,26 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-var ErrNotFound = errors.New("record not found")
-var ErrStatusConflict = errors.New("status transition not allowed or already applied")
-var ErrTicketInvalid = errors.New("upload ticket missing, expired or used")
+var (
+	ErrNotFound           = errors.New("record not found")
+	ErrStatusConflict     = errors.New("status transition not allowed or already applied")
+	ErrTicketInvalid      = errors.New("upload ticket missing, expired or used")
+	ErrPlayEventNotFound  = errors.New("play event not found")
+	ErrPlayEventReference = errors.New("play event references a missing record")
+)
+
+// PlayEventCreateResult 保留 INSERT 的事实结果：Inserted=true 表示本次请求
+// 创建了新事件；否则 Existing 是数据库中已经存在的事实。仅凭 event_id 冲突
+// 就直接返回成功会把不同业务载荷误判成重试，service 必须比较 Existing。
+type PlayEventCreateResult struct {
+	Inserted bool
+	Existing *PlayEvent
+}
 
 type GormRepository struct {
 	db *gorm.DB
@@ -130,11 +143,46 @@ func (r *GormRepository) IsLiked(ctx context.Context, userID, videoID int64) (bo
 	return count > 0, nil
 }
 
-// CreatePlayEvent 幂等记录播放事件：event_id 唯一冲突时静默忽略
-// （网络重试不重复计数），永远不报错。
-func (r *GormRepository) CreatePlayEvent(ctx context.Context, e *PlayEvent) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
-		Create(e).Error
+// CreatePlayEvent 原子写入播放事件，并在 event_id 冲突后读取已有事实。
+// PostgreSQL 的唯一索引负责并发仲裁：胜者 RowsAffected=1，竞争者等待胜者
+// 提交后 RowsAffected=0，再读取同一个 event_id。这样 service 才能区分
+// “相同请求重试”（成功）和“复用幂等键提交不同请求”（冲突）。
+func (r *GormRepository) CreatePlayEvent(ctx context.Context, e *PlayEvent) (*PlayEventCreateResult, error) {
+	res := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "event_id"}},
+			DoNothing: true,
+		}).Create(e)
+	if res.Error != nil {
+		return nil, translatePlayEventError(res.Error)
+	}
+	if res.RowsAffected > 0 {
+		return &PlayEventCreateResult{Inserted: true}, nil
+	}
+
+	var existing PlayEvent
+	if err := r.db.WithContext(ctx).
+		Where("event_id = ?", e.EventID).
+		Take(&existing).Error; err != nil {
+		return nil, translatePlayEventError(err)
+	}
+	return &PlayEventCreateResult{Existing: &existing}, nil
+}
+
+// translatePlayEventError 把 repository 能识别的 ORM/数据库错误翻译成
+// video 领域哨兵，避免 PostgreSQL 细节穿透到 service/handler。
+func translatePlayEventError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrPlayEventNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return ErrPlayEventReference
+	}
+	return err
 }
 
 // ConsumeTicket 原子核销 ticket：未被使用、未过期、属于该用户时标记 used，

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,9 @@ var (
 	ErrInvalidParam     = errors.New("invalid param")
 	ErrForbidden        = errors.New("forbidden")
 	ErrUploadURLExpired = errors.New("upload url expired or never issued")
+	// ErrIdempotencyConflict 表示 event_id 已经绑定了另一组业务事实。
+	// 它与“同一请求重试成功”不同，handler 应明确返回 409。
+	ErrIdempotencyConflict = errors.New("idempotency key reused with different payload")
 )
 
 const (
@@ -32,7 +36,7 @@ type Repository interface {
 	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 	IsLiked(ctx context.Context, userID, videoID int64) (bool, error)
-	CreatePlayEvent(ctx context.Context, e *PlayEvent) error
+	CreatePlayEvent(ctx context.Context, e *PlayEvent) (*PlayEventCreateResult, error)
 }
 
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
@@ -408,14 +412,16 @@ func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorR
 	return result, nil
 }
 
-// Play 记录一次播放事件。幂等语义：event_id（客户端 UUID v7）重复提交只记一次，
-// 网络重试不重复计数；不同 event_id 的多次播放各自计数（有效播放由产品层定义）。
+// Play 记录一次播放事件。幂等语义：event_id（客户端标准 UUID，v4/v7 均接受）
+// 重复提交时必须匹配同一组业务字段；网络重试不重复计数，不同载荷复用 event_id
+// 返回 ErrIdempotencyConflict。不同 event_id 的多次播放各自计数（有效播放由产品层定义）。
 // 只接受 PUBLISHED 视频的播放事件，未发布/已删除一律 ErrNotFound（不泄露存在性）。
 // playedAt 为客户端事件时间（与网络延迟无关），缺省服务端 now()；
 // 未来时间（容忍 5 分钟时钟偏差）拒绝，防止脏数据污染后续排序分数。
 func (s *Service) Play(ctx context.Context, userID, videoID int64, eventID string, sessionID *string, playedAt *time.Time, traceID *string) error {
-	if eventID == "" {
-		return ErrInvalidParam
+	canonicalEventID, err := parsePlayEventID(eventID)
+	if err != nil {
+		return err
 	}
 	now := time.Now()
 	if playedAt != nil {
@@ -430,22 +436,107 @@ func (s *Service) Play(ctx context.Context, userID, videoID int64, eventID strin
 	if v.Status != StatusPublished {
 		return ErrNotFound
 	}
-	played := now
+	// PostgreSQL TIMESTAMPTZ 精度为微秒。入口统一转 UTC 并截断到微秒，
+	// 防止 Go 的纳秒值在首次 INSERT 后被数据库截断，导致同一事件重放
+	// 因时间精度差异被误判为幂等冲突。
+	played := normalizePlayEventTime(now)
+	playedAtProvided := playedAt != nil
 	if playedAt != nil {
-		played = *playedAt
+		played = normalizePlayEventTime(*playedAt)
 	}
-	if err := s.repo.CreatePlayEvent(ctx, &PlayEvent{
-		EventID:   eventID,
-		UserID:    userID,
-		VideoID:   videoID,
-		SessionID: sessionID,
-		PlayedAt:  played,
-		TraceID:   traceID,
-	}); err != nil {
+	event := &PlayEvent{
+		EventID:          canonicalEventID,
+		UserID:           userID,
+		VideoID:          videoID,
+		SessionID:        normalizePlayEventSessionID(sessionID),
+		PlayedAt:         played,
+		PlayedAtProvided: playedAtProvided,
+		TraceID:          traceID,
+	}
+	result, err := s.repo.CreatePlayEvent(ctx, event)
+	if err != nil {
 		slog.Error("create play event failed", "user_id", userID, "video_id", videoID, "err", err)
 		return fmt.Errorf("create play event: %w", err)
 	}
+	if result == nil {
+		// repository 违反了自己的写入契约；不要把 nil 解引用变成 panic。
+		slog.Error("create play event returned nil result", "user_id", userID, "video_id", videoID)
+		return errors.New("create play event: repository returned nil result")
+	}
+	if result.Inserted {
+		return nil
+	}
+	if result.Existing == nil {
+		// 冲突后读不到已有事实通常意味着数据库事务/数据被异常删除，
+		// 这是服务端故障而不是客户端可重试的业务冲突。
+		slog.Error("play event conflict missing existing fact", "event_id", canonicalEventID)
+		return errors.New("create play event: existing fact missing after conflict")
+	}
+	if !samePlayEventBusinessFact(event, result.Existing) {
+		slog.Warn("play event idempotency conflict", "event_id", canonicalEventID,
+			"user_id", userID, "video_id", videoID)
+		return ErrIdempotencyConflict
+	}
 	return nil
+}
+
+// parsePlayEventID 接受标准 36 字符 UUID 文本并统一为小写 canonical 形式。
+// 数据库的 UUID 类型本身还接受无短横线、URN 和大括号等表示；API 不接受
+// 这些变体，避免同一事实在边界层出现多种文本表示。这里不限制 UUID 版本：
+// 当前 Web 客户端 crypto.randomUUID() 生成 v4，未来的客户端也可以使用 v7。
+func parsePlayEventID(raw string) (string, error) {
+	if raw == "" || strings.TrimSpace(raw) != raw {
+		return "", ErrInvalidParam
+	}
+	u, err := uuid.Parse(raw)
+	if err != nil || u == uuid.Nil || u.Variant() != uuid.RFC4122 {
+		return "", ErrInvalidParam
+	}
+	canonical := u.String()
+	if !strings.EqualFold(raw, canonical) {
+		return "", ErrInvalidParam
+	}
+	return canonical, nil
+}
+
+// normalizePlayEventTime 对齐 PostgreSQL TIMESTAMPTZ 的微秒精度。
+func normalizePlayEventTime(t time.Time) time.Time {
+	return t.UTC().Truncate(time.Microsecond)
+}
+
+func normalizePlayEventSessionID(sessionID *string) *string {
+	if sessionID == nil || *sessionID == "" {
+		return nil
+	}
+	return sessionID
+}
+
+// samePlayEventBusinessFact 比较会影响播放统计语义的字段。trace_id 是每次
+// HTTP 请求生成的观测元数据，重试时通常不同，因此不能纳入幂等指纹；created_at
+// 同理是数据库事实时间。played_at_provided 让“缺省时间由服务端生成”与“显式
+// 提供客户端时间”保持可区分，否则同一 event_id 的两种请求会被错误地合并。
+func samePlayEventBusinessFact(a, b *PlayEvent) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.UserID != b.UserID || a.VideoID != b.VideoID ||
+		a.PlayedAtProvided != b.PlayedAtProvided {
+		return false
+	}
+	if !samePlayEventOptionalString(a.SessionID, b.SessionID) {
+		return false
+	}
+	if a.PlayedAtProvided {
+		return normalizePlayEventTime(a.PlayedAt).Equal(normalizePlayEventTime(b.PlayedAt))
+	}
+	return true
+}
+
+func samePlayEventOptionalString(a, b *string) bool {
+	if a == nil || *a == "" {
+		return b == nil || *b == ""
+	}
+	return b != nil && *b == *a
 }
 
 // ValidateImage 校验图片上传凭证 + 文件真实存在，核销票证。

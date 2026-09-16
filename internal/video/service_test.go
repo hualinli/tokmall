@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,8 @@ type fakeRepo struct {
 	nextID      int64
 	tickets     map[string]*UploadTicket // key: objectKey
 	likes       map[string]bool          // key: "{userID}-{videoID}"
-	playEvents  map[string]bool          // key: eventID（幂等去重）
+	playEvents  map[string]*PlayEvent    // key: canonical eventID（保存完整事实供幂等比较）
+	playMu      sync.Mutex
 	updateCalls []updateStatusCall
 }
 
@@ -38,7 +40,7 @@ func newFakeRepo() *fakeRepo {
 		nextID:     1,
 		tickets:    make(map[string]*UploadTicket),
 		likes:      make(map[string]bool),
-		playEvents: make(map[string]bool),
+		playEvents: make(map[string]*PlayEvent),
 	}
 }
 
@@ -128,12 +130,16 @@ func (f *fakeRepo) IsLiked(_ context.Context, userID, videoID int64) (bool, erro
 	return f.likes[fmt.Sprintf("%d-%d", userID, videoID)], nil
 }
 
-func (f *fakeRepo) CreatePlayEvent(_ context.Context, e *PlayEvent) error {
-	if f.playEvents[e.EventID] {
-		return nil
+func (f *fakeRepo) CreatePlayEvent(_ context.Context, e *PlayEvent) (*PlayEventCreateResult, error) {
+	f.playMu.Lock()
+	defer f.playMu.Unlock()
+	if existing, ok := f.playEvents[e.EventID]; ok {
+		copy := *existing
+		return &PlayEventCreateResult{Existing: &copy}, nil
 	}
-	f.playEvents[e.EventID] = true
-	return nil
+	copy := *e
+	f.playEvents[e.EventID] = &copy
+	return &PlayEventCreateResult{Inserted: true}, nil
 }
 
 type fakeStorage struct {
@@ -720,9 +726,10 @@ func TestPlay_RecordsEvent(t *testing.T) {
 	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/u1.mp4")
 
 	playedAt := time.Now().Add(-30 * time.Second)
-	err := svc.Play(context.Background(), 7, videoID, "event-1", nil, &playedAt, nil)
+	eventID := uuid.NewString()
+	err := svc.Play(context.Background(), 7, videoID, eventID, nil, &playedAt, nil)
 	require.NoError(t, err)
-	require.True(t, repo.playEvents["event-1"], "事件应已落库")
+	require.NotNil(t, repo.playEvents[eventID], "事件应已落库")
 }
 
 func TestPlay_IdempotentDuplicate(t *testing.T) {
@@ -731,9 +738,10 @@ func TestPlay_IdempotentDuplicate(t *testing.T) {
 	svc := newTestService(repo, store)
 	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/u1.mp4")
 
-	err := svc.Play(context.Background(), 7, videoID, "same-event", nil, nil, nil)
+	eventID := uuid.NewString()
+	err := svc.Play(context.Background(), 7, videoID, eventID, nil, nil, nil)
 	require.NoError(t, err)
-	err = svc.Play(context.Background(), 7, videoID, "same-event", nil, nil, nil)
+	err = svc.Play(context.Background(), 7, videoID, eventID, nil, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(repo.playEvents), "同一 event_id 重放只记一次")
 }
@@ -749,7 +757,7 @@ func TestPlay_NotPublishedRejected(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// 未发布（PENDING_REVIEW）：不接受播放事件
-	err = svc.Play(context.Background(), 7, res.VideoID, "event-pending", nil, nil, nil)
+	err = svc.Play(context.Background(), 7, res.VideoID, uuid.NewString(), nil, nil, nil)
 	require.ErrorIs(t, err, ErrNotFound)
 	require.Empty(t, repo.playEvents)
 
@@ -757,7 +765,7 @@ func TestPlay_NotPublishedRejected(t *testing.T) {
 	_, err = svc.Publish(context.Background(), 42, res.VideoID)
 	require.NoError(t, err)
 	require.NoError(t, svc.Delete(context.Background(), 42, res.VideoID))
-	err = svc.Play(context.Background(), 7, res.VideoID, "event-deleted", nil, nil, nil)
+	err = svc.Play(context.Background(), 7, res.VideoID, uuid.NewString(), nil, nil, nil)
 	require.ErrorIs(t, err, ErrNotFound)
 	require.Empty(t, repo.playEvents)
 }
@@ -771,8 +779,18 @@ func TestPlay_InvalidInputs(t *testing.T) {
 	err := svc.Play(context.Background(), 7, videoID, "", nil, nil, nil)
 	require.ErrorIs(t, err, ErrInvalidParam, "空 event_id 拒绝")
 
+	for _, invalid := range []string{
+		"not-a-uuid",
+		"0191b3e1-5f0a-7f2b-9c3d-4e5f6a7b8c9",           // 少一位
+		"urn:uuid:0191b3e1-5f0a-7f2b-9c3d-4e5f6a7b8c9d", // 非 API canonical 文本
+		"00000000-0000-0000-0000-000000000000",          // nil UUID
+	} {
+		err = svc.Play(context.Background(), 7, videoID, invalid, nil, nil, nil)
+		require.ErrorIs(t, err, ErrInvalidParam, "非法 event_id 必须在 service 边界拒绝: %q", invalid)
+	}
+
 	future := time.Now().Add(1 * time.Hour)
-	err = svc.Play(context.Background(), 7, videoID, "event-future", nil, &future, nil)
+	err = svc.Play(context.Background(), 7, videoID, uuid.NewString(), nil, &future, nil)
 	require.ErrorIs(t, err, ErrInvalidParam, "未来事件时间拒绝")
 }
 
@@ -784,9 +802,111 @@ func TestPlay_RespectsClientPlayedAt(t *testing.T) {
 
 	playedAt := time.Now().Add(-2 * time.Hour)
 	session := "sess-1"
-	err := svc.Play(context.Background(), 7, videoID, "event-2", &session, &playedAt, nil)
+	err := svc.Play(context.Background(), 7, videoID, uuid.NewString(), &session, &playedAt, nil)
 	require.NoError(t, err)
-	require.True(t, repo.playEvents["event-2"])
+	require.Len(t, repo.playEvents, 1)
+}
+
+func TestPlay_AcceptsUUIDCaseInsensitivelyAndCanonicalizes(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/uuid-case.mp4")
+
+	raw := strings.ToUpper(uuid.NewString())
+	err := svc.Play(context.Background(), 7, videoID, raw, nil, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, repo.playEvents, strings.ToLower(raw), "UUID 文本应统一为数据库 canonical 形式")
+	require.NotContains(t, repo.playEvents, raw)
+}
+
+func TestPlay_IdempotencyConflictOnDifferentBusinessFact(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/idempotency-1.mp4")
+	otherVideoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/idempotency-2.mp4")
+
+	eventID := uuid.NewString()
+	playedAt := time.Date(2026, 9, 16, 6, 0, 0, 123456789, time.UTC)
+	session := "session-a"
+	err := svc.Play(context.Background(), 7, videoID, eventID, &session, &playedAt, nil)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name    string
+		userID  int64
+		videoID int64
+		session string
+		at      time.Time
+	}{
+		{name: "different user", userID: 8, videoID: videoID, session: session, at: playedAt},
+		{name: "different video", userID: 7, videoID: otherVideoID, session: session, at: playedAt},
+		{name: "different session", userID: 7, videoID: videoID, session: "session-b", at: playedAt},
+		{name: "different played_at", userID: 7, videoID: videoID, session: session, at: playedAt.Add(time.Microsecond)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := svc.Play(context.Background(), tc.userID, tc.videoID, eventID,
+				&tc.session, &tc.at, nil)
+			require.ErrorIs(t, err, ErrIdempotencyConflict,
+				"同一 event_id 复用到不同业务事实必须显式冲突")
+		})
+	}
+
+	// trace_id 是请求级观测元数据，重试时允许变化，不应把同一业务事实误判为冲突。
+	trace := "different-request-trace"
+	err = svc.Play(context.Background(), 7, videoID, eventID, &session, &playedAt, &trace)
+	require.NoError(t, err)
+}
+
+func TestPlay_IdempotencyNormalizesPostgresTimestampPrecision(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/idempotency-time.mp4")
+
+	eventID := uuid.NewString()
+	// Go time 可携带纳秒，但 PostgreSQL TIMESTAMPTZ 只保存微秒；两次相同
+	// 请求都必须在 service 入口归一化后再做事实比较。
+	playedAt := time.Date(2026, 9, 16, 6, 0, 0, 123456789, time.UTC)
+	err := svc.Play(context.Background(), 7, videoID, eventID, nil, &playedAt, nil)
+	require.NoError(t, err)
+	err = svc.Play(context.Background(), 7, videoID, eventID, nil, &playedAt, nil)
+	require.NoError(t, err)
+	require.Len(t, repo.playEvents, 1)
+	require.Equal(t, 123456*time.Microsecond, repo.playEvents[strings.ToLower(eventID)].PlayedAt.Sub(
+		time.Date(2026, 9, 16, 6, 0, 0, 0, time.UTC)),
+		"落库事实应按微秒精度比较")
+}
+
+func TestPlay_ConcurrentSameEventIDIsIdempotent(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+	videoID := publishTestVideo(t, svc, repo, store, 42, "videos/42/idempotency-concurrent.mp4")
+
+	const callers = 32
+	eventID := uuid.NewString()
+	playedAt := time.Date(2026, 9, 16, 6, 0, 0, 123456789, time.UTC)
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- svc.Play(context.Background(), 7, videoID, eventID, nil, &playedAt, nil)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		require.NoError(t, err, "相同 event_id 的并发重试都应收敛为幂等成功")
+	}
+	require.Len(t, repo.playEvents, 1, "唯一约束语义下并发重试只能落一条事实")
 }
 
 // cursorOrEmpty 解引用可空游标（nil → ""，适配 *string 的 NextCursor）。
