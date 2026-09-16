@@ -18,7 +18,10 @@ const (
 	followingPerAuthorK = 5
 )
 
-var ErrInvalidLimit = errors.New("limit out of range")
+var (
+	ErrInvalidLimit              = errors.New("limit out of range")
+	ErrRankPaginationUnsupported = errors.New("ranker does not support cursor pagination")
+)
 
 // Repository 消费侧接口：feed 只消费这几个查询，不拥有视频事实数据。
 type Repository interface {
@@ -49,8 +52,8 @@ type Service struct {
 }
 
 // NewService 构造 feed 服务。cache/followingCache 可为 nil（缓存禁用时降级直查）；
-// ranker 可选（variadic）：缺省 TimeRanker（现状语义）。
-// 排序演进（M8）时从 main 装配 HotRanker，并同步递增 rank_version。
+// ranker 可选（variadic）：缺省 TimeRanker（当前生产语义）。
+// HotRanker 只保留在 Ranker 单元实验中；不支持通过 Service 暴露在线分页。
 func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache FirstPageCache, followingCache FollowingFeedCache, stats CacheStats, rankers ...Ranker) *Service {
 	if stats == nil {
 		stats = noopStats{}
@@ -154,10 +157,10 @@ func (s *Service) ListByAuthor(ctx context.Context, authorID int64, limit int, c
 	return result, nil
 }
 
-// ListFollowing 关注 Feed（拉模式）：
+// ListFollowing 关注 Feed（拉模式，生产仅使用 TimeRanker）：
 // 召回（每作者 TOP K，窗口函数一次 SQL）-> 填充排序计数（ranker 需要时）->
 // Ranker 排序 -> 分页截断。排序与召回分离（M8）：
-// 换排序规则只换装配的 Ranker + 递增 CurrentRankVersion，不动查询。
+// 当前只有 TimeRanker 的排序键与游标一致；HotRanker 在语义闭合前由 Service 拒绝。
 // 不缓存：个性化内容（每个用户一份），且关注列表查询本身是主键索引；
 // 关注数增长后的缓存策略留给 M6 演进（缓存关注列表 / inbox 推模式）。
 func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, cursorRaw string) (*FeedResult, error) {
@@ -166,6 +169,9 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 	}
 	if limit < 1 || limit > maxLimit {
 		return nil, ErrInvalidLimit
+	}
+	if !s.ranker.SupportsCursorPagination() {
+		return nil, ErrRankPaginationUnsupported
 	}
 	before, err := s.decodeCursor(cursorRaw, s.ranker.Version())
 	if err != nil {
@@ -198,7 +204,7 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 
 // followingFirstPage 关注 Feed 第一页缓存：cache-aside + singleflight + double-check，
 // 与 firstPage 同模式（防击穿；缓存故障降级直查，Set 失败不影响本次响应）。
-// key 含 rank_version：切排序规则后旧缓存自然隔离。空关注用户的空结果也缓存
+// key 含 rank_version：未来切排序规则后旧缓存自然隔离。空关注用户的空结果也缓存
 // （避免 0 关注用户每次都查 DB）。返回值可能是缓存/singleflight 共享快照，
 // 由 ListFollowing 在写入请求级字段前完成 copy-on-read。
 func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*FeedResult, error) {
@@ -231,7 +237,7 @@ func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*Feed
 	return v.(*FeedResult), nil
 }
 
-// loadFollowingPage 关注 Feed 的查询 + 排序 + 拼 URL（无缓存路径，翻页共用）。
+// loadFollowingPage 关注 Feed 的查询 + 排序 + 拼 URL（无缓存路径，时间游标翻页共用）。
 func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before *Cursor, limit int) (*FeedResult, error) {
 	// 空关注列表短路：避免无谓的子查询（IN (SELECT ...) 返回空集仍有一次开销）。
 	followeeIDs, err := s.repo.ListFollowingIDs(ctx, viewerID)
@@ -285,7 +291,7 @@ func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before 
 
 // decodeCursor 解码游标并校验排序版本与调用方的排序语义一致。
 // 每个端点传自己的期望版本：全局/作者 Feed 固定 time-v1（SQL 排序，不随 ranker 变）；
-// 关注 Feed 传 s.ranker.Version()（切换排序规则后旧游标失效，客户端重新请求第一页）。
+// 关注 Feed 当前也只允许 time-v1；未来引入稳定热度排序时再增加独立版本。
 func (s *Service) decodeCursor(cursorRaw, expectedVersion string) (*Cursor, error) {
 	if cursorRaw == "" {
 		return nil, nil
@@ -399,8 +405,7 @@ func (s *Service) loadAuthorPage(ctx context.Context, authorID int64, before *Cu
 }
 
 // assemble 视频行 -> FeedItem（拼预签名 URL + 作者信息）+ 游标。
-// rankVersion 由调用方传入：排序语义决定游标版本（全局/作者页固定 time-v1，
-// 关注 Feed 跟随装配的 ranker）。
+// rankVersion 由调用方传入：当前各在线端点均使用 time-v1。
 func (s *Service) assemble(ctx context.Context, videos []Video, limit int, rankVersion string) (*FeedResult, error) {
 	result := &FeedResult{Items: make([]FeedItem, 0, limit)}
 	hasMore := len(videos) > limit

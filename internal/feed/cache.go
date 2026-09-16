@@ -14,15 +14,16 @@ import (
 const (
 	firstPageKey = "feed:first_page"
 	// followingCachePrefix 关注 Feed 第一页缓存前缀，完整 key：feed:following:{user_id}:{rank_version}。
-	// 带 rank_version：排序规则（time/hot）切换后缓存不串数据（M8 版本化与缓存的交叉点）。
+	// 带 rank_version：未来排序版本变化时缓存不串数据；当前生产只使用 time-v1。
 	followingCachePrefix = "feed:following"
 )
 
-// supportedFollowingRankVersions 是当前代码支持的关注 Feed 排序版本。
+// followingCacheVersionsForInvalidation 是关注 Feed 缓存失效时要覆盖的版本集合。
+// hot-v1 虽不是生产可配置版本，仍保留在列表中以清理历史实验缓存；
 // 关注缓存 key 按 rank_version 隔离，因此失效时必须覆盖这里登记的每个版本；
 // 使用固定 key 列表而不是 SCAN，避免按前缀遍历 Redis，也避免误删其他用户的 key。
 // 新增可对外使用的关注排序版本时，必须同步加入这里并补缓存失效测试。
-func supportedFollowingRankVersions() []string {
+func followingCacheVersionsForInvalidation() []string {
 	return []string{TimeRanker{}.Version(), HotRanker{}.Version()}
 }
 
@@ -94,7 +95,7 @@ func followingCacheKey(userID int64, rankVersion string) string {
 }
 
 func followingCacheKeys(userID int64) []string {
-	versions := supportedFollowingRankVersions()
+	versions := followingCacheVersionsForInvalidation()
 	keys := make([]string, 0, len(versions))
 	for _, version := range versions {
 		keys = append(keys, followingCacheKey(userID, version))

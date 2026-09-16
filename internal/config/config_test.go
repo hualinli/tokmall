@@ -27,12 +27,34 @@ func TestReadConfigSuccess(t *testing.T) {
 	require.Equal(t, cfg.DBConfig.Password, "test")
 	require.Equal(t, cfg.DBConfig.Database, "tbase")
 	require.Equal(t, cfg.DBConfig.SSLMode, "full")
+	require.Equal(t, "time", cfg.FeedRankStrategy)
 }
 
 func TestReadConfigNotSetRequiredEnv(t *testing.T) {
 	clearConfigEnv(t)
 	cfg, err := Load()
 	require.Error(t, err)
+	require.Nil(t, cfg)
+}
+
+func TestReadConfigRejectsHotRankStrategy(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("JWT_SECRET", "TEST_JWT_SECRET")
+	t.Setenv("FEED_RANK_STRATEGY", "hot")
+
+	cfg, err := Load()
+	require.ErrorIs(t, err, ErrInvalidFeedRankStrategy)
+	require.Nil(t, cfg)
+
+}
+
+func TestReadConfigRejectsUnknownRankStrategy(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("JWT_SECRET", "TEST_JWT_SECRET")
+	t.Setenv("FEED_RANK_STRATEGY", "typo")
+
+	cfg, err := Load()
+	require.ErrorIs(t, err, ErrInvalidFeedRankStrategy)
 	require.Nil(t, cfg)
 }
 
@@ -48,6 +70,7 @@ func clearConfigEnv(t *testing.T) {
 		"DB_PASSWORD",
 		"DB_DATABASE",
 		"DB_SSL_MODE",
+		"FEED_RANK_STRATEGY",
 	} {
 		t.Setenv(key, "")
 	}

@@ -25,6 +25,27 @@ type openAPIDoc struct {
 	Paths map[string]map[string]any `yaml:"paths"`
 }
 
+func TestNewRanker_TimeIsProductionDefault(t *testing.T) {
+	ranker, err := newRanker("time")
+	require.NoError(t, err)
+	require.IsType(t, feed.TimeRanker{}, ranker)
+	require.True(t, ranker.SupportsCursorPagination())
+}
+
+func TestNewRanker_RejectsHotExperiment(t *testing.T) {
+	ranker, err := newRanker("hot")
+	require.Error(t, err)
+	require.Nil(t, ranker)
+	require.ErrorContains(t, err, "does not support cursor pagination")
+}
+
+func TestNewRanker_RejectsUnknownStrategy(t *testing.T) {
+	ranker, err := newRanker("unknown")
+	require.Error(t, err)
+	require.Nil(t, ranker)
+	require.ErrorContains(t, err, "unknown feed rank strategy")
+}
+
 var hertzParamRe = regexp.MustCompile(`:([^/]+)`)
 
 // TestOpenAPISync 契约同步测试：用与 run() 完全相同的注册逻辑（nil handler）

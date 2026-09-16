@@ -787,7 +787,7 @@ func TestListFollowing_CacheFailureDegrades(t *testing.T) {
 	require.NotEmpty(t, result.Items)
 }
 
-func TestListFollowing_CacheKeyIsolatedByRankVersion(t *testing.T) {
+func TestListFollowing_ProductionRankerUsesTimeCache(t *testing.T) {
 	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
 	fcache := &fakeFollowingCache{}
 	timeSvc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil, TimeRanker{})
@@ -797,12 +797,12 @@ func TestListFollowing_CacheKeyIsolatedByRankVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, fcache.sets, "time 排序回填一条")
 
-	// hot 排序：key 带 hot-v1，独立缓存（不命中 time 的缓存）
+	// HotRanker 只保留为排序单元实验，不得通过 Service 启用。
 	hotCallsBefore := repo.calls
 	_, err = hotSvc.ListFollowing(context.Background(), 7, 0, "")
-	require.NoError(t, err)
-	require.Equal(t, 2, fcache.sets, "hot 排序单独回填，不与 time 串缓存")
-	require.Greater(t, repo.calls, hotCallsBefore, "hot 首次请求应查 DB（未命中 time 的缓存）")
+	require.ErrorIs(t, err, ErrRankPaginationUnsupported)
+	require.Equal(t, 1, fcache.sets, "实验排序被拒绝时不应写入生产缓存")
+	require.Equal(t, hotCallsBefore, repo.calls, "实验排序被拒绝时不应查询数据库")
 }
 
 // cursorOrEmpty 解引用可空游标（nil → ""，适配 *string 的 NextCursor）。

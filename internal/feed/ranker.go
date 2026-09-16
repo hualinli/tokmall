@@ -34,6 +34,9 @@ type Ranker interface {
 	NeedsCounts() bool
 	// Version 排序规则版本：写入游标，切换排序规则时递增使旧游标失效。
 	Version() string
+	// SupportsCursorPagination 表示排序结果是否能与当前游标语义组合。
+	// 排序键必须与召回的游标键一致，或自身提供冻结的稳定排序键。
+	SupportsCursorPagination() bool
 }
 
 // TimeRanker 时间排序：与现有全局 Feed 的 SQL 排序键一致
@@ -57,6 +60,8 @@ func (TimeRanker) NeedsCounts() bool { return false }
 // Version 与 cursor.go 的 CurrentRankVersion 历史值保持一致
 // （time-v1 是全局 Feed 与关注 Feed 共用的时间排序版本）。
 func (TimeRanker) Version() string { return "time-v1" }
+
+func (TimeRanker) SupportsCursorPagination() bool { return true }
 
 // HotRanker 热度排序：分数 = (log(plays+1) + 2*log(likes+1)) / (age_hours + 2)^1.5。
 // - log 压缩：防头部视频分数无限膨胀（播放百万与千万差距收敛）
@@ -85,8 +90,13 @@ func (HotRanker) Rank(_ context.Context, candidates []Candidate, _ Scene) ([]Can
 
 func (HotRanker) NeedsCounts() bool { return true }
 
-// Version 热度排序第一版：与 time-v1 不兼容，旧游标切换后失效。
+// Version 热度排序第一版：仅用于排序单元实验，不作为在线游标版本。
 func (HotRanker) Version() string { return "hot-v1" }
+
+// SupportsCursorPagination 返回 false：当前 HotRanker 的分数依赖请求时刻，
+// 而关注 Feed 的召回/游标仍按 (published_at,id) 裁剪。仅让 rank_version
+// 变化不能把这两个排序键变成同一个稳定顺序，因此不能安全地产生深分页游标。
+func (HotRanker) SupportsCursorPagination() bool { return false }
 
 func hotScore(c *Candidate, now time.Time) float64 {
 	age := now.Sub(*c.Video.PublishedAt).Hours()

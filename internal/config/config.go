@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -34,6 +35,11 @@ const (
 	defaultReadLimit        = 6000 // 读接口：6000 次/分钟/IP（只挡爬虫/洪峰，NAT 多人共享不误伤）
 )
 
+// ErrInvalidFeedRankStrategy 表示排序策略不是当前生产配置支持的策略。
+// HotRanker 仍保留在 feed 包中用于排序实验，但它的排序键与当前时间游标
+// 不一致，不能通过生产配置暴露为可翻页的关注 Feed。
+var ErrInvalidFeedRankStrategy = errors.New("invalid feed rank strategy")
+
 type Config struct {
 	ServerPort   string
 	JWTSecret    string
@@ -41,8 +47,8 @@ type Config struct {
 	DBConfig
 	MinIOConfig
 	RedisConfig
-	// FeedRankStrategy 关注 Feed 排序策略：time（默认，保持现状）| hot（播放+点赞热度）。
-	// 切换 hot 会使 rank_version 变为 hot-v1，旧 time-v1 游标失效（客户端重新拉第一页）。
+	// FeedRankStrategy 关注 Feed 排序策略。当前生产只支持 time（默认）。
+	// hot 仅保留为 feed.HotRanker 的单元实验，因分页语义尚未闭合而拒绝启动配置。
 	FeedRankStrategy string
 	// RateLimitEnabled 限流总开关：压测/调试时关闭（feed 压测 50 并发会被 IP 限流挡住）。
 	RateLimitEnabled bool
@@ -98,6 +104,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	feedRankStrategy := envString("FEED_RANK_STRATEGY", defaultRankStrategy)
+	if err := validateFeedRankStrategy(feedRankStrategy); err != nil {
+		return nil, err
+	}
 	return &Config{
 		ServerPort:   envString("SERVER_PORT", defaultServerPort),
 		JWTSecret:    jwtsecret,
@@ -128,13 +138,20 @@ func Load() (*Config, error) {
 			FeedCacheEnabled:      envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn),
 			FollowingCacheEnabled: envBool("FEED_FOLLOWING_CACHE_ENABLED", defaultFollowingCacheOn),
 		},
-		FeedRankStrategy: envString("FEED_RANK_STRATEGY", defaultRankStrategy),
+		FeedRankStrategy: feedRankStrategy,
 		RateLimitEnabled: envBool("RATE_LIMIT_ENABLED", rateLimitOn),
 		AuthAccountLimit: envInt("RATE_LIMIT_AUTH_ACCOUNT", defaultAuthAccountLimit),
 		AuthIPLimit:      envInt("RATE_LIMIT_AUTH_IP", defaultAuthIPLimit),
 		WriteRateLimit:   envInt("RATE_LIMIT_WRITE", defaultWriteLimit),
 		ReadRateLimit:    envInt("RATE_LIMIT_READ", defaultReadLimit),
 	}, nil
+}
+
+func validateFeedRankStrategy(strategy string) error {
+	if strategy != defaultRankStrategy {
+		return fmt.Errorf("%w: %q is not production-supported; only %q is available", ErrInvalidFeedRankStrategy, strategy, defaultRankStrategy)
+	}
+	return nil
 }
 
 func requiredEnv(key string) (string, error) {

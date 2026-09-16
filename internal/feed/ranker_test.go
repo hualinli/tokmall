@@ -61,6 +61,10 @@ func TestTimeRanker_NeedsNoCounts(t *testing.T) {
 	require.False(t, TimeRanker{}.NeedsCounts(), "时间排序不查计数，省一次聚合")
 }
 
+func TestTimeRanker_SupportsCursorPagination(t *testing.T) {
+	require.True(t, TimeRanker{}.SupportsCursorPagination(), "时间排序键与 SQL 游标一致")
+}
+
 func TestHotRanker_PlayCountDominates(t *testing.T) {
 	// 发布时间接近（1 分钟差），播放数差距大：播放多的排前
 	candidates := []Candidate{
@@ -106,9 +110,13 @@ func TestHotRanker_NeedsCounts(t *testing.T) {
 	require.True(t, HotRanker{}.NeedsCounts(), "热度排序需要播放/点赞计数")
 }
 
-// TestListFollowing_WithHotRanker service 装配 HotRanker 后：
-// 播放数据（步骤 A 的 play_events 聚合）真实进入排序链路。
-func TestListFollowing_WithHotRanker(t *testing.T) {
+func TestHotRanker_DoesNotSupportCursorPagination(t *testing.T) {
+	require.False(t, HotRanker{}.SupportsCursorPagination(), "热度排序当前仅作为无分页排序实验")
+}
+
+// HotRanker 的排序行为保留在上面的单元实验中，但 Service 不得把它暴露为
+// 当前时间游标语义下的在线关注 Feed。
+func TestListFollowing_RejectsHotRanker(t *testing.T) {
 	repo := &fakeRepo{
 		videos:  mixedAuthorVideos(),
 		follows: map[int64][]int64{7: {1, 2}},
@@ -117,14 +125,8 @@ func TestListFollowing_WithHotRanker(t *testing.T) {
 	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil, nil, HotRanker{})
 
 	result, err := svc.ListFollowing(context.Background(), 7, 5, "")
-	require.NoError(t, err)
-	// 播放数: 11(500) > 9(400) > 12(300) > 10(200) > 8(100)，发布时间均接近（2 分钟内），
-	// 播放差 2-5 倍足以压过 1-2 分钟的衰减差 -> 热度排序，而非纯时间排序
-	ids := make([]int64, len(result.Items))
-	for i, it := range result.Items {
-		ids[i] = it.VideoID
-	}
-	require.Equal(t, []int64{11, 9, 12, 10, 8}, ids, "播放数主导的热度排序")
+	require.ErrorIs(t, err, ErrRankPaginationUnsupported)
+	require.Nil(t, result)
 }
 
 func rankIDs(t *testing.T, r Ranker, candidates []Candidate) []int64 {

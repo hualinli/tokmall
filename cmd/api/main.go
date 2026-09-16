@@ -53,6 +53,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	ranker, err := newRanker(cfg.FeedRankStrategy)
+	if err != nil {
+		return fmt.Errorf("configure feed ranker: %w", err)
+	}
 	logger := &lumberjack.Logger{
 		Filename:   "logs/app.log",
 		MaxSize:    20,
@@ -147,7 +151,7 @@ func run() error {
 		feedCache,
 		followingCache,
 		observability.NewFeedCacheStats(metricsRegistry),
-		newRanker(cfg.FeedRankStrategy),
+		ranker,
 	))
 	videoHandler := video.NewHandler(videoService)
 	interactionHandler := interaction.NewHandler(interaction.NewService(
@@ -213,14 +217,18 @@ func assembleFollowingFeedCache(cfg config.RedisConfig, redisClient *redis.Clien
 	return c, c
 }
 
-// newRanker 根据配置装配排序器（M8 实验开关）：
-// time = 时间排序（现状，游标版本 time-v1）；hot = 热度排序（游标版本 hot-v1）。
-// 切换 hot 后旧 time 游标失效，客户端重新拉第一页——这是有意的版本语义。
-func newRanker(strategy string) feed.Ranker {
-	if strategy == "hot" {
-		return feed.HotRanker{}
+// newRanker 根据生产配置装配排序器。
+// 当前只有 time 能与关注 Feed 的 (published_at,id) 游标组成正确的在线分页。
+// HotRanker 保留在 feed 包中做排序实验，但在分页语义闭合前拒绝启动。
+func newRanker(strategy string) (feed.Ranker, error) {
+	switch strategy {
+	case "time":
+		return feed.TimeRanker{}, nil
+	case "hot":
+		return nil, fmt.Errorf("hot rank strategy is experimental and does not support cursor pagination")
+	default:
+		return nil, fmt.Errorf("unknown feed rank strategy %q", strategy)
 	}
-	return feed.TimeRanker{}
 }
 
 // routes 集中持有各模块 handler，registerRoutes 是唯一的路由注册点：
