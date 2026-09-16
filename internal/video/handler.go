@@ -161,6 +161,8 @@ func (h *Handler) publish(ctx context.Context, c *app.RequestContext) {
 	result, err := h.service.Publish(ctx, h.userID(c), videoID)
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrNotFound):
+			response.Error(c, response.ErrVideoNotFound)
 		case errors.Is(err, ErrStatusConflict):
 			response.Error(c, response.ErrDuplicateAction)
 		default:

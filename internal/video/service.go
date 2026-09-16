@@ -26,7 +26,7 @@ const (
 type Repository interface {
 	CreateVideo(ctx context.Context, v *Video) error
 	FindVideoByID(ctx context.Context, id int64) (*Video, error)
-	UpdateVideoStatus(ctx context.Context, id int64, from, to Status, publishedAt *time.Time) error
+	UpdateVideoStatus(ctx context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error
 	CreateTicket(ctx context.Context, t *UploadTicket) error
 	ConsumeTicket(ctx context.Context, userID int64, objectKey string) error
 	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
@@ -259,11 +259,37 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 
 // Publish 作者发布：PENDING_REVIEW -> PUBLISHED。
 func (s *Service) Publish(ctx context.Context, userID, videoID int64) (*PublishResult, error) {
+	// 先读是为了把对外错误区分为 404/409；它本身不能承担并发
+	// 授权，真正的写入仍必须带 author_id + from_status 条件。
+	v, err := s.repo.FindVideoByID(ctx, videoID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		slog.Error("find video for publish failed", "video_id", videoID, "err", err)
+		return nil, fmt.Errorf("find video for publish: %w", err)
+	}
+	// DELETED 对所有人不可见，沿用详情/播放的 404 语义。
+	if v.Status == StatusDeleted {
+		return nil, ErrNotFound
+	}
+	if v.AuthorID != userID {
+		// 未发布视频只对作者可见；发布接口也不能通过错误响应泄露
+		// 他人视频的存在性。
+		return nil, ErrNotFound
+	}
+	if !canTransition(v.Status, StatusPublished) {
+		return nil, ErrStatusConflict
+	}
+
 	now := time.Now()
-	err := s.repo.UpdateVideoStatus(ctx, videoID, StatusPendingReview, StatusPublished, &now)
+	err = s.repo.UpdateVideoStatus(ctx, videoID, userID, StatusPendingReview, StatusPublished, &now)
 	if err != nil {
 		if errors.Is(err, ErrStatusConflict) {
 			return nil, ErrStatusConflict
+		}
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
 		}
 		slog.Error("publish video failed", "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("publish video: %w", err)
@@ -284,7 +310,7 @@ func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
 	if !canTransition(v.Status, StatusDeleted) {
 		return ErrStatusConflict
 	}
-	err = s.repo.UpdateVideoStatus(ctx, videoID, v.Status, StatusDeleted, nil)
+	err = s.repo.UpdateVideoStatus(ctx, videoID, v.AuthorID, v.Status, StatusDeleted, nil)
 	if err != nil {
 		if errors.Is(err, ErrStatusConflict) {
 			return ErrStatusConflict

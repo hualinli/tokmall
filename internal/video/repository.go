@@ -45,12 +45,14 @@ func (r *GormRepository) FindVideoByID(ctx context.Context, id int64) (*Video, e
 	return &v, nil
 }
 
-// UpdateVideoStatus 带前置状态的条件更新，防止并发重复转换。
-// 只有当前状态 == from 时才允许更新到 to，否则返回 ErrStatusConflict。
-func (r *GormRepository) UpdateVideoStatus(ctx context.Context, id int64, from, to Status, publishedAt *time.Time) error {
+// UpdateVideoStatus 带作者和前置状态的条件更新，防止越权及并发重复转换。
+// 只有视频属于 authorID 且当前状态 == from 时才允许更新到 to，
+// 否则返回 ErrStatusConflict。调用方应在 service 层先读取记录以区分
+// 不存在、非作者和状态冲突；这里的 author_id 条件是最终的原子授权兜底。
+func (r *GormRepository) UpdateVideoStatus(ctx context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error {
 	res := r.db.WithContext(ctx).
 		Model(&Video{}).
-		Where("id = ? AND status = ?", id, string(from)).
+		Where("id = ? AND author_id = ? AND status = ?", id, authorID, string(from)).
 		Updates(map[string]any{
 			"status":       string(to),
 			"published_at": publishedAt,

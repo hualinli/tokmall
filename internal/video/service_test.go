@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,11 +16,20 @@ import (
 )
 
 type fakeRepo struct {
-	videos     map[int64]*Video
-	nextID     int64
-	tickets    map[string]*UploadTicket // key: objectKey
-	likes      map[string]bool          // key: "{userID}-{videoID}"
-	playEvents map[string]bool          // key: eventID（幂等去重）
+	videos      map[int64]*Video
+	nextID      int64
+	tickets     map[string]*UploadTicket // key: objectKey
+	likes       map[string]bool          // key: "{userID}-{videoID}"
+	playEvents  map[string]bool          // key: eventID（幂等去重）
+	updateCalls []updateStatusCall
+}
+
+type updateStatusCall struct {
+	videoID     int64
+	authorID    int64
+	from        Status
+	to          Status
+	publishedAt *time.Time
 }
 
 func newFakeRepo() *fakeRepo {
@@ -47,9 +57,12 @@ func (f *fakeRepo) FindVideoByID(ctx context.Context, id int64) (*Video, error) 
 	return v, nil
 }
 
-func (f *fakeRepo) UpdateVideoStatus(ctx context.Context, id int64, from, to Status, publishedAt *time.Time) error {
+func (f *fakeRepo) UpdateVideoStatus(ctx context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error {
+	f.updateCalls = append(f.updateCalls, updateStatusCall{
+		videoID: id, authorID: authorID, from: from, to: to, publishedAt: publishedAt,
+	})
 	v, ok := f.videos[id]
-	if !ok || v.Status != from {
+	if !ok || v.AuthorID != authorID || v.Status != from {
 		return ErrStatusConflict
 	}
 	v.Status = to
@@ -309,10 +322,110 @@ func TestPublish_SuccessAndConflict(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StatusPublished, pub.Status)
 	require.NotNil(t, pub.Status)
+	require.Len(t, repo.updateCalls, 1)
+	require.Equal(t, int64(42), repo.updateCalls[0].authorID,
+		"发布更新必须把当前用户作为 author_id 条件传入 repository")
+	require.Equal(t, StatusPendingReview, repo.updateCalls[0].from)
+	require.Equal(t, StatusPublished, repo.updateCalls[0].to)
 
 	// 重复 publish：状态机拒绝
 	_, err = svc.Publish(context.Background(), 42, res.VideoID)
 	require.ErrorIs(t, err, ErrStatusConflict)
+}
+
+func TestPublish_NotFoundAndUnauthorizedHidden(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStorage()
+	svc := newTestService(repo, store)
+
+	_, err := svc.Publish(context.Background(), 42, 404)
+	require.ErrorIs(t, err, ErrNotFound, "不存在的视频必须返回 not found")
+
+	registerTicket(t, repo, 42, "videos/42/u1.mp4")
+	store.objectSizes["videos/42/u1.mp4"] = 1024
+	created, err := svc.Create(context.Background(), 42, CreateParams{
+		Title: "private", ObjectKey: "videos/42/u1.mp4", DurationSeconds: 10,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Publish(context.Background(), 99, created.VideoID)
+	require.ErrorIs(t, err, ErrNotFound, "非作者不能通过发布接口探测未发布视频")
+	v, err := repo.FindVideoByID(context.Background(), created.VideoID)
+	require.NoError(t, err)
+	require.Equal(t, StatusPendingReview, v.Status, "越权请求不能改变状态")
+	require.Empty(t, repo.updateCalls, "非作者在授权检查失败后不应触发写入")
+
+	v.Status = StatusDeleted
+	_, err = svc.Publish(context.Background(), 42, created.VideoID)
+	require.ErrorIs(t, err, ErrNotFound, "已删除视频对所有人都不可见")
+}
+
+// concurrentPublishRepo 只为并发发布测试提供真实的条件更新语义：
+// Find 可以同时读取，Update 使用互斥锁模拟数据库的单条 CAS 更新。
+type concurrentPublishRepo struct {
+	*fakeRepo
+	mu    sync.Mutex
+	video Video
+}
+
+func (r *concurrentPublishRepo) FindVideoByID(_ context.Context, id int64) (*Video, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.video.ID != id {
+		return nil, ErrNotFound
+	}
+	v := r.video
+	return &v, nil
+}
+
+func (r *concurrentPublishRepo) UpdateVideoStatus(_ context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.video.ID != id || r.video.AuthorID != authorID || r.video.Status != from {
+		return ErrStatusConflict
+	}
+	r.video.Status = to
+	r.video.PublishedAt = publishedAt
+	return nil
+}
+
+func TestPublish_ConcurrentSingleWinner(t *testing.T) {
+	repo := &concurrentPublishRepo{
+		fakeRepo: newFakeRepo(),
+		video:    Video{ID: 7, AuthorID: 42, Status: StatusPendingReview},
+	}
+	store := newFakeStorage()
+	svc := NewService(repo, store, 15*time.Minute, "test-cursor-secret", nil)
+
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Publish(context.Background(), 42, repo.video.ID)
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var success, conflicts int
+	for err := range results {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrStatusConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected publish error: %v", err)
+		}
+	}
+	require.Equal(t, 1, success, "同一视频并发发布只能有一个成功者")
+	require.Equal(t, 1, conflicts, "竞争失败者必须收到状态冲突")
+	repo.mu.Lock()
+	require.Equal(t, StatusPublished, repo.video.Status)
+	repo.mu.Unlock()
 }
 
 func TestGet_VisibilityPolicy(t *testing.T) {

@@ -413,6 +413,8 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/VideoNotFound"
         "409":
           $ref: "#/components/responses/DuplicateAction"
   /api/v1/videos/{id}/play:
