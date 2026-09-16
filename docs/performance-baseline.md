@@ -88,11 +88,11 @@ wrk -t4 -c50 -d10s -s /tmp/login.lua http://localhost:8080
 docker exec -i tokmall-postgres-e2e psql -U tokmall -d tokmall < scripts/seed_perf.sql
 
 # 场景 A：无缓存
-FEED_CACHE_ENABLED=false DB_PORT=5433 JWT_SECRET=test MINIO_ENDPOINT=localhost:9000 ./tokmall-api &
+APP_ENV=development FEED_CACHE_ENABLED=false DB_PORT=5433 JWT_SECRET=test MINIO_ENDPOINT=localhost:9000 ./tokmall-api &
 vegeta attack -targets=/tmp/feed-targets.txt -duration=10s -rate=0 -max-workers=50 | vegeta report
 
 # 场景 B：有缓存（先 warm 两次再压）
-DB_PORT=5433 JWT_SECRET=test MINIO_ENDPOINT=localhost:9000 ./tokmall-api &
+APP_ENV=development DB_PORT=5433 JWT_SECRET=test MINIO_ENDPOINT=localhost:9000 ./tokmall-api &
 curl -s localhost:8080/api/v1/feed > /dev/null && curl -s localhost:8080/api/v1/feed > /dev/null
 vegeta attack -targets=/tmp/feed-targets.txt -duration=10s -rate=0 -max-workers=50 | vegeta report
 ```
@@ -152,7 +152,7 @@ docker exec -i tokmall-postgres-e2e psql -U tokmall -d tokmall < scripts/seed_pe
 docker exec -i tokmall-postgres-e2e psql -U tokmall -d tokmall < scripts/seed_follows.sql
 
 # 起服务 + 压测（target 文件生成见下）
-DB_PORT=5433 JWT_SECRET=e2e-secret MINIO_ENDPOINT=localhost:9000 ./bin/api &
+APP_ENV=development DB_PORT=5433 JWT_SECRET=e2e-secret MINIO_ENDPOINT=localhost:9000 ./bin/api &
 vegeta attack -targets=/tmp/feedbench/follow1000.targets -duration=10s -rate=0 -max-workers=50 | vegeta report
 
 # token/target 生成（python3，HS256，sub=seed 用户 id 9..208）
