@@ -227,7 +227,7 @@ PENDING_PAYMENT → EXPIRED
 | 1B 创建订单事务与幂等 | 完成 | `f5e4438` | `docs/interview-notes/order-create-transaction.md` | order/inventory/product/cmd-api 测试 + order race 通过；真实并发留待 1C |
 | 1C 订单 API 与真实并发实验 | 完成 | `3aa6f0f` | `docs/interview-notes/order-concurrency-proof.md` | 全量测试 + order/cmd-api race；真实 PG：500 并发/100 库存恰好 100 成功，幂等并发仅扣一次 |
 | 2A 支付与用户取消竞争 | 完成 | `1fef9a2` | `docs/interview-notes/payment-cancel-race.md` | order/cmd-api 测试与 race；真实 PG 支付/取消竞争、重复回调和单次回补通过 |
-| 2B 支付/取消 API | 待开始 |  |  |  |
+| 2B 支付/取消 API | 完成 | `ec0b2d5` | `docs/interview-notes/payment-cancel-api-security.md` | 全量测试 + order/response/cmd-api race；真实 PG 越权支付/取消无副作用 |
 | 2C 超时关单 Worker | 待开始 |  |  |  |
 | 3 内容电商闭环 | 待开始 |  |  |  |
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
