@@ -110,13 +110,20 @@ func (s *Service) List(ctx context.Context, limit int, cursorRaw string) (*FeedR
 		return nil, err
 	}
 	var result *FeedResult
-	if before == nil && limit == defaultLimit && s.cache != nil {
+	shared := before == nil && limit == defaultLimit && s.cache != nil
+	if shared {
 		result, err = s.firstPage(ctx)
 	} else {
 		result, err = s.loadPage(ctx, before, limit)
 	}
 	if err != nil {
 		return nil, err
+	}
+	// firstPage may return a cache/singleflight-shared value. Establish request
+	// ownership before filling the request-time like_count field. Fresh DB pages
+	// already belong to this request and avoid the extra copy.
+	if shared {
+		result = cloneFeedResult(result)
 	}
 	if err := s.fillLikeCounts(ctx, result); err != nil {
 		return nil, err
@@ -167,7 +174,8 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 	// 只缓存"无游标 + 默认 limit"的第一页：自定义 limit 与缓存内容绑定，
 	// 混用会串数据；深层翻页命中率低（与全局首页缓存 ADR-012 同取舍）。
 	var result *FeedResult
-	if before == nil && limit == defaultLimit && s.followingCache != nil {
+	shared := before == nil && limit == defaultLimit && s.followingCache != nil
+	if shared {
 		result, err = s.followingFirstPage(ctx, viewerID)
 	} else {
 		result, err = s.loadFollowingPage(ctx, viewerID, before, limit)
@@ -176,6 +184,12 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 		return nil, err
 	}
 	// like_count 不进缓存（点赞高频，避免失效风暴），每次请求实时批量查。
+	// followingFirstPage may return a cache/singleflight-shared value, so copy
+	// both the result and its Items backing array before this request mutates it.
+	// Fresh DB pages already belong to this request and avoid the extra copy.
+	if shared {
+		result = cloneFeedResult(result)
+	}
 	if err := s.fillLikeCounts(ctx, result); err != nil {
 		return nil, err
 	}
@@ -185,7 +199,8 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 // followingFirstPage 关注 Feed 第一页缓存：cache-aside + singleflight + double-check，
 // 与 firstPage 同模式（防击穿；缓存故障降级直查，Set 失败不影响本次响应）。
 // key 含 rank_version：切排序规则后旧缓存自然隔离。空关注用户的空结果也缓存
-// （避免 0 关注用户每次都查 DB）。
+// （避免 0 关注用户每次都查 DB）。返回值可能是缓存/singleflight 共享快照，
+// 由 ListFollowing 在写入请求级字段前完成 copy-on-read。
 func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*FeedResult, error) {
 	version := s.ranker.Version()
 	cached, err := s.followingCache.Get(ctx, viewerID, version)
@@ -285,10 +300,10 @@ func (s *Service) decodeCursor(cursorRaw, expectedVersion string) (*Cursor, erro
 	return cur, nil
 }
 
-// fillLikeCounts 批量查点赞数并写入 items。关键取舍：
-// like_count 不写进缓存、点赞不触发缓存失效（高频写会导致失效风暴，
-// 毁掉 first-page 缓存收益）——代价是每次请求一次 IN 查询（毫秒级）。
-// 注意浅拷贝 items：singleflight 的共享对象不能被并发改写。
+// fillLikeCounts 批量查点赞数并写入 items。调用方必须拥有 result 及其
+// Items backing array；缓存/ singleflight 返回的共享结果要先经过
+// cloneFeedResult。like_count 不写进缓存、点赞不触发缓存失效（高频写会导致
+// 失效风暴，毁掉 first-page 缓存收益）——代价是每次请求一次 IN 查询（毫秒级）。
 func (s *Service) fillLikeCounts(ctx context.Context, result *FeedResult) error {
 	ids := make([]int64, 0, len(result.Items))
 	for _, it := range result.Items {
@@ -299,19 +314,37 @@ func (s *Service) fillLikeCounts(ctx context.Context, result *FeedResult) error 
 		slog.Error("like counts failed", "err", err)
 		return fmt.Errorf("like counts: %w", err)
 	}
-	// make+copy 而非 append(nil, ...)：空页时保持非 nil（JSON 输出 [] 而非 null）
-	items := make([]FeedItem, len(result.Items))
-	copy(items, result.Items)
-	for i := range items {
-		items[i].LikeCount = counts[items[i].VideoID]
+	for i := range result.Items {
+		result.Items[i].LikeCount = counts[result.Items[i].VideoID]
 	}
-	result.Items = items
 	return nil
+}
+
+// cloneFeedResult 建立请求侧所有权：缓存和 singleflight 都可能把同一个
+// *FeedResult 返回给多个请求，外层结果和 Items backing array 必须一起脱离，
+// 才能安全填充请求级动态字段。FeedItem 内的 URL 指针在 service 中只读，
+// 不需要为本次 LikeCount 更新递归复制。
+func cloneFeedResult(result *FeedResult) *FeedResult {
+	if result == nil {
+		return nil
+	}
+	cloned := *result
+	if result.Items != nil {
+		cloned.Items = make([]FeedItem, len(result.Items))
+		copy(cloned.Items, result.Items)
+	}
+	if result.NextCursor != nil {
+		nextCursor := *result.NextCursor
+		cloned.NextCursor = &nextCursor
+	}
+	return &cloned
 }
 
 // firstPage Cache-Aside + singleflight 防击穿：
 // 缓存未命中时并发请求合并成一次 DB 查询，避免缓存刚过期瞬间打爆 DB。
 // 缓存故障（Redis 挂了）必须降级直连 DB——缓存不能成为单点故障。
+// 返回值可能是缓存/singleflight 共享快照，由 List 在写入请求级字段前
+// 完成 copy-on-read；该函数自身不修改返回的 FeedResult。
 func (s *Service) firstPage(ctx context.Context) (*FeedResult, error) {
 	cached, err := s.cache.Get(ctx)
 	if err != nil {

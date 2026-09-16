@@ -95,6 +95,28 @@ func (f *fakeRepo) PlayCounts(_ context.Context, videoIDs []int64) (map[int64]in
 	return counts, nil
 }
 
+// blockingLikeRepo 让所有请求在 fillLikeCounts 的读后写窗口中同时停住，
+// 稳定暴露“共享 FeedResult/Items 被并发修改”的实现错误。
+type blockingLikeRepo struct {
+	*fakeRepo
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingLikeRepo) LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error) {
+	select {
+	case f.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return f.fakeRepo.LikeCounts(ctx, videoIDs)
+}
+
 func (f *fakeRepo) list(ctx context.Context, videos []Video, before *Cursor, limit int) []Video {
 	out := make([]Video, 0, limit+1)
 	for _, v := range videos {
@@ -113,6 +135,7 @@ func (f *fakeRepo) list(ctx context.Context, videos []Video, before *Cursor, lim
 
 // fakeCache 内存版首页缓存：可注入 Get/Set 故障。
 type fakeCache struct {
+	mu     sync.RWMutex
 	store  *FeedResult
 	gets   int
 	sets   int
@@ -121,6 +144,8 @@ type fakeCache struct {
 }
 
 func (f *fakeCache) Get(ctx context.Context) (*FeedResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.gets++
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -129,6 +154,8 @@ func (f *fakeCache) Get(ctx context.Context) (*FeedResult, error) {
 }
 
 func (f *fakeCache) Set(ctx context.Context, result *FeedResult) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sets++
 	if f.setErr != nil {
 		return f.setErr
@@ -138,18 +165,23 @@ func (f *fakeCache) Set(ctx context.Context, result *FeedResult) error {
 }
 
 func (f *fakeCache) Del(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.store = nil
 	return nil
 }
 
 // fakeFollowingCache 内存版关注 Feed 缓存：验证 cache-aside 与降级路径。
 type fakeFollowingCache struct {
+	mu    sync.RWMutex
 	store map[string]*FeedResult
 	gets  int
 	sets  int
 }
 
 func (f *fakeFollowingCache) Get(_ context.Context, userID int64, rankVersion string) (*FeedResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.gets++
 	if f.store == nil {
 		return nil, nil
@@ -158,6 +190,8 @@ func (f *fakeFollowingCache) Get(_ context.Context, userID int64, rankVersion st
 }
 
 func (f *fakeFollowingCache) Set(_ context.Context, userID int64, rankVersion string, result *FeedResult) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sets++
 	if f.store == nil {
 		f.store = map[string]*FeedResult{}
@@ -181,11 +215,11 @@ func ts(offset time.Duration) *time.Time {
 	return &t
 }
 
-func newTestService(repo *fakeRepo) *Service {
+func newTestService(repo Repository) *Service {
 	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil, nil)
 }
 
-func newTestServiceWithCache(repo *fakeRepo, cache *fakeCache) *Service {
+func newTestServiceWithCache(repo Repository, cache *fakeCache) *Service {
 	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, cache, nil, nil)
 }
 
@@ -350,15 +384,19 @@ func TestList_InvalidInputs(t *testing.T) {
 
 // TestFirstPage_CacheHit 命中缓存时零 DB 查询。
 func TestFirstPage_CacheHit(t *testing.T) {
-	repo := &fakeRepo{videos: fiveVideos()}
+	repo := &fakeRepo{videos: fiveVideos(), likes: map[string]bool{"1-99": true}}
 	cache := &fakeCache{store: &FeedResult{Items: []FeedItem{
-		{VideoID: 99, Title: "cached", VideoURL: "http://cache.local/v99"},
+		{VideoID: 99, Title: "cached", VideoURL: "http://cache.local/v99", LikeCount: 7},
 	}}}
 	svc := newTestServiceWithCache(repo, cache)
 
 	res, err := svc.List(context.Background(), 0, "")
 	require.NoError(t, err)
 	require.Equal(t, int64(99), res.Items[0].VideoID)
+	require.Equal(t, int64(1), res.Items[0].LikeCount)
+	require.NotSame(t, cache.store, res, "缓存命中不得直接返回缓存对象")
+	require.NotSame(t, &cache.store.Items[0], &res.Items[0], "缓存命中不得共享 Items backing array")
+	require.Equal(t, int64(7), cache.store.Items[0].LikeCount, "缓存快照不得被请求级 like_count 污染")
 	repo.mu.Lock()
 	require.Equal(t, 0, repo.calls, "命中缓存不得查库")
 	repo.mu.Unlock()
@@ -426,6 +464,66 @@ func TestFirstPage_Singleflight(t *testing.T) {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	require.Equal(t, 1, repo.calls, "singleflight 必须合并为一次 DB 查询")
+}
+
+func TestFirstPage_ConcurrentRequestsOwnLikeCountResults(t *testing.T) {
+	const n = 20
+	repo := &blockingLikeRepo{
+		fakeRepo: &fakeRepo{
+			videos: fiveVideos(),
+			likes:  map[string]bool{"1-5": true, "2-5": true},
+		},
+		started: make(chan struct{}, n),
+		release: make(chan struct{}),
+	}
+	cache := &fakeCache{}
+	svc := newTestServiceWithCache(repo, cache)
+
+	results := make([]*FeedResult, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = svc.List(context.Background(), 0, "")
+		}(i)
+	}
+	waitForLikeCalls(t, repo.started, n)
+	close(repo.release)
+	wg.Wait()
+
+	for i := range results {
+		require.NoError(t, errs[i], "request %d", i)
+		require.NotNil(t, results[i])
+		require.Equal(t, int64(2), results[i].Items[0].LikeCount)
+		if i > 0 {
+			require.NotSame(t, results[0], results[i], "请求不得共享 FeedResult")
+			require.NotSame(t, &results[0].Items[0], &results[i].Items[0], "请求不得共享 Items backing array")
+		}
+	}
+
+	cache.mu.RLock()
+	cached := cache.store
+	cache.mu.RUnlock()
+	require.NotNil(t, cached)
+	require.Equal(t, int64(0), cached.Items[0].LikeCount, "缓存快照不得被请求级 like_count 污染")
+	repo.mu.Lock()
+	require.Equal(t, 1, repo.calls, "并发首页请求仍应只查一次视频列表")
+	repo.mu.Unlock()
+}
+
+func waitForLikeCalls(t *testing.T, started <-chan struct{}, n int) {
+	t.Helper()
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	for i := 0; i < n; i++ {
+		select {
+		case <-started:
+		case <-timeout.C:
+			t.Fatalf("等待第 %d 个并发 LikeCounts 请求超时", i+1)
+		}
+	}
 }
 
 // TestList_CustomLimitSkipsCache 自定义 limit 与缓存内容绑定，必须绕过缓存。
@@ -611,8 +709,61 @@ func TestListFollowing_CachePopulatesAndHits(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, callsBefore, repo.calls, "命中缓存不应再查 DB")
 	require.Equal(t, result1.Items, result2.Items)
+	fcache.mu.RLock()
+	cached := fcache.store[followingCacheKey(7, CurrentRankVersion)]
+	fcache.mu.RUnlock()
+	require.NotSame(t, cached, result1, "请求不得直接返回缓存对象")
+	require.NotSame(t, &cached.Items[0], &result1.Items[0], "请求不得共享缓存 Items backing array")
 	// Get 次数：首次 miss + singleflight 内 double-check + 二次请求 hit >= 3
 	require.GreaterOrEqual(t, fcache.gets, 3, "第二次请求应命中缓存（多一次 Get）")
+}
+
+func TestFollowingFirstPage_ConcurrentRequestsOwnLikeCountResults(t *testing.T) {
+	const n = 20
+	repo := &blockingLikeRepo{
+		fakeRepo: &fakeRepo{
+			videos:  mixedAuthorVideos(),
+			follows: map[int64][]int64{7: {1, 2}},
+			likes:   map[string]bool{"1-12": true, "2-12": true},
+		},
+		started: make(chan struct{}, n),
+		release: make(chan struct{}),
+	}
+	fcache := &fakeFollowingCache{}
+	svc := NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, fcache, nil)
+
+	results := make([]*FeedResult, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = svc.ListFollowing(context.Background(), 7, 0, "")
+		}(i)
+	}
+	waitForLikeCalls(t, repo.started, n)
+	close(repo.release)
+	wg.Wait()
+
+	for i := range results {
+		require.NoError(t, errs[i], "request %d", i)
+		require.NotNil(t, results[i])
+		require.Equal(t, int64(2), results[i].Items[0].LikeCount)
+		if i > 0 {
+			require.NotSame(t, results[0], results[i], "请求不得共享 FeedResult")
+			require.NotSame(t, &results[0].Items[0], &results[i].Items[0], "请求不得共享 Items backing array")
+		}
+	}
+
+	fcache.mu.RLock()
+	cached := fcache.store[followingCacheKey(7, CurrentRankVersion)]
+	fcache.mu.RUnlock()
+	require.NotNil(t, cached)
+	require.Equal(t, int64(0), cached.Items[0].LikeCount, "关注 Feed 缓存快照不得被请求级 like_count 污染")
+	repo.mu.Lock()
+	require.Equal(t, 1, repo.calls, "并发关注 Feed 请求仍应只查一次候选")
+	repo.mu.Unlock()
 }
 
 func TestListFollowing_CustomLimitSkipsCache(t *testing.T) {
