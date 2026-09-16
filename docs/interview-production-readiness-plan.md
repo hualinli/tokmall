@@ -223,7 +223,9 @@ PENDING_PAYMENT → EXPIRED
 | 0.4 播放事件幂等 | 完成 | `91049d8` | `docs/interview-notes/play-event-idempotency.md` | video/cmd-api 测试 + video race 通过 |
 | 0.5A 库存幂等与数据库不变量 | 完成 | `d1e1cd9` | `docs/interview-notes/inventory-idempotency-and-invariants.md` | inventory/product/cmd-api 测试 + inventory/product race 通过 |
 | 0.5B 生产配置收口 | 完成 | `95a5051` | `docs/interview-notes/production-config-validation.md` | config/cache/cmd-api 测试 + config/cache race 通过；生产依赖 TLS |
-| 1 普通订单与防超卖 | 待开始 |  |  |  |
+| 1A 订单数据模型 | 完成 | `db061ec` | `docs/interview-notes/order-data-model.md` | order/cmd-api 测试 + order race 通过；真实 PG 迁移待 1C 并发实验验证 |
+| 1B 创建订单事务与幂等 | 待开始 |  |  |  |
+| 1C 订单 API 与真实并发实验 | 待开始 |  |  |  |
 | 2 支付、取消与超时关单 | 待开始 |  |  |  |
 | 3 内容电商闭环 | 待开始 |  |  |  |
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
