@@ -719,7 +719,7 @@ paths:
           $ref: "#/components/responses/ProductNotFound"
     post:
       tags: [products]
-      summary: 调整 SKU 库存（仅商家本人；正数入库、负数扣减；以 idempotency_key 幂等）
+      summary: 调整 SKU 库存（仅商家本人；正数入库、负数扣减；按 SKU + 操作 + idempotency_key 幂等）
       parameters:
         - $ref: "#/components/parameters/ProductID"
         - $ref: "#/components/parameters/SkuID"
@@ -743,7 +743,7 @@ paths:
         "404":
           $ref: "#/components/responses/ProductNotFound"
         "409":
-          description: 库存不足
+          description: 库存不足或幂等键复用时载荷不一致
           content:
             application/json:
               schema:
@@ -1363,6 +1363,8 @@ components:
           description: 正数入库、负数扣减；扣减超过当前库存返回 409 INSUFFICIENT_STOCK
         idempotency_key:
           type: string
+          minLength: 1
+          maxLength: 128
           description: 客户端生成，同一 key 重复提交不重复变更（幂等重放返回当前库存）
     StockView:
       type: object

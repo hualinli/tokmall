@@ -27,12 +27,15 @@ const (
 // InventoryTransaction 对应 inventory_transactions 表。
 // 只增不改：流水是对账的事实依据，任何情况下不允许 UPDATE/DELETE。
 type InventoryTransaction struct {
-	ID        int64     `gorm:"column:id;primaryKey"`
-	SkuID     int64     `gorm:"column:sku_id"`
-	OrderID   *int64    `gorm:"column:order_id"`
-	Change    int64     `gorm:"column:change"` // 正数=入库，负数=扣减
-	Reason    Reason    `gorm:"column:reason"`
-	BizID     string    `gorm:"column:biz_id"` // 业务幂等键，UNIQUE
+	ID      int64  `gorm:"column:id;primaryKey"`
+	SkuID   int64  `gorm:"column:sku_id"`
+	OrderID *int64 `gorm:"column:order_id"`
+	Change  int64  `gorm:"column:change"` // 正数=入库，负数=扣减
+	Reason  Reason `gorm:"column:reason"`
+	// BizID 是调用方提供的业务幂等键。唯一范围由 (sku_id, reason, biz_id)
+	// 共同定义；不能只依赖 biz_id 全局唯一，否则不同 SKU 复用客户端 key
+	// 会被错误地判定为同一笔库存操作。
+	BizID     string    `gorm:"column:biz_id"`
 	CreatedAt time.Time `gorm:"column:created_at"`
 }
 

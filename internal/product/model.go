@@ -2,7 +2,8 @@ package product
 
 import "time"
 
-// ProductStatus 商品状态，由业务层校验，不依赖数据库 CHECK 约束
+// ProductStatus 商品状态。service 负责用户输入和状态迁移，数据库 CHECK
+// 负责兜底所有写入口（API、Worker、运维脚本）的枚举不变量。
 type ProductStatus string
 
 const (
@@ -11,7 +12,7 @@ const (
 	ProductStatusDeleted ProductStatus = "DELETED"
 )
 
-// SKUStatus SKU 状态
+// SKUStatus SKU 状态。数据库同样保留枚举 CHECK 作为最后一道防线。
 type SKUStatus string
 
 const (

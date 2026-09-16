@@ -5,14 +5,13 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
 	ErrNotFound          = errors.New("inventory record not found")
 	ErrInsufficientStock = errors.New("insufficient stock")
-	ErrDuplicateBiz      = errors.New("duplicate inventory transaction")
 )
 
 type GormRepository struct {
@@ -62,15 +61,49 @@ func (r *GormRepository) FindSkuOwner(ctx context.Context, skuID int64) (*SkuOwn
 	return &SkuOwner{ProductID: row.ProductID, MerchantID: row.MerchantID}, nil
 }
 
-// Adjust 条件更新 + 流水写入在同一事务：
-//   - 条件 quantity + change >= 0 防止负库存（超卖的镜像问题），未命中即库存不足；
-//   - 流水 biz_id 唯一冲突翻译为 ErrDuplicateBiz，由 service 决定幂等语义；
-//   - 任意一步失败整体回滚，保证"数字变了必有流水"。
+// AdjustmentResult 描述库存流水的幂等仲裁结果。
+// Existing 非 nil 时表示调用方提交的幂等范围已经由另一事务占用；service
+// 必须比较业务载荷，只有完全相同的重试才可以当作成功。
+type AdjustmentResult struct {
+	Inserted bool
+	Existing *InventoryTransaction
+}
+
+// Adjust 以一个短数据库事务完成幂等 claim、库存条件更新和流水写入。
 //
-// 已知边界：inventory 行按需惰性创建（首次正向调整时补建），并发首调存在极小概率
-// 主键冲突报 500，商家人工操作场景可忽略；第三阶段接订单时改为随 SKU 创建同步建行。
-func (r *GormRepository) Adjust(ctx context.Context, tx *InventoryTransaction) error {
-	return r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+// 先用 (sku_id, reason, biz_id) 的唯一约束抢占流水幂等 claim，再做库存
+// 条件更新。这样并发重放在发现重复 key 时不会再次改库存；库存不足时
+// 整个事务回滚，claim 也不会残留，客户端可以修正数量后重试新的 key。
+//
+// inventory 行由 product.CreateSKU 在 SKU 创建事务中同步初始化，因此这里
+// 不再惰性补建。行不存在代表数据库不变量被破坏，返回 ErrNotFound，避免
+// 把“库存表缺行”静默伪装成一次成功的入库。
+func (r *GormRepository) Adjust(ctx context.Context, tx *InventoryTransaction) (*AdjustmentResult, error) {
+	var result AdjustmentResult
+	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		claim := db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "sku_id"},
+				{Name: "reason"},
+				{Name: "biz_id"},
+			},
+			DoNothing: true,
+		}).Create(tx)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected == 0 {
+			var existing InventoryTransaction
+			if err := db.Where(
+				"sku_id = ? AND reason = ? AND biz_id = ?",
+				tx.SkuID, string(tx.Reason), tx.BizID,
+			).Take(&existing).Error; err != nil {
+				return translateInventoryError(err)
+			}
+			result.Existing = &existing
+			return nil
+		}
+
 		res := db.Model(&Inventory{}).
 			Where("sku_id = ? AND quantity + ? >= 0", tx.SkuID, tx.Change).
 			Updates(map[string]any{
@@ -82,32 +115,32 @@ func (r *GormRepository) Adjust(ctx context.Context, tx *InventoryTransaction) e
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			// 区分两种未命中：行不存在（惰性补建）vs 行存在但库存不足
+			// 行存在但条件 quantity + change >= 0 未满足 = 库存不足；
+			// 行不存在则是不变量破坏，不应通过创建行掩盖问题。
 			var count int64
 			if err := db.Model(&Inventory{}).Where("sku_id = ?", tx.SkuID).Count(&count).Error; err != nil {
 				return err
 			}
 			if count == 0 {
-				if tx.Change < 0 {
-					return ErrInsufficientStock // 库存为 0 还要扣
-				}
-				if err := db.Create(&Inventory{
-					SkuID:    tx.SkuID,
-					Quantity: tx.Change,
-				}).Error; err != nil {
-					return err
-				}
-			} else {
-				return ErrInsufficientStock
+				return ErrNotFound
 			}
+			return ErrInsufficientStock
 		}
-		if err := db.Create(tx).Error; err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return ErrDuplicateBiz
-			}
-			return err
-		}
+		result.Inserted = true
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func translateInventoryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	}
+	return err
 }

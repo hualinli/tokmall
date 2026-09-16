@@ -95,7 +95,19 @@ func (r *GormRepository) ListProducts(
 }
 
 func (r *GormRepository) CreateSKU(ctx context.Context, s *SKU) error {
-	return r.db.WithContext(ctx).Create(s).Error
+	// SKU 与 inventory 是一个生命周期不变量：SKU 创建成功后库存行必须
+	// 立即存在。初始化放在同一个数据库事务中，但不 import inventory
+	// 包的 model，避免 product <-> inventory 共享类型或形成循环依赖；
+	// inventory 模块仍拥有库存变动、流水和并发扣减语义。
+	return r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		if err := db.Create(s).Error; err != nil {
+			return err
+		}
+		return db.Exec(
+			"INSERT INTO inventory (sku_id, quantity, version) VALUES (?, 0, 0)",
+			s.ID,
+		).Error
+	})
 }
 
 func (r *GormRepository) FindSKUByID(ctx context.Context, id int64) (*SKU, error) {

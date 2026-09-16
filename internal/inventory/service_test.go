@@ -3,14 +3,17 @@ package inventory
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeRepository struct {
+	mu              sync.Mutex
 	getBySkuIDFn    func(context.Context, int64) (*Inventory, error)
 	findSkuOwnerFn  func(context.Context, int64) (*SkuOwner, error)
-	adjustFn        func(context.Context, *InventoryTransaction) error
+	adjustFn        func(context.Context, *InventoryTransaction) (*AdjustmentResult, error)
 	adjustCalls     int
 	lastTransaction *InventoryTransaction
 }
@@ -29,13 +32,16 @@ func (f *fakeRepository) FindSkuOwner(ctx context.Context, skuID int64) (*SkuOwn
 	return f.findSkuOwnerFn(ctx, skuID)
 }
 
-func (f *fakeRepository) Adjust(ctx context.Context, tx *InventoryTransaction) error {
+func (f *fakeRepository) Adjust(ctx context.Context, tx *InventoryTransaction) (*AdjustmentResult, error) {
+	f.mu.Lock()
 	f.adjustCalls++
 	f.lastTransaction = tx
-	if f.adjustFn == nil {
-		return nil
+	fn := f.adjustFn
+	f.mu.Unlock()
+	if fn == nil {
+		return &AdjustmentResult{Inserted: true}, nil
 	}
-	return f.adjustFn(ctx, tx)
+	return fn(ctx, tx)
 }
 
 func testOwner() *SkuOwner {
@@ -62,7 +68,7 @@ func TestServiceGetStock(t *testing.T) {
 		}
 	})
 
-	t.Run("missing row reads as zero", func(t *testing.T) {
+	t.Run("missing row is invariant violation", func(t *testing.T) {
 		repo := &fakeRepository{
 			findSkuOwnerFn: func(context.Context, int64) (*SkuOwner, error) { return testOwner(), nil },
 			getBySkuIDFn:   func(context.Context, int64) (*Inventory, error) { return nil, ErrNotFound },
@@ -71,11 +77,11 @@ func TestServiceGetStock(t *testing.T) {
 
 		got, err := service.GetStock(context.Background(), 7, 101, 11)
 
-		if err != nil {
-			t.Fatalf("GetStock() error = %v", err)
+		if err == nil {
+			t.Fatal("GetStock() error = nil, want invariant violation")
 		}
-		if got.Quantity != 0 {
-			t.Errorf("quantity = %d, want 0 (惰性初始化读侧语义)", got.Quantity)
+		if got != nil {
+			t.Fatalf("GetStock() result = %#v, want nil", got)
 		}
 	})
 
@@ -112,8 +118,8 @@ func TestServiceAdjustStock(t *testing.T) {
 			t.Fatalf("adjust calls = %d, want 1", repo.adjustCalls)
 		}
 		tx := repo.lastTransaction
-		if tx.Change != -5 || tx.Reason != ReasonAdjust || tx.BizID != "adjust:key-1" {
-			t.Errorf("transaction = %#v, want change=-5 reason=ADJUST biz_id=adjust:key-1", tx)
+		if tx.Change != -5 || tx.Reason != ReasonAdjust || tx.BizID != "key-1" {
+			t.Errorf("transaction = %#v, want change=-5 reason=ADJUST biz_id=key-1", tx)
 		}
 		if got.Quantity != 15 {
 			t.Errorf("quantity = %d, want refreshed 15", got.Quantity)
@@ -126,7 +132,13 @@ func TestServiceAdjustStock(t *testing.T) {
 			getBySkuIDFn: func(_ context.Context, _ int64) (*Inventory, error) {
 				return &Inventory{SkuID: 11, Quantity: 5}, nil
 			},
-			adjustFn: func(context.Context, *InventoryTransaction) error { return ErrDuplicateBiz },
+			adjustFn: func(_ context.Context, tx *InventoryTransaction) (*AdjustmentResult, error) {
+				return &AdjustmentResult{
+					Existing: &InventoryTransaction{
+						SkuID: tx.SkuID, Change: tx.Change, Reason: tx.Reason, BizID: tx.BizID,
+					},
+				}, nil
+			},
 		}
 		service := NewService(repo)
 
@@ -143,7 +155,9 @@ func TestServiceAdjustStock(t *testing.T) {
 	t.Run("insufficient stock propagates", func(t *testing.T) {
 		repo := &fakeRepository{
 			findSkuOwnerFn: func(context.Context, int64) (*SkuOwner, error) { return testOwner(), nil },
-			adjustFn:       func(context.Context, *InventoryTransaction) error { return ErrInsufficientStock },
+			adjustFn: func(context.Context, *InventoryTransaction) (*AdjustmentResult, error) {
+				return nil, ErrInsufficientStock
+			},
 		}
 		service := NewService(repo)
 
@@ -162,6 +176,7 @@ func TestServiceAdjustStock(t *testing.T) {
 	}{
 		{name: "zero change", change: 0, key: "k", wantErr: ErrInvalidParam},
 		{name: "empty key", change: 1, key: "  ", wantErr: ErrInvalidParam},
+		{name: "oversized key", change: 1, key: strings.Repeat("k", maxIdempotencyKeyLength+1), wantErr: ErrInvalidParam},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -173,5 +188,106 @@ func TestServiceAdjustStock(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestServiceAdjustStockRejectsIdempotencyPayloadConflict(t *testing.T) {
+	repo := &fakeRepository{
+		findSkuOwnerFn: func(context.Context, int64) (*SkuOwner, error) { return testOwner(), nil },
+		getBySkuIDFn: func(_ context.Context, _ int64) (*Inventory, error) {
+			return &Inventory{SkuID: 11, Quantity: 5}, nil
+		},
+		adjustFn: func(_ context.Context, tx *InventoryTransaction) (*AdjustmentResult, error) {
+			return &AdjustmentResult{
+				Existing: &InventoryTransaction{
+					SkuID: tx.SkuID, Change: tx.Change + 1, Reason: tx.Reason, BizID: tx.BizID,
+				},
+			}, nil
+		},
+	}
+	service := NewService(repo)
+
+	_, err := service.AdjustStock(context.Background(), 7, 101, 11, 5, "key-1")
+
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("error = %v, want ErrIdempotencyConflict", err)
+	}
+}
+
+func TestServiceAdjustStockIdempotencyIsScopedToSKU(t *testing.T) {
+	var calls []*InventoryTransaction
+	repo := &fakeRepository{
+		findSkuOwnerFn: func(_ context.Context, skuID int64) (*SkuOwner, error) {
+			return &SkuOwner{ProductID: 101, MerchantID: 7}, nil
+		},
+		getBySkuIDFn: func(_ context.Context, skuID int64) (*Inventory, error) {
+			return &Inventory{SkuID: skuID, Quantity: 10}, nil
+		},
+		adjustFn: func(_ context.Context, tx *InventoryTransaction) (*AdjustmentResult, error) {
+			calls = append(calls, tx)
+			return &AdjustmentResult{Inserted: true}, nil
+		},
+	}
+	service := NewService(repo)
+
+	for _, skuID := range []int64{11, 12} {
+		if _, err := service.AdjustStock(context.Background(), 7, 101, skuID, 3, "same-client-key"); err != nil {
+			t.Fatalf("AdjustStock(sku=%d) error = %v", skuID, err)
+		}
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("adjust calls = %d, want 2 (same key is scoped by sku)", len(calls))
+	}
+	if calls[0].SkuID == calls[1].SkuID || calls[0].BizID != calls[1].BizID {
+		t.Fatalf("transactions = %#v, want same key on two distinct skus", calls)
+	}
+}
+
+func TestServiceAdjustStockConcurrentReplayOnlyOneMutation(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var applied *InventoryTransaction
+	var quantity int64 = 10
+	repo := &fakeRepository{
+		findSkuOwnerFn: func(context.Context, int64) (*SkuOwner, error) { return testOwner(), nil },
+		getBySkuIDFn: func(_ context.Context, _ int64) (*Inventory, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return &Inventory{SkuID: 11, Quantity: quantity}, nil
+		},
+		adjustFn: func(_ context.Context, tx *InventoryTransaction) (*AdjustmentResult, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if applied == nil {
+				copy := *tx
+				applied = &copy
+				quantity += tx.Change
+				return &AdjustmentResult{Inserted: true}, nil
+			}
+			return &AdjustmentResult{Existing: applied}, nil
+		},
+	}
+	service := NewService(repo)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.AdjustStock(ctx, 7, 101, 11, 3, "concurrent-key")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent replay error = %v", err)
+		}
+	}
+	if quantity != 13 {
+		t.Fatalf("quantity = %d, want 13 (one positive adjustment)", quantity)
 	}
 }

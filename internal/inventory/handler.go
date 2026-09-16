@@ -75,6 +75,8 @@ func (h *Handler) mapError(c *app.RequestContext, err error) {
 		response.Error(c, response.ErrProductNotFound)
 	case errors.Is(err, ErrInsufficientStock):
 		response.Error(c, response.ErrInsufficientStock)
+	case errors.Is(err, ErrIdempotencyConflict):
+		response.Error(c, response.ErrIdempotencyConflict)
 	default:
 		slog.Error("inventory internal error", "err", err)
 		response.Error(c, response.ErrInternal)
