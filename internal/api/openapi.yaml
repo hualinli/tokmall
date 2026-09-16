@@ -455,6 +455,8 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/VideoNotFound"
     delete:
       tags: [interactions]
       summary: 取消点赞（幂等）
@@ -471,6 +473,8 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/VideoNotFound"
   /api/v1/users/{id}/follow:
     post:
       tags: [interactions]

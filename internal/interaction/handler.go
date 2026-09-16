@@ -91,7 +91,14 @@ func (h *Handler) like(ctx context.Context, c *app.RequestContext) {
 	}
 	result, err := h.service.Like(ctx, h.userID(c), videoID)
 	if err != nil {
-		response.Error(c, response.ErrInternal)
+		switch {
+		case errors.Is(err, ErrInvalidParam):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrVideoNotFound):
+			response.Error(c, response.ErrVideoNotFound)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
 		return
 	}
 	response.OK(c, result)
@@ -105,7 +112,14 @@ func (h *Handler) unlike(ctx context.Context, c *app.RequestContext) {
 	}
 	result, err := h.service.Unlike(ctx, h.userID(c), videoID)
 	if err != nil {
-		response.Error(c, response.ErrInternal)
+		switch {
+		case errors.Is(err, ErrInvalidParam):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrVideoNotFound):
+			response.Error(c, response.ErrVideoNotFound)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
 		return
 	}
 	response.OK(c, result)

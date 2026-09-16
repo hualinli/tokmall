@@ -8,9 +8,13 @@ import (
 )
 
 var ErrInvalidParam = errors.New("invalid param")
+var ErrVideoNotFound = errors.New("video not found")
 
 // Repository 由 service 定义：GormRepository 隐式满足。
 type Repository interface {
+	// VideoIsInteractable 只返回对互动可见的视频：存在且处于 PUBLISHED。
+	// 这是 interaction 对 videos 表的最小 read model，不依赖 video 模块类型。
+	VideoIsInteractable(ctx context.Context, videoID int64) (bool, error)
 	AddLike(ctx context.Context, userID, videoID int64) error
 	RemoveLike(ctx context.Context, userID, videoID int64) error
 	AddFollow(ctx context.Context, followerID, followeeID int64) error
@@ -52,7 +56,13 @@ type FollowResult struct {
 
 // Like 幂等点赞：结果语义固定为 liked=true。
 func (s *Service) Like(ctx context.Context, userID, videoID int64) (*LikeResult, error) {
+	if err := s.ensureInteractableVideo(ctx, videoID); err != nil {
+		return nil, err
+	}
 	if err := s.repo.AddLike(ctx, userID, videoID); err != nil {
+		if errors.Is(err, ErrVideoNotFound) {
+			return nil, ErrVideoNotFound
+		}
 		slog.Error("add like failed", "user_id", userID, "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("add like: %w", err)
 	}
@@ -61,11 +71,33 @@ func (s *Service) Like(ctx context.Context, userID, videoID int64) (*LikeResult,
 
 // Unlike 幂等取消点赞：结果语义固定为 liked=false。
 func (s *Service) Unlike(ctx context.Context, userID, videoID int64) (*LikeResult, error) {
+	if err := s.ensureInteractableVideo(ctx, videoID); err != nil {
+		return nil, err
+	}
 	if err := s.repo.RemoveLike(ctx, userID, videoID); err != nil {
+		if errors.Is(err, ErrVideoNotFound) {
+			return nil, ErrVideoNotFound
+		}
 		slog.Error("remove like failed", "user_id", userID, "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("remove like: %w", err)
 	}
 	return &LikeResult{VideoID: videoID, Liked: false}, nil
+}
+
+func (s *Service) ensureInteractableVideo(ctx context.Context, videoID int64) error {
+	if videoID <= 0 {
+		return ErrInvalidParam
+	}
+	visible, err := s.repo.VideoIsInteractable(ctx, videoID)
+	if err != nil {
+		slog.Error("check video visibility failed", "video_id", videoID, "err", err)
+		return fmt.Errorf("check video visibility: %w", err)
+	}
+	if !visible {
+		// 不区分不存在、未发布和已删除，避免通过互动接口探测视频状态。
+		return ErrVideoNotFound
+	}
+	return nil
 }
 
 // Follow 关注：禁止自关注，目标用户必须存在。

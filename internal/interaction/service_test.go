@@ -11,18 +11,26 @@ import (
 )
 
 type fakeRepo struct {
-	mu      sync.Mutex
-	likes   map[[2]int64]bool
-	follows map[[2]int64]bool
-	users   map[int64]bool
+	mu            sync.Mutex
+	likes         map[[2]int64]bool
+	follows       map[[2]int64]bool
+	users         map[int64]bool
+	visibleVideos map[int64]bool
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		likes:   make(map[[2]int64]bool),
-		follows: make(map[[2]int64]bool),
-		users:   map[int64]bool{1: true, 4: true},
+		likes:         make(map[[2]int64]bool),
+		follows:       make(map[[2]int64]bool),
+		users:         map[int64]bool{1: true, 4: true},
+		visibleVideos: map[int64]bool{100: true},
 	}
+}
+
+func (f *fakeRepo) VideoIsInteractable(ctx context.Context, videoID int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.visibleVideos[videoID], nil
 }
 
 // 幂等语义用 map 模拟：重复写入不报错。
@@ -140,6 +148,29 @@ func TestLike_RepeatCallsIdempotent(t *testing.T) {
 	res, err = svc.Unlike(context.Background(), 1, 100)
 	require.NoError(t, err)
 	require.False(t, res.Liked)
+}
+
+func TestLike_InvisibleVideoRejected(t *testing.T) {
+	repo := newFakeRepo()
+	// 101/102/103 分别代表未发布、已删除、不存在；read model 对外都返回 false。
+	repo.visibleVideos[101] = false
+	repo.visibleVideos[102] = false
+	repo.likes[[2]int64{1, 102}] = true
+	svc := newTestService(repo)
+
+	for _, videoID := range []int64{101, 102, 103} {
+		_, err := svc.Like(context.Background(), 1, videoID)
+		require.ErrorIs(t, err, ErrVideoNotFound, "不可见视频不能点赞: video_id=%d", videoID)
+
+		_, err = svc.Unlike(context.Background(), 1, videoID)
+		require.ErrorIs(t, err, ErrVideoNotFound, "不可见视频不能取消点赞: video_id=%d", videoID)
+	}
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	// 预存的隐藏视频点赞不能被 unlike 请求删除；服务层必须先完成可见性检查。
+	require.True(t, repo.likes[[2]int64{1, 102}])
+	require.False(t, repo.likes[[2]int64{1, 101}])
 }
 
 func TestLike_ConcurrentCallsNoError(t *testing.T) {

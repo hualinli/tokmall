@@ -19,17 +19,74 @@ func NewRepository(db *gorm.DB) *GormRepository {
 	return &GormRepository{db: db}
 }
 
-// AddLike 幂等点赞：唯一约束冲突时静默忽略，永远不报错。
-func (r *GormRepository) AddLike(ctx context.Context, userID, videoID int64) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&Like{UserID: userID, VideoID: videoID}).Error
+const (
+	publishedVideoStatus = "PUBLISHED"
+)
+
+// VideoIsInteractable 是 interaction 对 videos 表的最小只读投影。
+// 未发布、已删除和不存在的视频统一不可互动，调用方不应据此区分具体状态。
+func (r *GormRepository) VideoIsInteractable(ctx context.Context, videoID int64) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Table("videos").
+		Where("id = ? AND status = ?", videoID, publishedVideoStatus).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
-// RemoveLike 幂等取消：行不存在时删除 0 行，同样不报错。
+// AddLike 幂等点赞：service 已做可见性检查，这里再用 EXISTS 把 PUBLISHED
+// 条件放进写入语句，缩小 check-then-write 的 TOCTOU 窗口。
+func (r *GormRepository) AddLike(ctx context.Context, userID, videoID int64) error {
+	result := r.db.WithContext(ctx).Exec(`
+		INSERT INTO likes (user_id, video_id)
+		SELECT ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM videos
+			WHERE id = ? AND status = 'PUBLISHED'
+		)
+		ON CONFLICT (user_id, video_id) DO NOTHING
+	`, userID, videoID, videoID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+	// RowsAffected=0 既可能是重复点赞，也可能是视频在 service 检查后变得不可见。
+	visible, err := r.VideoIsInteractable(ctx, videoID)
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return ErrVideoNotFound
+	}
+	return nil
+}
+
+// RemoveLike 幂等取消：只有 PUBLISHED 视频允许改变关系；行不存在仍视为成功。
 func (r *GormRepository) RemoveLike(ctx context.Context, userID, videoID int64) error {
-	return r.db.WithContext(ctx).
-		Where("user_id = ? AND video_id = ?", userID, videoID).
-		Delete(&Like{}).Error
+	result := r.db.WithContext(ctx).Exec(`
+		DELETE FROM likes l
+		USING videos v
+		WHERE l.user_id = ? AND l.video_id = v.id
+		  AND v.id = ? AND v.status = 'PUBLISHED'
+	`, userID, videoID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+	visible, err := r.VideoIsInteractable(ctx, videoID)
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return ErrVideoNotFound
+	}
+	return nil
 }
 
 // AddFollow 幂等关注：唯一约束冲突时静默忽略。
