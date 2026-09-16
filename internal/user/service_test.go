@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // fakeRepo 内存版仓库：模拟 gorm 行为，重点回填主键（对应 Create 后的 RETURNING）。
@@ -38,6 +39,9 @@ func newFakeRepo() *fakeRepo {
 func (f *fakeRepo) FollowCounts(_ context.Context, userID int64) (following, followers int64, err error) {
 	for k := range f.follows {
 		parts := strings.SplitN(k, "-", 2)
+		if f.isDeleted(parseTestID(parts[0])) || f.isDeleted(parseTestID(parts[1])) {
+			continue
+		}
 		if parts[0] == strconv.FormatInt(userID, 10) {
 			following++
 		}
@@ -49,7 +53,20 @@ func (f *fakeRepo) FollowCounts(_ context.Context, userID int64) (following, fol
 }
 
 func (f *fakeRepo) IsFollowing(_ context.Context, followerID, followeeID int64) (bool, error) {
+	if f.isDeleted(followeeID) {
+		return false, nil
+	}
 	return f.follows[fmt.Sprintf("%d-%d", followerID, followeeID)], nil
+}
+
+func (f *fakeRepo) isDeleted(userID int64) bool {
+	u, ok := f.usersByID[userID]
+	return ok && u.DeletedAt.Valid
+}
+
+func parseTestID(raw string) int64 {
+	id, _ := strconv.ParseInt(raw, 10, 64)
+	return id
 }
 
 func (f *fakeRepo) UpdateProfile(_ context.Context, userID int64, bio *string, avatarKey *string) error {
@@ -648,6 +665,25 @@ func TestGetPublicProfile(t *testing.T) {
 		require.NotNil(t, p.AvatarURL)
 		require.Equal(t, "http://minio.local/signed/avatars/1/a.jpg", *p.AvatarURL)
 	})
+}
+
+func TestGetPublicProfileFollowCountsExcludeDeletedUsers(t *testing.T) {
+	repo := newFakeRepo()
+	seedUser(repo)
+	repo.usersByID[2] = &User{UserID: 2, Username: "bob123"}
+	repo.usersByID[3] = &User{UserID: 3, Username: "carol1"}
+	repo.usersByID[3].DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+	repo.follows["1-2"] = true // active followee，计入 following
+	repo.follows["1-3"] = true // deleted followee，不计入 following
+	repo.follows["2-1"] = true // active follower，计入 followers
+	repo.follows["3-1"] = true // deleted follower，不计入 followers
+
+	svc := newTestService(repo, &fakeTokenManager{})
+	p, err := svc.GetPublicProfile(context.Background(), 2, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), p.FollowingCount)
+	require.Equal(t, int64(1), p.FollowersCount)
+	require.True(t, p.IsFollowing, "active viewer 对 active 目标的关注关系应保留")
 }
 
 // TestUpdateMe 更新资料：头像必须通过校验、局部更新语义。

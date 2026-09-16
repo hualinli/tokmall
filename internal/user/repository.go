@@ -76,8 +76,18 @@ func (r *GormRepository) FollowCounts(ctx context.Context, userID int64) (follow
 	}
 	err = r.db.WithContext(ctx).Raw(`
 		SELECT
-			(SELECT count(*) FROM follows WHERE follower_id = ?) AS following,
-			(SELECT count(*) FROM follows WHERE followee_id = ?) AS followers`,
+			(SELECT count(*)
+			 FROM follows f
+			 JOIN users u ON u.id = f.followee_id
+			 WHERE f.follower_id = ?
+			   AND u.deleted_at IS NULL
+			   AND u.status = 'ACTIVE') AS following,
+			(SELECT count(*)
+			 FROM follows f
+			 JOIN users u ON u.id = f.follower_id
+			 WHERE f.followee_id = ?
+			   AND u.deleted_at IS NULL
+			   AND u.status = 'ACTIVE') AS followers`,
 		userID, userID).Scan(&counts).Error
 	if err != nil {
 		return 0, 0, err
@@ -89,6 +99,7 @@ func (r *GormRepository) FollowCounts(ctx context.Context, userID int64) (follow
 func (r *GormRepository) IsFollowing(ctx context.Context, followerID, followeeID int64) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Table("follows").
+		Joins("JOIN users u ON u.id = follows.followee_id AND u.deleted_at IS NULL AND u.status = 'ACTIVE'").
 		Where("follower_id = ? AND followee_id = ?", followerID, followeeID).
 		Count(&count).Error
 	if err != nil {

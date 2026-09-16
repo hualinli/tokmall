@@ -63,6 +63,8 @@ func (h *Handler) followList(ctx context.Context, c *app.RequestContext, fn func
 		switch {
 		case errors.Is(err, ErrInvalidParam), errors.Is(err, ErrInvalidCursor):
 			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrUserNotFound):
+			response.Error(c, response.ErrUserNotFound)
 		default:
 			response.Error(c, response.ErrInternal)
 		}

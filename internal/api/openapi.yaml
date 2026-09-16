@@ -271,6 +271,8 @@ paths:
                 $ref: "#/components/schemas/ProfileListResult"
         "400":
           $ref: "#/components/responses/InvalidArgument"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
   /api/v1/users/{id}/followers:
     get:
       tags: [interactions]
@@ -291,6 +293,8 @@ paths:
                 $ref: "#/components/schemas/ProfileListResult"
         "400":
           $ref: "#/components/responses/InvalidArgument"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
 
   /api/v1/videos/upload-url:
     post:
@@ -492,6 +496,8 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
     delete:
       tags: [interactions]
       summary: 取消关注（幂等）
@@ -508,6 +514,8 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
 
   /api/v1/products:
     post:

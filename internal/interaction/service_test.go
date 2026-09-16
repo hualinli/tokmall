@@ -15,14 +15,17 @@ type fakeRepo struct {
 	likes         map[[2]int64]bool
 	follows       map[[2]int64]bool
 	users         map[int64]bool
+	deletedUsers  map[int64]bool
 	visibleVideos map[int64]bool
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		likes:         make(map[[2]int64]bool),
-		follows:       make(map[[2]int64]bool),
-		users:         map[int64]bool{1: true, 4: true},
+		likes:   make(map[[2]int64]bool),
+		follows: make(map[[2]int64]bool),
+		// 列表测试会使用 1~5 作为关系两端；999 仍作为不存在用户。
+		users:         map[int64]bool{1: true, 2: true, 3: true, 4: true, 5: true},
+		deletedUsers:  make(map[int64]bool),
 		visibleVideos: map[int64]bool{100: true},
 	}
 }
@@ -65,7 +68,7 @@ func (f *fakeRepo) RemoveFollow(ctx context.Context, followerID, followeeID int6
 func (f *fakeRepo) UserExists(ctx context.Context, userID int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.users[userID], nil
+	return f.users[userID] && !f.deletedUsers[userID], nil
 }
 
 // fakeAvatar 预签名 URL 假实现。
@@ -81,7 +84,7 @@ func (f *fakeRepo) ListFollowing(ctx context.Context, userID int64, before *Curs
 	defer f.mu.Unlock()
 	edges := make([]FollowEdge, 0)
 	for k := range f.follows {
-		if k[0] == userID {
+		if k[0] == userID && !f.deletedUsers[k[1]] {
 			edges = append(edges, FollowEdge{UserID: k[1], CreatedAt: time.Now(), Username: fmt.Sprintf("u%d", k[1])})
 		}
 	}
@@ -93,7 +96,7 @@ func (f *fakeRepo) ListFollowers(ctx context.Context, userID int64, before *Curs
 	defer f.mu.Unlock()
 	edges := make([]FollowEdge, 0)
 	for k := range f.follows {
-		if k[1] == userID {
+		if k[1] == userID && !f.deletedUsers[k[0]] {
 			edges = append(edges, FollowEdge{UserID: k[0], CreatedAt: time.Now(), Username: fmt.Sprintf("u%d", k[0])})
 		}
 	}
@@ -123,7 +126,9 @@ func (f *fakeRepo) IsFollowingMany(ctx context.Context, viewerID int64, userIDs 
 		return result, nil
 	}
 	for _, id := range userIDs {
-		result[id] = f.follows[[2]int64{viewerID, id}]
+		if !f.deletedUsers[id] {
+			result[id] = f.follows[[2]int64{viewerID, id}]
+		}
 	}
 	return result, nil
 }
@@ -207,6 +212,21 @@ func TestFollow_FolloweeNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrUserNotFound)
 }
 
+func TestFollow_DeletedFolloweeTreatedAsNotFound(t *testing.T) {
+	repo := newFakeRepo()
+	repo.deletedUsers[4] = true
+	svc := newTestService(repo)
+
+	_, err := svc.Follow(context.Background(), 1, 4)
+	require.ErrorIs(t, err, ErrUserNotFound)
+	_, err = svc.Unfollow(context.Background(), 1, 4)
+	require.ErrorIs(t, err, ErrUserNotFound)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.False(t, repo.follows[[2]int64{1, 4}], "不可见目标不能建立关注关系")
+}
+
 func TestFollow_RepeatAndUnfollow(t *testing.T) {
 	svc := newTestService(newFakeRepo())
 
@@ -268,6 +288,35 @@ func TestListFollowing_Visibility(t *testing.T) {
 		}
 		require.Fail(t, "u1 应该在 u2 的粉丝列表里")
 	})
+}
+
+func TestFollowListsExcludeDeletedUsers(t *testing.T) {
+	repo := newFakeRepo()
+	repo.follows[[2]int64{1, 2}] = true
+	repo.follows[[2]int64{1, 3}] = true
+	repo.follows[[2]int64{2, 1}] = true
+	repo.follows[[2]int64{3, 1}] = true
+	repo.deletedUsers[3] = true
+	svc := newTestService(repo)
+
+	following, err := svc.ListFollowing(context.Background(), 0, 1, 20, "")
+	require.NoError(t, err)
+	require.Equal(t, []int64{2}, profileIDs(following.Items))
+
+	followers, err := svc.ListFollowers(context.Background(), 0, 1, 20, "")
+	require.NoError(t, err)
+	require.Equal(t, []int64{2}, profileIDs(followers.Items))
+
+	_, err = svc.ListFollowing(context.Background(), 0, 3, 20, "")
+	require.ErrorIs(t, err, ErrUserNotFound, "已删除用户的列表资源按不存在处理")
+}
+
+func profileIDs(items []ProfileItem) []int64 {
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.UserID)
+	}
+	return ids
 }
 
 // TestListFollowers_Basic 粉丝列表 + 分页参数校验。

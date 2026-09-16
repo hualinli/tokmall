@@ -100,33 +100,51 @@ func (s *Service) ensureInteractableVideo(ctx context.Context, videoID int64) er
 	return nil
 }
 
-// Follow 关注：禁止自关注，目标用户必须存在。
+// Follow 关注：禁止自关注，目标用户必须处于可交互的 ACTIVE 状态。
 func (s *Service) Follow(ctx context.Context, followerID, followeeID int64) (*FollowResult, error) {
 	if followerID == followeeID {
 		return nil, ErrInvalidParam
 	}
-	exists, err := s.repo.UserExists(ctx, followeeID)
-	if err != nil {
-		slog.Error("check followee failed", "followee_id", followeeID, "err", err)
-		return nil, fmt.Errorf("check followee: %w", err)
-	}
-	if !exists {
-		return nil, ErrUserNotFound
+	if err := s.ensureActiveUser(ctx, followeeID); err != nil {
+		return nil, err
 	}
 	if err := s.repo.AddFollow(ctx, followerID, followeeID); err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, ErrUserNotFound
+		}
 		slog.Error("add follow failed", "follower_id", followerID, "followee_id", followeeID, "err", err)
 		return nil, fmt.Errorf("add follow: %w", err)
 	}
 	return &FollowResult{FolloweeID: followeeID, Following: true}, nil
 }
 
-// Unfollow 幂等取消关注。
+// Unfollow 幂等取消关注。已删除/禁用的目标用户按不存在处理，避免借此接口探测状态。
 func (s *Service) Unfollow(ctx context.Context, followerID, followeeID int64) (*FollowResult, error) {
+	if err := s.ensureActiveUser(ctx, followeeID); err != nil {
+		return nil, err
+	}
 	if err := s.repo.RemoveFollow(ctx, followerID, followeeID); err != nil {
 		slog.Error("remove follow failed", "follower_id", followerID, "followee_id", followeeID, "err", err)
 		return nil, fmt.Errorf("remove follow: %w", err)
 	}
 	return &FollowResult{FolloweeID: followeeID, Following: false}, nil
+}
+
+// ensureActiveUser 是 interaction 对 users 表的最小 read model：只有未软删且
+// ACTIVE 的用户才是可关注资源。不存在、软删和禁用统一按不存在处理。
+func (s *Service) ensureActiveUser(ctx context.Context, userID int64) error {
+	if userID <= 0 {
+		return ErrInvalidParam
+	}
+	exists, err := s.repo.UserExists(ctx, userID)
+	if err != nil {
+		slog.Error("check user visibility failed", "user_id", userID, "err", err)
+		return fmt.Errorf("check user visibility: %w", err)
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 const (
@@ -163,6 +181,9 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID, userID int64, lim
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureActiveUser(ctx, userID); err != nil {
+		return nil, err
+	}
 	edges, err := s.repo.ListFollowing(ctx, userID, before, limit)
 	if err != nil {
 		slog.Error("list following failed", "user_id", userID, "err", err)
@@ -181,6 +202,9 @@ func (s *Service) ListFollowers(ctx context.Context, viewerID, userID int64, lim
 	}
 	before, err := s.decodeCursor(cursorRaw)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureActiveUser(ctx, userID); err != nil {
 		return nil, err
 	}
 	edges, err := s.repo.ListFollowers(ctx, userID, before, limit)

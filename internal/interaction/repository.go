@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var ErrUserNotFound = errors.New("user not found")
@@ -21,6 +20,7 @@ func NewRepository(db *gorm.DB) *GormRepository {
 
 const (
 	publishedVideoStatus = "PUBLISHED"
+	activeUserStatus     = "ACTIVE"
 )
 
 // VideoIsInteractable 是 interaction 对 videos 表的最小只读投影。
@@ -89,10 +89,32 @@ func (r *GormRepository) RemoveLike(ctx context.Context, userID, videoID int64) 
 	return nil
 }
 
-// AddFollow 幂等关注：唯一约束冲突时静默忽略。
+// AddFollow 幂等关注：目标用户必须在写入时仍处于 ACTIVE 且未软删；
+// 唯一约束冲突在目标仍可交互时视为幂等成功。
 func (r *GormRepository) AddFollow(ctx context.Context, followerID, followeeID int64) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&Follow{FollowerID: followerID, FolloweeID: followeeID}).Error
+	result := r.db.WithContext(ctx).Exec(`
+		INSERT INTO follows (follower_id, followee_id)
+		SELECT ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM users
+			WHERE id = ? AND deleted_at IS NULL AND status = 'ACTIVE'
+		)
+		ON CONFLICT (follower_id, followee_id) DO NOTHING
+	`, followerID, followeeID, followeeID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+	exists, err := r.UserExists(ctx, followeeID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // RemoveFollow 幂等取消关注。
@@ -105,7 +127,9 @@ func (r *GormRepository) RemoveFollow(ctx context.Context, followerID, followeeI
 // UserExists 校验目标用户存在性（跨模块只读共享表，不依赖 user 模块类型）。
 func (r *GormRepository) UserExists(ctx context.Context, userID int64) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Table("users").Where("id = ?", userID).Count(&count).Error
+	err := r.db.WithContext(ctx).Table("users").
+		Where("id = ? AND deleted_at IS NULL AND status = ?", userID, activeUserStatus).
+		Count(&count).Error
 	if err != nil {
 		return false, err
 	}
@@ -126,7 +150,7 @@ type FollowEdge struct {
 func (r *GormRepository) ListFollowing(ctx context.Context, userID int64, before *Cursor, limit int) ([]FollowEdge, error) {
 	q := r.db.WithContext(ctx).Table("follows f").
 		Select("f.followee_id AS user_id, f.created_at, u.username, u.bio, u.avatar_key").
-		Joins("JOIN users u ON u.id = f.followee_id").
+		Joins("JOIN users u ON u.id = f.followee_id AND u.deleted_at IS NULL AND u.status = 'ACTIVE'").
 		Where("f.follower_id = ?", userID)
 	if before != nil {
 		q = q.Where("(f.created_at, f.followee_id) < (?, ?)", before.CreatedAt, before.UserID)
@@ -138,7 +162,7 @@ func (r *GormRepository) ListFollowing(ctx context.Context, userID int64, before
 func (r *GormRepository) ListFollowers(ctx context.Context, userID int64, before *Cursor, limit int) ([]FollowEdge, error) {
 	q := r.db.WithContext(ctx).Table("follows f").
 		Select("f.follower_id AS user_id, f.created_at, u.username, u.bio, u.avatar_key").
-		Joins("JOIN users u ON u.id = f.follower_id").
+		Joins("JOIN users u ON u.id = f.follower_id AND u.deleted_at IS NULL AND u.status = 'ACTIVE'").
 		Where("f.followee_id = ?", userID)
 	if before != nil {
 		q = q.Where("(f.created_at, f.follower_id) < (?, ?)", before.CreatedAt, before.UserID)
@@ -164,8 +188,9 @@ func (r *GormRepository) IsFollowingMany(ctx context.Context, viewerID int64, us
 	var rows []struct {
 		FolloweeID int64
 	}
-	err := r.db.WithContext(ctx).Table("follows").
+	err := r.db.WithContext(ctx).Table("follows f").
 		Select("followee_id").
+		Joins("JOIN users u ON u.id = f.followee_id AND u.deleted_at IS NULL AND u.status = 'ACTIVE'").
 		Where("follower_id = ? AND followee_id IN ?", viewerID, userIDs).
 		Scan(&rows).Error
 	if err != nil {

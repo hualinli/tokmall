@@ -72,3 +72,92 @@ func TestLikeWritesKeepPublishedGuard(t *testing.T) {
 		require.Contains(t, query, "status = 'published'")
 	}
 }
+
+func TestUserExistsUsesActiveUserReadModel(t *testing.T) {
+	log := &interactionSQLLogger{Interface: logger.Discard}
+	repo := dryRunInteractionRepo(t, log)
+
+	exists, err := repo.UserExists(context.Background(), 123)
+	require.NoError(t, err)
+	require.False(t, exists, "DryRun 没有结果时不能误判用户存在")
+	require.NotEmpty(t, log.queries)
+
+	normalized := strings.ToLower(log.queries[len(log.queries)-1])
+	require.Contains(t, normalized, `from "users"`)
+	require.Contains(t, normalized, "deleted_at is null")
+	require.Contains(t, normalized, "status")
+	require.Contains(t, normalized, "active")
+}
+
+func TestAddFollowKeepsActiveUserGuard(t *testing.T) {
+	log := &interactionSQLLogger{Interface: logger.Discard}
+	repo := dryRunInteractionRepo(t, log)
+
+	err := repo.AddFollow(context.Background(), 1, 2)
+	require.ErrorIs(t, err, ErrUserNotFound)
+	require.NotEmpty(t, log.queries)
+
+	var insertSQL string
+	for _, query := range log.queries {
+		if strings.Contains(strings.ToLower(query), "insert into follows") {
+			insertSQL = strings.ToLower(query)
+			break
+		}
+	}
+	require.NotEmpty(t, insertSQL)
+	require.Contains(t, insertSQL, "deleted_at is null")
+	require.Contains(t, insertSQL, "status = 'active'")
+	require.Contains(t, insertSQL, "on conflict")
+}
+
+func TestFollowListsFilterInactiveUsers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*GormRepository) error
+	}{
+		{
+			name: "following",
+			call: func(repo *GormRepository) error {
+				_, err := repo.ListFollowing(context.Background(), 1, nil, 20)
+				return err
+			},
+		},
+		{
+			name: "followers",
+			call: func(repo *GormRepository) error {
+				_, err := repo.ListFollowers(context.Background(), 1, nil, 20)
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &interactionSQLLogger{Interface: logger.Discard}
+			repo := dryRunInteractionRepo(t, log)
+			require.ErrorIs(t, tc.call(repo), gorm.ErrDryRunModeUnsupported)
+			require.NotEmpty(t, log.queries)
+
+			normalized := strings.ToLower(log.queries[len(log.queries)-1])
+			require.Contains(t, normalized, "join users")
+			require.Contains(t, normalized, "deleted_at is null")
+			require.Contains(t, normalized, "status")
+			require.Contains(t, normalized, "active")
+		})
+	}
+}
+
+func TestIsFollowingManyFiltersInactiveFollowees(t *testing.T) {
+	log := &interactionSQLLogger{Interface: logger.Discard}
+	repo := dryRunInteractionRepo(t, log)
+
+	following, err := repo.IsFollowingMany(context.Background(), 1, []int64{2, 3})
+	require.ErrorIs(t, err, gorm.ErrDryRunModeUnsupported)
+	require.Empty(t, following)
+	require.NotEmpty(t, log.queries)
+
+	normalized := strings.ToLower(log.queries[len(log.queries)-1])
+	require.Contains(t, normalized, "join users")
+	require.Contains(t, normalized, "followee_id in")
+	require.Contains(t, normalized, "deleted_at is null")
+	require.Contains(t, normalized, "status")
+	require.Contains(t, normalized, "active")
+}
