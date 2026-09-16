@@ -146,7 +146,7 @@ infra/*（cache/database/jwt/mq/persistence/metrics 实现）
 ### tokmall：SQL 直查 + 签名游标 + Ranker 抽象
 - 全局 Feed：`(published_at DESC, id DESC)` + 部分索引，游标 `(published_at,id)` HMAC 签名 + rank_version（排序演进时旧游标自动失效，`ranker.go Version()` 机制）；
 - 关注 Feed：**窗口函数一次 SQL 完成"每作者 TOP K"**（`repository.go:80 ROW_NUMBER() OVER (PARTITION BY v.author_id)`），无 N+1，游标下推 + 空关注短路（实测 20k QPS）；
-- Ranker 接口把召回与排序分离（Time/Hot 两实现 + FEED_RANK_STRATEGY 开关），HybridRanker 待做。
+- Ranker 接口把召回与排序分离；TimeRanker 是当前生产排序，HotRanker 保留为无在线分页的单元实验（配置 fail-fast 禁止启用），HybridRanker 待做。
 
 **结论**：GCFeed 的缓存组装架构 > tokmall 的 SQL 简洁性 > FSVG（N+1 硬伤）。但游标安全性上 tokmall 独一档——两个 LeoninCS 项目的游标都可被客户端任意构造。
 
@@ -168,7 +168,7 @@ GCFeed 这块是三者最完整的工业模式（推拉结合 + 容量上限截�
 
 - **FSVG**：60 个分钟桶 ZSET + `ZUnionStore` 合并到 per-minute 快照 key（2min TTL）+ offset 翻页（as_of 冻结窗口保证翻页稳定）。DB 兜底路径还有 `(popularity, create_time, id)` 复合游标。
 - **GCFeed**：几乎同一套设计，但更收敛：分钟桶由互动事件驱动（like=3/favorite=4/comment=5 权重加权 `ZIncrBy`，桶 TTL 2h），快照重建前先 `Exists` 检查，热榜游标冻结 `window_end` + offset（`HotCursor.WindowEnd`），并清理 `<=0` 分数成员。
-- **tokmall**：HotRanker 基于 play/like 计数排序，作为 Ranker 一个实现存在，无 Redis 分钟桶（M8 标注"基础"、HybridRanker 待做）。
+- **tokmall**：HotRanker 基于 play/like 计数排序，作为 Ranker 单元实验存在；当前排序键未与时间游标闭合，不能作为生产深分页热榜。无 Redis 分钟桶（M8 边界已收口，HybridRanker 待做）。
 
 **结论**：热榜是 FSVG/GCFeed 相对 tokmall 最明确的领先点。tokmall 若做 HybridRanker，分钟桶 + 快照冻结窗口是现成可抄的参考实现（注意补上 GCFeed 缺的签名游标）。
 
@@ -207,7 +207,7 @@ GCFeed 这块是三者最完整的工业模式（推拉结合 + 容量上限截�
 - **曝光去重**：7 天窗口（`RecentExposureWindow = 7*24h`）内已曝光候选降权/过滤；曝光通过 `/internal/exposures` 回调写入；
 - **画像闭环**：观看事件（`POST /video-view-events`）→ MQ → worker 更新用户兴趣向量；视频发布 → MQ → embedding worker 生成向量。
 
-坦率的技术评价：HashNgram 向量是玩具级语义表示（无泛化能力），per-request 加载 500 候选 + 全量向量余弦也没有 ANN 索引——**但整条"行为闭环→特征→排序→反馈"的数据流骨架是真的**，这在个人项目里罕见。tokmall 对应位置只有 Ranker 接口 + Time/Hot 占位（M8 明确 HybridRanker 待做）。
+坦率的技术评价：HashNgram 向量是玩具级语义表示（无泛化能力），per-request 加载 500 候选 + 全量向量余弦也没有 ANN 索引——**但整条"行为闭环→特征→排序→反馈"的数据流骨架是真的**，这在个人项目里罕见。tokmall 对应位置是 Ranker 接口 + TimeRanker 生产分页 + HotRanker 单元实验（M8 明确稳定热度游标与 HybridRanker 待做）。
 
 ---
 

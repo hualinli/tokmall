@@ -66,7 +66,7 @@
   feed  ─────────► storage        （播放 URL + 头像 URL）
     │      ─────► cache/redis     （首页缓存 FirstPageCache 的 Redis 实现）
     │      ─────► observability   （CacheStats 埋点）
-    │      （内部）Ranker：TimeRanker / HotRanker（M8，可插拔排序）
+    │      （内部）Ranker：TimeRanker（生产）/ HotRanker（仅排序实验，未开放游标分页）
 ```
 
 **要点**：

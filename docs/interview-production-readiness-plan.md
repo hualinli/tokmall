@@ -219,7 +219,7 @@ PENDING_PAYMENT → EXPIRED
 | 0.2B 软删除用户互动过滤 | 完成 | `f0625c2` | `docs/interview-notes/deleted-user-interaction-visibility.md` | interaction/user/cmd-api 测试 + interaction/user race 通过 |
 | 0.3A Feed 缓存请求隔离 | 完成 | `721ba84` | `docs/interview-notes/feed-singleflight-isolation.md` | feed/cmd-api 测试 + feed race 通过 |
 | 0.3B 关注 Feed 缓存失效 | 完成 | `2f97345` | `docs/interview-notes/following-feed-cache-invalidation.md` | interaction/feed/cmd-api 测试与 race 通过 |
-| 0.3C HotRanker 分页语义 | 待开始 |  |  |  |
+| 0.3C HotRanker 分页语义 | 完成 | `6baabd3` | `docs/interview-notes/hot-ranker-pagination-boundary.md` | config/feed/cmd-api race 通过；生产仅允许 time |
 | 0.4 播放事件幂等 | 待开始 |  |  |  |
 | 0.5 商品与库存地基 | 待开始 |  |  |  |
 | 1 普通订单与防超卖 | 待开始 |  |  |  |

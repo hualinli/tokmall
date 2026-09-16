@@ -60,8 +60,8 @@ docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部
 | M4+ 内容域扩展 | ✅ | 预签名 GET 播放 URL（route A）、作者视频列表 + 硬删 MinIO、公共主页 + 社交列表 + 点赞数 |
 | M4+ 契约与前端 | ✅ | OpenAPI 契约 + route-sync 测试 + React 前端（TanStack Router）+ Playwright e2e |
 | M5 播放事件（同步版） | ✅ | play_events 表 + POST /videos/{id}/play：event_id 幂等（UUID v7）、仅 PUBLISHED、未来时间拒绝；Kafka 异步化待做 |
-| M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 游标下推 + 空关注短路；hot 模式有真实消费方 |
-| M8 排序演进 | ✅（基础） | Ranker 接口（召回/排序分离）+ Time/Hot + rank_version 按端点绑定 + FEED_RANK_STRATEGY 实验开关；HybridRanker 待做 |
+| M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 时间游标下推 + 空关注短路；HotRanker 仅保留为包内排序实验 |
+| M8 排序演进 | ✅（边界已收口） | Ranker 接口 + TimeRanker 生产游标分页；HotRanker 仅单元实验（排序键未与游标闭合，配置 fail-fast 禁止启用）；HybridRanker 待做 |
 | M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
 | M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
 
@@ -77,7 +77,7 @@ docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部
 - **状态机**：video 模块表驱动 `statusTransitions` + DB 条件更新（`WHERE status=from`）防并发。
 - **可见性**：DELETED 对所有人 404，未发布仅作者可见，不可见一律 ErrNotFound（不泄露存在性）。
 - **幂等**：关系表唯一约束 + `ON CONFLICT DO NOTHING`，结果语义固定（like→true）。
-- **游标**：表示上一页最后一条（非当前时间），防翻页重复；rank_version 失效旧游标。
+- **游标**：表示上一页最后一条（非当前时间），防翻页重复；rank_version 失效旧游标。只有排序键与游标一致的排序器才能上线；当前生产关注 Feed 仅支持 time-v1，HotRanker 不能通过配置或 Service 启用。
 - **分层数据流**：handler(HTTP DTO) → service(领域 Params) → repo(model)，model 永不出 service（PasswordHash json:"-" 级别防护）。
 - **列名/状态类型化**：`column`/`Status` 自定义类型防拼错；到 GORM 边界必须显式转 string。
 - **连接池**：max_open=25, max_idle=5, lifetime=1h（M3 基线接近饱和；M4 缓存命中后 db_pool_wait_count 归零，瓶颈已移到 Redis 读，见 performance-baseline.md）
