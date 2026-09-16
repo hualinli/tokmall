@@ -213,7 +213,7 @@ PENDING_PAYMENT → EXPIRED
 
 | 模块 | 状态 | 实现提交 | 讲解文档 | 验收结果 |
 |---|---|---|---|---|
-| 实施计划 | 完成 | 待填写 | 本文 | 静态审阅形成路线 |
+| 实施计划 | 完成 | `2441f09` | 本文 | 静态审阅形成路线 |
 | 0.1 视频发布授权 | 完成 | `96139af` | `docs/interview-notes/video-publish-authorization.md` | video/cmd-api 测试 + video race 通过 |
 | 0.2A 点赞视频可见性 | 完成 | `6b76a74` | `docs/interview-notes/interaction-video-visibility.md` | interaction/cmd-api 测试 + interaction race 通过 |
 | 0.2B 软删除用户互动过滤 | 完成 | `f0625c2` | `docs/interview-notes/deleted-user-interaction-visibility.md` | interaction/user/cmd-api 测试 + interaction/user race 通过 |
@@ -221,7 +221,8 @@ PENDING_PAYMENT → EXPIRED
 | 0.3B 关注 Feed 缓存失效 | 完成 | `2f97345` | `docs/interview-notes/following-feed-cache-invalidation.md` | interaction/feed/cmd-api 测试与 race 通过 |
 | 0.3C HotRanker 分页语义 | 完成 | `6baabd3` | `docs/interview-notes/hot-ranker-pagination-boundary.md` | config/feed/cmd-api race 通过；生产仅允许 time |
 | 0.4 播放事件幂等 | 完成 | `91049d8` | `docs/interview-notes/play-event-idempotency.md` | video/cmd-api 测试 + video race 通过 |
-| 0.5 商品与库存地基 | 待开始 |  |  |  |
+| 0.5A 库存幂等与数据库不变量 | 完成 | `d1e1cd9` | `docs/interview-notes/inventory-idempotency-and-invariants.md` | inventory/product/cmd-api 测试 + inventory/product race 通过 |
+| 0.5B 生产配置收口 | 待开始 |  |  |  |
 | 1 普通订单与防超卖 | 待开始 |  |  |  |
 | 2 支付、取消与超时关单 | 待开始 |  |  |  |
 | 3 内容电商闭环 | 待开始 |  |  |  |
