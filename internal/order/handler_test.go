@@ -38,6 +38,14 @@ func (r *handlerOrderRepository) Create(_ context.Context, cmd CreateCommand) (*
 	}, nil
 }
 
+func (r *handlerOrderRepository) Pay(context.Context, PayCommand) (*paymentRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *handlerOrderRepository) Cancel(context.Context, int64, int64, time.Time) (*cancelRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
 func newOrderHandlerEngine(repo Repository, userID int64) *route.Engine {
 	h := route.NewEngine(config.NewOptions([]config.Option{}))
 	h.Use(func(ctx context.Context, c *app.RequestContext) {

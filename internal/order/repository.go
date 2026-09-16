@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -135,6 +136,167 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 		return nil, err
 	}
 	return result, nil
+}
+
+func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecord, error) {
+	var result *paymentRecord
+	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var order Order
+		err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("order_no = ?", cmd.OrderNo).Take(&order).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrOrderNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		existing, err := findPaymentByIdentity(db, cmd.PaymentNo, cmd.ProviderTradeNo)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			if !sameSuccessfulPayment(*existing, order.ID, cmd) {
+				return ErrIdempotencyConflict
+			}
+			result = &paymentRecord{Order: order, Payment: *existing, Replayed: true}
+			return nil
+		}
+		if !canOrderTransition(order.Status, StatusPaid) {
+			return ErrOrderStateConflict
+		}
+		if order.TotalAmount != cmd.Amount {
+			return ErrPaymentAmountMismatch
+		}
+
+		providerTradeNo := cmd.ProviderTradeNo
+		paidAt := cmd.PaidAt.UTC()
+		payment := Payment{
+			PaymentNo: cmd.PaymentNo, OrderID: order.ID, Amount: order.TotalAmount,
+			Status: PaymentStatusSuccess, ProviderTradeNo: &providerTradeNo, PaidAt: &paidAt,
+		}
+		if err := db.Create(&payment).Error; err != nil {
+			return translatePaymentWriteError(err)
+		}
+		updated := db.Model(&Order{}).
+			Where("id = ? AND status = ?", order.ID, string(StatusPendingPayment)).
+			Updates(map[string]any{
+				"status": string(StatusPaid), "paid_at": paidAt, "updated_at": paidAt,
+			})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return ErrOrderStateConflict
+		}
+		order.Status = StatusPaid
+		order.PaidAt = &paidAt
+		order.UpdatedAt = paidAt
+		result = &paymentRecord{Order: order, Payment: payment}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *GormRepository) Cancel(ctx context.Context, userID, orderID int64, canceledAt time.Time) (*cancelRecord, error) {
+	var result *cancelRecord
+	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var order Order
+		err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ?", orderID, userID).Take(&order).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrOrderNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if order.Status == StatusCanceled {
+			result = &cancelRecord{Order: order, Replayed: true}
+			return nil
+		}
+		if !canOrderTransition(order.Status, StatusCanceled) {
+			return ErrOrderStateConflict
+		}
+
+		item, err := findOrderItem(db, order.ID)
+		if err != nil {
+			return err
+		}
+		at := canceledAt.UTC()
+		updated := db.Model(&Order{}).
+			Where("id = ? AND status = ?", order.ID, string(StatusPendingPayment)).
+			Updates(map[string]any{
+				"status": string(StatusCanceled), "canceled_at": at, "updated_at": at,
+			})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return ErrOrderStateConflict
+		}
+		stock := db.Model(&inventoryRow{}).Where("sku_id = ?", item.SKUID).
+			Updates(map[string]any{
+				"quantity": gorm.Expr("quantity + ?", item.Quantity),
+				"version":  gorm.Expr("version + 1"), "updated_at": at,
+			})
+		if stock.Error != nil {
+			return stock.Error
+		}
+		if stock.RowsAffected != 1 {
+			return errors.New("inventory invariant violated: order sku has no inventory row")
+		}
+		ledger := inventoryLedger{
+			SKUID: item.SKUID, OrderID: order.ID, Change: int64(item.Quantity),
+			Reason: "ORDER_CANCELED", BizID: order.OrderNo,
+		}
+		if err := db.Create(&ledger).Error; err != nil {
+			return translateError(err)
+		}
+		order.Status = StatusCanceled
+		order.CanceledAt = &at
+		order.UpdatedAt = at
+		result = &cancelRecord{Order: order}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func findPaymentByIdentity(db *gorm.DB, paymentNo, providerTradeNo string) (*Payment, error) {
+	var payments []Payment
+	err := db.Where("payment_no = ? OR provider_trade_no = ?", paymentNo, providerTradeNo).
+		Limit(2).Find(&payments).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(payments) == 0 {
+		return nil, nil
+	}
+	if len(payments) != 1 {
+		return nil, ErrIdempotencyConflict
+	}
+	return &payments[0], nil
+}
+
+func sameSuccessfulPayment(payment Payment, orderID int64, cmd PayCommand) bool {
+	return payment.OrderID == orderID && payment.PaymentNo == cmd.PaymentNo &&
+		payment.ProviderTradeNo != nil && *payment.ProviderTradeNo == cmd.ProviderTradeNo &&
+		payment.Amount == cmd.Amount && payment.Status == PaymentStatusSuccess && payment.PaidAt != nil
+}
+
+func translatePaymentWriteError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		(pgErr.ConstraintName == "payments_payment_no_key" ||
+			pgErr.ConstraintName == "idx_payments_provider_trade_no_unique") {
+		return ErrIdempotencyConflict
+	}
+	return err
 }
 
 func findExistingOrder(db *gorm.DB, userID int64, key string) (*Order, error) {

@@ -14,10 +14,13 @@ import (
 )
 
 var (
-	ErrInvalidParam        = errors.New("invalid param")
-	ErrNotFound            = errors.New("sellable sku or source not found")
-	ErrInsufficientStock   = errors.New("insufficient stock")
-	ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+	ErrInvalidParam          = errors.New("invalid param")
+	ErrNotFound              = errors.New("sellable sku or source not found")
+	ErrInsufficientStock     = errors.New("insufficient stock")
+	ErrIdempotencyConflict   = errors.New("idempotency key reused with different request")
+	ErrOrderNotFound         = errors.New("order not found")
+	ErrOrderStateConflict    = errors.New("order state conflict")
+	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
 )
 
 const (
@@ -76,9 +79,108 @@ type createRecord struct {
 	Replayed bool
 }
 
-// Repository 定义在消费侧；GormRepository 将整个创建流程包在一个事务中。
+type PayParams struct {
+	OrderNo         string
+	PaymentNo       string
+	ProviderTradeNo string
+	Amount          Amount
+}
+
+type PayCommand struct {
+	PayParams
+	PaidAt time.Time
+}
+
+type PaymentResult struct {
+	OrderID         int64
+	OrderNo         string
+	Status          Status
+	PaymentNo       string
+	ProviderTradeNo string
+	Amount          Amount
+	PaidAt          time.Time
+	Replayed        bool
+}
+
+type CancelParams struct {
+	UserID  int64
+	OrderID int64
+}
+
+type CancelResult struct {
+	OrderID    int64
+	OrderNo    string
+	Status     Status
+	CanceledAt time.Time
+	Replayed   bool
+}
+
+var orderStatusTransitions = map[Status]map[Status]struct{}{
+	StatusPendingPayment: {
+		StatusPaid: {}, StatusCanceled: {}, StatusExpired: {},
+	},
+}
+
+func canOrderTransition(from, to Status) bool {
+	_, ok := orderStatusTransitions[from][to]
+	return ok
+}
+
+type paymentRecord struct {
+	Order    Order
+	Payment  Payment
+	Replayed bool
+}
+
+type cancelRecord struct {
+	Order    Order
+	Replayed bool
+}
+
+// Repository 定义在消费侧；GormRepository 为每个订单命令提供独立事务边界。
 type Repository interface {
 	Create(ctx context.Context, cmd CreateCommand) (*createRecord, error)
+	Pay(ctx context.Context, cmd PayCommand) (*paymentRecord, error)
+	Cancel(ctx context.Context, userID, orderID int64, canceledAt time.Time) (*cancelRecord, error)
+}
+
+func (s *Service) Pay(ctx context.Context, params PayParams) (*PaymentResult, error) {
+	params.OrderNo = strings.TrimSpace(params.OrderNo)
+	params.PaymentNo = strings.TrimSpace(params.PaymentNo)
+	params.ProviderTradeNo = strings.TrimSpace(params.ProviderTradeNo)
+	if params.OrderNo == "" || params.PaymentNo == "" || params.ProviderTradeNo == "" || params.Amount <= 0 ||
+		len(params.OrderNo) > 64 || len(params.PaymentNo) > 64 || len(params.ProviderTradeNo) > 128 {
+		return nil, ErrInvalidParam
+	}
+	record, err := s.repo.Pay(ctx, PayCommand{PayParams: params, PaidAt: s.now()})
+	if err != nil {
+		return nil, err
+	}
+	if record == nil || record.Payment.PaidAt == nil || record.Payment.ProviderTradeNo == nil {
+		return nil, errors.New("order repository returned invalid payment result")
+	}
+	return &PaymentResult{
+		OrderID: record.Order.ID, OrderNo: record.Order.OrderNo, Status: record.Order.Status,
+		PaymentNo: record.Payment.PaymentNo, ProviderTradeNo: *record.Payment.ProviderTradeNo,
+		Amount: record.Payment.Amount, PaidAt: *record.Payment.PaidAt, Replayed: record.Replayed,
+	}, nil
+}
+
+func (s *Service) Cancel(ctx context.Context, params CancelParams) (*CancelResult, error) {
+	if params.UserID <= 0 || params.OrderID <= 0 {
+		return nil, ErrInvalidParam
+	}
+	record, err := s.repo.Cancel(ctx, params.UserID, params.OrderID, s.now())
+	if err != nil {
+		return nil, err
+	}
+	if record == nil || record.Order.CanceledAt == nil {
+		return nil, errors.New("order repository returned invalid cancel result")
+	}
+	return &CancelResult{
+		OrderID: record.Order.ID, OrderNo: record.Order.OrderNo, Status: record.Order.Status,
+		CanceledAt: *record.Order.CanceledAt, Replayed: record.Replayed,
+	}, nil
 }
 
 type Service struct {

@@ -3,6 +3,7 @@ package order
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -80,4 +81,44 @@ func TestLedgerUsesOrderCreatedAndOrderIdentity(t *testing.T) {
 	require.Contains(t, query, "order_created")
 	require.Contains(t, query, "-3")
 	require.Contains(t, query, "order-no")
+}
+
+func TestOrderTransitionQueriesUseRowLockAndSourceStatus(t *testing.T) {
+	db := dryRunOrderDB(t)
+	lockQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		var order Order
+		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_no = ?", "order-1").Take(&order)
+	}))
+	require.Contains(t, lockQuery, "for update")
+	require.Contains(t, lockQuery, "order_no")
+
+	payQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Model(&Order{}).Where("id = ? AND status = ?", 1, string(StatusPendingPayment)).
+			Updates(map[string]any{"status": string(StatusPaid), "paid_at": time.Now()})
+	}))
+	require.Contains(t, payQuery, "status = 'pending_payment'")
+	require.Contains(t, payQuery, "paid_at")
+
+	cancelQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Model(&Order{}).Where("id = ? AND status = ?", 1, string(StatusPendingPayment)).
+			Updates(map[string]any{"status": string(StatusCanceled), "canceled_at": time.Now()})
+	}))
+	require.Contains(t, cancelQuery, "status = 'pending_payment'")
+	require.Contains(t, cancelQuery, "canceled_at")
+}
+
+func TestCancelRestoresStockAndWritesScopedLedger(t *testing.T) {
+	db := dryRunOrderDB(t)
+	stockQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Model(&inventoryRow{}).Where("sku_id = ?", 11).Updates(map[string]any{
+			"quantity": gorm.Expr("quantity + ?", 3), "version": gorm.Expr("version + 1"),
+		})
+	}))
+	require.Contains(t, stockQuery, "quantity + 3")
+
+	ledgerQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Create(&inventoryLedger{SKUID: 11, OrderID: 22, Change: 3, Reason: "ORDER_CANCELED", BizID: "order-no"})
+	}))
+	require.Contains(t, ledgerQuery, "order_canceled")
+	require.Contains(t, ledgerQuery, "order-no")
 }

@@ -46,6 +46,38 @@ func (f *fakeOrderRepository) Create(_ context.Context, cmd CreateCommand) (*cre
 	return result, nil
 }
 
+func (f *fakeOrderRepository) Pay(context.Context, PayCommand) (*paymentRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (f *fakeOrderRepository) Cancel(context.Context, int64, int64, time.Time) (*cancelRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
+type fakeTransitionRepository struct {
+	payRecord     *paymentRecord
+	cancelRecord  *cancelRecord
+	err           error
+	payCommand    PayCommand
+	cancelUserID  int64
+	cancelOrderID int64
+	canceledAt    time.Time
+}
+
+func (f *fakeTransitionRepository) Create(context.Context, CreateCommand) (*createRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (f *fakeTransitionRepository) Pay(_ context.Context, cmd PayCommand) (*paymentRecord, error) {
+	f.payCommand = cmd
+	return f.payRecord, f.err
+}
+
+func (f *fakeTransitionRepository) Cancel(_ context.Context, userID, orderID int64, at time.Time) (*cancelRecord, error) {
+	f.cancelUserID, f.cancelOrderID, f.canceledAt = userID, orderID, at
+	return f.cancelRecord, f.err
+}
+
 func newTestOrderService(repo Repository) *Service {
 	s := NewService(repo)
 	s.now = func() time.Time { return time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC) }
@@ -184,4 +216,58 @@ func TestMultiplyAmountRejectsOverflow(t *testing.T) {
 	require.Equal(t, Amount(1500), amount)
 	_, ok = multiplyAmount(Amount(math.MaxInt64), 2)
 	require.False(t, ok)
+}
+
+func TestServicePayCanonicalizesAndMapsResult(t *testing.T) {
+	at := time.Date(2026, 9, 16, 12, 1, 0, 0, time.UTC)
+	provider := "provider-1"
+	repo := &fakeTransitionRepository{payRecord: &paymentRecord{
+		Order: Order{ID: 8, OrderNo: "order-8", Status: StatusPaid},
+		Payment: Payment{PaymentNo: "payment-1", OrderID: 8, Amount: 1999,
+			Status: PaymentStatusSuccess, ProviderTradeNo: &provider, PaidAt: &at},
+	}}
+	svc := newTestOrderService(repo)
+	result, err := svc.Pay(context.Background(), PayParams{
+		OrderNo: " order-8 ", PaymentNo: " payment-1 ", ProviderTradeNo: " provider-1 ", Amount: 1999,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "order-8", repo.payCommand.OrderNo)
+	require.Equal(t, "payment-1", repo.payCommand.PaymentNo)
+	require.Equal(t, "provider-1", repo.payCommand.ProviderTradeNo)
+	require.Equal(t, time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC), repo.payCommand.PaidAt)
+	require.Equal(t, StatusPaid, result.Status)
+	require.Equal(t, provider, result.ProviderTradeNo)
+}
+
+func TestServicePayValidatesAndPropagatesBusinessErrors(t *testing.T) {
+	svc := newTestOrderService(&fakeTransitionRepository{})
+	for _, params := range []PayParams{{}, {OrderNo: "o", PaymentNo: "p", ProviderTradeNo: "t", Amount: 0}} {
+		_, err := svc.Pay(context.Background(), params)
+		require.ErrorIs(t, err, ErrInvalidParam)
+	}
+	svc = newTestOrderService(&fakeTransitionRepository{err: ErrPaymentAmountMismatch})
+	_, err := svc.Pay(context.Background(), PayParams{OrderNo: "o", PaymentNo: "p", ProviderTradeNo: "t", Amount: 1})
+	require.ErrorIs(t, err, ErrPaymentAmountMismatch)
+}
+
+func TestOrderStatusTransitions(t *testing.T) {
+	require.True(t, canOrderTransition(StatusPendingPayment, StatusPaid))
+	require.True(t, canOrderTransition(StatusPendingPayment, StatusCanceled))
+	require.True(t, canOrderTransition(StatusPendingPayment, StatusExpired))
+	require.False(t, canOrderTransition(StatusCanceled, StatusPaid))
+	require.False(t, canOrderTransition(StatusPaid, StatusCanceled))
+}
+
+func TestServiceCancelPassesAuthenticatedOwnerAndMapsReplay(t *testing.T) {
+	at := time.Date(2026, 9, 16, 12, 2, 0, 0, time.UTC)
+	repo := &fakeTransitionRepository{cancelRecord: &cancelRecord{
+		Order: Order{ID: 9, OrderNo: "order-9", Status: StatusCanceled, CanceledAt: &at}, Replayed: true,
+	}}
+	svc := newTestOrderService(repo)
+	result, err := svc.Cancel(context.Background(), CancelParams{UserID: 7, OrderID: 9})
+	require.NoError(t, err)
+	require.Equal(t, int64(7), repo.cancelUserID)
+	require.Equal(t, int64(9), repo.cancelOrderID)
+	require.True(t, result.Replayed)
+	require.Equal(t, StatusCanceled, result.Status)
 }

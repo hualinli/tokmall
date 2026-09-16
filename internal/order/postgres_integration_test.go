@@ -111,6 +111,188 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		}
 		assertOrderDatabaseFacts(t, db, skuID, "same-key", 99, 1, -1)
 	})
+
+	t.Run("payment and cancel choose one terminal state", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "pay-cancel", 1, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "pay-cancel",
+		})
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, err := svc.Pay(ctx, PayParams{
+				OrderNo: created.OrderNo, PaymentNo: "payment-race", ProviderTradeNo: "provider-race", Amount: created.TotalAmount,
+			})
+			errs <- err
+		}()
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, err := svc.Cancel(ctx, CancelParams{UserID: buyerIDs[0], OrderID: created.OrderID})
+			errs <- err
+		}()
+		close(start)
+		first, second := <-errs, <-errs
+		require.True(t, (first == nil) != (second == nil), "exactly one transition must win: %v / %v", first, second)
+		loser := first
+		if loser == nil {
+			loser = second
+		}
+		require.ErrorIs(t, loser, ErrOrderStateConflict)
+		assertTransitionAccounting(t, db, created.OrderID, skuID)
+	})
+
+	t.Run("concurrent cancel restores stock once", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "cancel-replay", 1, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "cancel-replay",
+		})
+		require.NoError(t, err)
+		runConcurrent(t, 50, func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			result, err := svc.Cancel(ctx, CancelParams{UserID: buyerIDs[0], OrderID: created.OrderID})
+			if err == nil && result.Status != StatusCanceled {
+				return fmt.Errorf("unexpected status %s", result.Status)
+			}
+			return err
+		})
+		assertTransitionAccounting(t, db, created.OrderID, skuID)
+	})
+
+	t.Run("concurrent payment callback records success once", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "payment-replay", 1, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "payment-replay",
+		})
+		require.NoError(t, err)
+		runConcurrent(t, 50, func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			result, err := svc.Pay(ctx, PayParams{
+				OrderNo: created.OrderNo, PaymentNo: "payment-replay", ProviderTradeNo: "provider-replay", Amount: created.TotalAmount,
+			})
+			if err == nil && result.Status != StatusPaid {
+				return fmt.Errorf("unexpected status %s", result.Status)
+			}
+			return err
+		})
+		assertTransitionAccounting(t, db, created.OrderID, skuID)
+	})
+
+	t.Run("late payment cannot revive canceled order", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "late-payment", 1, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "late-payment",
+		})
+		require.NoError(t, err)
+		_, err = svc.Cancel(context.Background(), CancelParams{UserID: buyerIDs[0], OrderID: created.OrderID})
+		require.NoError(t, err)
+		_, err = svc.Pay(context.Background(), PayParams{
+			OrderNo: created.OrderNo, PaymentNo: "payment-late", ProviderTradeNo: "provider-late", Amount: created.TotalAmount,
+		})
+		require.ErrorIs(t, err, ErrOrderStateConflict)
+		assertTransitionAccounting(t, db, created.OrderID, skuID)
+	})
+
+	t.Run("payment replay rejects changed payload", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "payment-conflict", 1, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "payment-conflict",
+		})
+		require.NoError(t, err)
+		params := PayParams{
+			OrderNo: created.OrderNo, PaymentNo: "payment-conflict", ProviderTradeNo: "provider-conflict", Amount: created.TotalAmount,
+		}
+		_, err = svc.Pay(context.Background(), params)
+		require.NoError(t, err)
+		params.PaymentNo = "changed-payment-no"
+		_, err = svc.Pay(context.Background(), params)
+		require.ErrorIs(t, err, ErrIdempotencyConflict)
+		assertTransitionAccounting(t, db, created.OrderID, skuID)
+	})
+
+	t.Run("only order owner can cancel", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "cancel-owner", 2, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "cancel-owner",
+		})
+		require.NoError(t, err)
+		_, err = svc.Cancel(context.Background(), CancelParams{UserID: buyerIDs[1], OrderID: created.OrderID})
+		require.ErrorIs(t, err, ErrOrderNotFound)
+
+		var status Status
+		var stock, canceledCount int64
+		require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, created.OrderID).Scan(&status).Error)
+		require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+		require.NoError(t, db.Raw(`SELECT count(*) FROM inventory_transactions
+			WHERE order_id = ? AND reason = 'ORDER_CANCELED'`, created.OrderID).Scan(&canceledCount).Error)
+		require.Equal(t, StatusPendingPayment, status)
+		require.Zero(t, stock)
+		require.Zero(t, canceledCount)
+	})
+}
+
+func runConcurrent(t *testing.T, workers int, fn func() error) {
+	t.Helper()
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- fn()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+func assertTransitionAccounting(t *testing.T, db *gorm.DB, orderID, skuID int64) {
+	t.Helper()
+	var status Status
+	var stock, paymentCount, createdCount, canceledCount, ledgerSum int64
+	require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, orderID).Scan(&status).Error)
+	require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+	require.NoError(t, db.Raw(`SELECT count(*) FROM payments WHERE order_id = ? AND status = 'SUCCESS'`, orderID).Scan(&paymentCount).Error)
+	require.NoError(t, db.Raw(`SELECT
+		count(*) FILTER (WHERE reason = 'ORDER_CREATED'),
+		count(*) FILTER (WHERE reason = 'ORDER_CANCELED'),
+		COALESCE(sum(change), 0)
+		FROM inventory_transactions WHERE order_id = ?`, orderID).Row().Scan(&createdCount, &canceledCount, &ledgerSum))
+	require.Equal(t, int64(1), createdCount)
+	switch status {
+	case StatusPaid:
+		require.Equal(t, int64(0), stock)
+		require.Equal(t, int64(1), paymentCount)
+		require.Zero(t, canceledCount)
+		require.Equal(t, int64(-1), ledgerSum)
+	case StatusCanceled:
+		require.Equal(t, int64(1), stock)
+		require.Zero(t, paymentCount)
+		require.Equal(t, int64(1), canceledCount)
+		require.Zero(t, ledgerSum)
+	default:
+		t.Fatalf("unexpected terminal status %s", status)
+	}
 }
 
 func newIsolatedPostgres(t *testing.T, dsn string) *gorm.DB {
