@@ -216,7 +216,7 @@ PENDING_PAYMENT → EXPIRED
 | 实施计划 | 完成 | 待填写 | 本文 | 静态审阅形成路线 |
 | 0.1 视频发布授权 | 完成 | `96139af` | `docs/interview-notes/video-publish-authorization.md` | video/cmd-api 测试 + video race 通过 |
 | 0.2A 点赞视频可见性 | 完成 | `6b76a74` | `docs/interview-notes/interaction-video-visibility.md` | interaction/cmd-api 测试 + interaction race 通过 |
-| 0.2B 软删除用户互动过滤 | 待开始 |  |  |  |
+| 0.2B 软删除用户互动过滤 | 完成 | `f0625c2` | `docs/interview-notes/deleted-user-interaction-visibility.md` | interaction/user/cmd-api 测试 + interaction/user race 通过 |
 | 0.3 Feed 正确性 | 待开始 |  |  |  |
 | 0.4 播放事件幂等 | 待开始 |  |  |  |
 | 0.5 商品与库存地基 | 待开始 |  |  |  |
