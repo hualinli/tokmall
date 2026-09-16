@@ -264,6 +264,98 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		require.Equal(t, StatusPendingPayment, status)
 		require.Zero(t, paymentCount)
 	})
+
+	t.Run("multiple expiry workers restore each order once", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "expiry-workers", 1, 20)
+		svc := NewService(NewRepository(db))
+		for i := range 20 {
+			created, err := svc.Create(context.Background(), CreateParams{
+				UserID: buyerIDs[0], SKUID: skuID, Quantity: 1,
+				IdempotencyKey: fmt.Sprintf("expiry-%02d", i),
+			})
+			require.NoError(t, err)
+			require.NoError(t, db.Exec(`UPDATE orders SET created_at = now() - interval '2 seconds', expires_at = now() - interval '1 second' WHERE id = ?`, created.OrderID).Error)
+		}
+
+		repo := NewRepository(db)
+		workers := []*ExpiryWorker{
+			NewExpiryWorker(repo, time.Hour, 20),
+			NewExpiryWorker(repo, time.Hour, 20),
+			NewExpiryWorker(repo, time.Hour, 20),
+			NewExpiryWorker(repo, time.Hour, 20),
+		}
+		var processed atomic.Int64
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for _, worker := range workers {
+			wg.Add(1)
+			go func(worker *ExpiryWorker) {
+				defer wg.Done()
+				<-start
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				count, err := worker.RunOnce(ctx)
+				require.NoError(t, err)
+				processed.Add(int64(count))
+			}(worker)
+		}
+		close(start)
+		wg.Wait()
+		require.Equal(t, int64(20), processed.Load())
+
+		var stock, expiredOrders, expiredLedgers, restored int64
+		require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+		require.NoError(t, db.Raw(`SELECT count(*) FROM orders WHERE user_id = ? AND idempotency_key LIKE 'expiry-%' AND status = 'EXPIRED'`, buyerIDs[0]).Scan(&expiredOrders).Error)
+		require.NoError(t, db.Raw(`SELECT count(*), COALESCE(sum(change), 0) FROM inventory_transactions WHERE sku_id = ? AND reason = 'ORDER_EXPIRED'`, skuID).Row().Scan(&expiredLedgers, &restored))
+		require.Equal(t, int64(20), stock)
+		require.Equal(t, int64(20), expiredOrders)
+		require.Equal(t, int64(20), expiredLedgers)
+		require.Equal(t, int64(20), restored)
+	})
+
+	t.Run("payment and expiry choose one terminal state", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "pay-expire", 1, 1)
+		repo := NewRepository(db)
+		svc := NewService(repo)
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "pay-expire",
+		})
+		require.NoError(t, err)
+		require.NoError(t, db.Exec(`UPDATE orders SET created_at = now() - interval '2 seconds', expires_at = now() - interval '1 second' WHERE id = ?`, created.OrderID).Error)
+
+		start := make(chan struct{})
+		payErr := make(chan error, 1)
+		expireResult := make(chan struct {
+			done bool
+			err  error
+		}, 1)
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, err := svc.Pay(ctx, PayParams{UserID: buyerIDs[0], OrderID: created.OrderID, PaymentNo: "payment-pay-expire", ProviderTradeNo: "provider-pay-expire", Amount: created.TotalAmount})
+			payErr <- err
+		}()
+		go func() {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			done, err := repo.ExpireNext(ctx, time.Now())
+			expireResult <- struct {
+				done bool
+				err  error
+			}{done, err}
+		}()
+		close(start)
+		pay := <-payErr
+		expire := <-expireResult
+		require.NoError(t, expire.err)
+		require.True(t, (pay == nil) != expire.done, "exactly one transition must win: pay=%v expire=%v", pay, expire.done)
+		if pay != nil {
+			require.ErrorIs(t, pay, ErrOrderStateConflict)
+		}
+		assertPayOrExpiryAccounting(t, db, created.OrderID, skuID)
+	})
 }
 
 func runConcurrent(t *testing.T, workers int, fn func() error) {
@@ -314,6 +406,28 @@ func assertTransitionAccounting(t *testing.T, db *gorm.DB, orderID, skuID int64)
 	default:
 		t.Fatalf("unexpected terminal status %s", status)
 	}
+}
+
+func assertPayOrExpiryAccounting(t *testing.T, db *gorm.DB, orderID, skuID int64) {
+	t.Helper()
+	var status Status
+	var stock, payments, expiredLedgers, ledgerSum int64
+	require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, orderID).Scan(&status).Error)
+	require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+	require.NoError(t, db.Raw(`SELECT count(*) FROM payments WHERE order_id = ? AND status = 'SUCCESS'`, orderID).Scan(&payments).Error)
+	require.NoError(t, db.Raw(`SELECT count(*) FILTER (WHERE reason = 'ORDER_EXPIRED'), COALESCE(sum(change), 0) FROM inventory_transactions WHERE order_id = ?`, orderID).Row().Scan(&expiredLedgers, &ledgerSum))
+	if status == StatusPaid {
+		require.Zero(t, stock)
+		require.Equal(t, int64(1), payments)
+		require.Zero(t, expiredLedgers)
+		require.Equal(t, int64(-1), ledgerSum)
+		return
+	}
+	require.Equal(t, StatusExpired, status)
+	require.Equal(t, int64(1), stock)
+	require.Zero(t, payments)
+	require.Equal(t, int64(1), expiredLedgers)
+	require.Zero(t, ledgerSum)
 }
 
 func newIsolatedPostgres(t *testing.T, dsn string) *gorm.DB {

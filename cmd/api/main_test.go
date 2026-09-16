@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"regexp"
 	"sort"
 	"strings"
@@ -21,6 +22,24 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+func TestStopExpiryWorkerIsBounded(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		require.NoError(t, stopExpiryWorker(nil, nil, time.Millisecond))
+	})
+	t.Run("stops", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			<-ctx.Done()
+			close(done)
+		}()
+		require.NoError(t, stopExpiryWorker(cancel, done, time.Second))
+	})
+	t.Run("timeout", func(t *testing.T) {
+		require.Error(t, stopExpiryWorker(func() {}, make(chan struct{}), time.Millisecond))
+	})
+}
 
 type openAPIDoc struct {
 	Paths map[string]map[string]any `yaml:"paths"`

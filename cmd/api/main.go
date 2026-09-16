@@ -169,7 +169,20 @@ func run() error {
 	inventoryHandler := inventory.NewHandler(inventory.NewService(
 		inventory.NewRepository(db),
 	))
-	orderHandler := order.NewHandler(order.NewService(order.NewRepository(db)))
+	orderRepository := order.NewRepository(db)
+	orderHandler := order.NewHandler(order.NewService(orderRepository))
+	var expiryWorkerCancel context.CancelFunc
+	var expiryWorkerDone chan struct{}
+	if cfg.OrderExpiryWorkerEnabled {
+		expiryWorker := order.NewExpiryWorker(orderRepository, cfg.OrderExpiryWorkerInterval, cfg.OrderExpiryWorkerBatchSize)
+		workerCtx, cancel := context.WithCancel(ctx)
+		expiryWorkerCancel = cancel
+		expiryWorkerDone = make(chan struct{})
+		go func() {
+			defer close(expiryWorkerDone)
+			expiryWorker.Run(workerCtx)
+		}()
+	}
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -194,18 +207,41 @@ func run() error {
 	}()
 	select {
 	case err := <-errCh:
+		if stopErr := stopExpiryWorker(expiryWorkerCancel, expiryWorkerDone, 30*time.Second); stopErr != nil {
+			slog.Error("expiry worker did not stop after server exit", "err", stopErr)
+		}
 		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := h.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown: %w", err)
+		shutdownErr := h.Shutdown(shutdownCtx)
+		workerStopErr := stopExpiryWorker(expiryWorkerCancel, expiryWorkerDone, 30*time.Second)
+		if shutdownErr != nil {
+			return fmt.Errorf("shutdown: %w", shutdownErr)
+		}
+		if workerStopErr != nil {
+			return workerStopErr
 		}
 		if sqlDB, err := db.DB(); err == nil {
 			sqlDB.Close()
 		}
 		slog.Info("server stopped gracefully")
 		return nil
+	}
+}
+
+func stopExpiryWorker(cancel context.CancelFunc, done <-chan struct{}, timeout time.Duration) error {
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return errors.New("order expiry worker shutdown timed out")
 	}
 }
 

@@ -267,6 +267,55 @@ func (r *GormRepository) Cancel(ctx context.Context, userID, orderID int64, canc
 	return result, nil
 }
 
+func (r *GormRepository) ExpireNext(ctx context.Context, now time.Time) (bool, error) {
+	expired := false
+	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var order Order
+		err := db.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status = ? AND expires_at <= ?", string(StatusPendingPayment), now.UTC()).
+			Order("expires_at ASC, id ASC").Take(&order).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		item, err := findOrderItem(db, order.ID)
+		if err != nil {
+			return err
+		}
+		at := now.UTC()
+		updated := db.Model(&Order{}).
+			Where("id = ? AND status = ?", order.ID, string(StatusPendingPayment)).
+			Updates(map[string]any{"status": string(StatusExpired), "expired_at": at, "updated_at": at})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return ErrOrderStateConflict
+		}
+		stock := db.Model(&inventoryRow{}).Where("sku_id = ?", item.SKUID).
+			Updates(map[string]any{
+				"quantity": gorm.Expr("quantity + ?", item.Quantity),
+				"version":  gorm.Expr("version + 1"), "updated_at": at,
+			})
+		if stock.Error != nil {
+			return stock.Error
+		}
+		if stock.RowsAffected != 1 {
+			return errors.New("inventory invariant violated: order sku has no inventory row")
+		}
+		ledger := inventoryLedger{SKUID: item.SKUID, OrderID: order.ID, Change: int64(item.Quantity), Reason: "ORDER_EXPIRED", BizID: order.OrderNo}
+		if err := db.Create(&ledger).Error; err != nil {
+			return translateError(err)
+		}
+		expired = true
+		return nil
+	})
+	return expired, err
+}
+
 func findPaymentByIdentity(db *gorm.DB, paymentNo, providerTradeNo string) (*Payment, error) {
 	var payments []Payment
 	err := db.Where("payment_no = ? OR provider_trade_no = ?", paymentNo, providerTradeNo).

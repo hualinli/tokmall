@@ -124,3 +124,32 @@ func TestCancelRestoresStockAndWritesScopedLedger(t *testing.T) {
 	require.Contains(t, ledgerQuery, "order_canceled")
 	require.Contains(t, ledgerQuery, "order-no")
 }
+
+func TestExpirySelectionUsesDueOrderIndexAndSkipLocked(t *testing.T) {
+	db := dryRunOrderDB(t)
+	query := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		var order Order
+		return tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status = ? AND expires_at <= ?", string(StatusPendingPayment), time.Now()).
+			Order("expires_at ASC, id ASC").Take(&order)
+	}))
+	require.Contains(t, query, "status = 'pending_payment'")
+	require.Contains(t, query, "expires_at <=")
+	require.Contains(t, query, "order by expires_at asc, id asc")
+	require.Contains(t, query, "for update skip locked")
+}
+
+func TestExpiryTransitionRestoresStockAndWritesLedger(t *testing.T) {
+	db := dryRunOrderDB(t)
+	expireQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Model(&Order{}).Where("id = ? AND status = ?", 1, string(StatusPendingPayment)).
+			Updates(map[string]any{"status": string(StatusExpired), "expired_at": time.Now()})
+	}))
+	require.Contains(t, expireQuery, "status = 'pending_payment'")
+	require.Contains(t, expireQuery, "expired_at")
+
+	ledgerQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Create(&inventoryLedger{SKUID: 11, OrderID: 22, Change: 3, Reason: "ORDER_EXPIRED", BizID: "order-no"})
+	}))
+	require.Contains(t, ledgerQuery, "order_expired")
+}

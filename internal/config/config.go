@@ -14,31 +14,34 @@ const (
 	EnvironmentDevelopment = "development"
 	EnvironmentProduction  = "production"
 
-	defaultServerPort       = "8080"
-	defaultJWTSecret        = "dev-only-jwt-secret"
-	defaultDBHost           = "localhost"
-	defaultDBPort           = "5432"
-	defaultDBUser           = "tokmall"
-	defaultDBPassword       = "tokmall"
-	defaultDBDatabase       = "tokmall"
-	defaultDBSSLMode        = "disable"
-	defaultMinIOEndpoint    = "localhost:9000"
-	defaultMinIOBucket      = "tokmall"
-	defaultUploadExpiry     = 15 * time.Minute
-	defaultDownloadExpiry   = 2 * time.Hour
-	defaultAvatarExpiry     = 7 * 24 * time.Hour
-	defaultCursorSecret     = "change-me-cursor-secret"
-	defaultRedisAddr        = "localhost:6380"
-	defaultRedisDB          = 0
-	defaultFeedCacheTTL     = 60 * time.Second
-	defaultFeedCacheOn      = true
-	defaultFollowingCacheOn = true
-	defaultRankStrategy     = "time"
-	rateLimitOn             = true
-	defaultAuthAccountLimit = 10   // 认证接口：10 次/分钟/账号（防暴力破解，按账号维度）
-	defaultAuthIPLimit      = 100  // 认证接口：100 次/分钟/IP（防单一来源洪峰，NAT 下放宽）
-	defaultWriteLimit       = 100  // 写接口：100 次/10s/用户
-	defaultReadLimit        = 6000 // 读接口：6000 次/分钟/IP（只挡爬虫/洪峰，NAT 多人共享不误伤）
+	defaultServerPort           = "8080"
+	defaultJWTSecret            = "dev-only-jwt-secret"
+	defaultDBHost               = "localhost"
+	defaultDBPort               = "5432"
+	defaultDBUser               = "tokmall"
+	defaultDBPassword           = "tokmall"
+	defaultDBDatabase           = "tokmall"
+	defaultDBSSLMode            = "disable"
+	defaultMinIOEndpoint        = "localhost:9000"
+	defaultMinIOBucket          = "tokmall"
+	defaultUploadExpiry         = 15 * time.Minute
+	defaultDownloadExpiry       = 2 * time.Hour
+	defaultAvatarExpiry         = 7 * 24 * time.Hour
+	defaultCursorSecret         = "change-me-cursor-secret"
+	defaultRedisAddr            = "localhost:6380"
+	defaultRedisDB              = 0
+	defaultFeedCacheTTL         = 60 * time.Second
+	defaultFeedCacheOn          = true
+	defaultFollowingCacheOn     = true
+	defaultRankStrategy         = "time"
+	rateLimitOn                 = true
+	defaultAuthAccountLimit     = 10   // 认证接口：10 次/分钟/账号（防暴力破解，按账号维度）
+	defaultAuthIPLimit          = 100  // 认证接口：100 次/分钟/IP（防单一来源洪峰，NAT 下放宽）
+	defaultWriteLimit           = 100  // 写接口：100 次/10s/用户
+	defaultReadLimit            = 6000 // 读接口：6000 次/分钟/IP（只挡爬虫/洪峰，NAT 多人共享不误伤）
+	defaultOrderExpiryWorkerOn  = true
+	defaultOrderExpiryInterval  = 5 * time.Second
+	defaultOrderExpiryBatchSize = 100
 )
 
 // ErrInvalidFeedRankStrategy 表示排序策略不是当前生产配置支持的策略。
@@ -66,7 +69,10 @@ type Config struct {
 	// WriteRateLimit 写接口按用户配额。
 	WriteRateLimit int
 	// ReadRateLimit 读接口按 IP 配额（高阈值：只挡爬虫/异常洪峰，不误伤真实用户）。
-	ReadRateLimit int
+	ReadRateLimit              int
+	OrderExpiryWorkerEnabled   bool
+	OrderExpiryWorkerInterval  time.Duration
+	OrderExpiryWorkerBatchSize int
 }
 
 type RedisConfig struct {
@@ -175,6 +181,18 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	orderExpiryWorkerEnabled, err := envBool("ORDER_EXPIRY_WORKER_ENABLED", defaultOrderExpiryWorkerOn)
+	if err != nil {
+		return nil, err
+	}
+	orderExpiryWorkerInterval, err := envDuration("ORDER_EXPIRY_WORKER_INTERVAL", defaultOrderExpiryInterval)
+	if err != nil {
+		return nil, err
+	}
+	orderExpiryWorkerBatchSize, err := envInt("ORDER_EXPIRY_WORKER_BATCH_SIZE", defaultOrderExpiryBatchSize)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		Environment:  environment,
@@ -208,12 +226,15 @@ func Load() (*Config, error) {
 			FeedCacheEnabled:      feedCacheEnabled,
 			FollowingCacheEnabled: followingCacheEnabled,
 		},
-		FeedRankStrategy: feedRankStrategy,
-		RateLimitEnabled: rateLimitEnabled,
-		AuthAccountLimit: authAccountLimit,
-		AuthIPLimit:      authIPLimit,
-		WriteRateLimit:   writeLimit,
-		ReadRateLimit:    readLimit,
+		FeedRankStrategy:           feedRankStrategy,
+		RateLimitEnabled:           rateLimitEnabled,
+		AuthAccountLimit:           authAccountLimit,
+		AuthIPLimit:                authIPLimit,
+		WriteRateLimit:             writeLimit,
+		ReadRateLimit:              readLimit,
+		OrderExpiryWorkerEnabled:   orderExpiryWorkerEnabled,
+		OrderExpiryWorkerInterval:  orderExpiryWorkerInterval,
+		OrderExpiryWorkerBatchSize: orderExpiryWorkerBatchSize,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -236,6 +257,12 @@ func (c *Config) validate() error {
 	}
 	if c.RateLimitEnabled && (c.AuthAccountLimit <= 0 || c.AuthIPLimit <= 0 || c.WriteRateLimit <= 0 || c.ReadRateLimit <= 0) {
 		return errors.New("rate limit values must be positive when rate limiting is enabled")
+	}
+	if c.OrderExpiryWorkerInterval <= 0 {
+		return errors.New("ORDER_EXPIRY_WORKER_INTERVAL must be positive")
+	}
+	if c.OrderExpiryWorkerBatchSize <= 0 {
+		return errors.New("ORDER_EXPIRY_WORKER_BATCH_SIZE must be positive")
 	}
 	if c.Environment != EnvironmentProduction {
 		return nil

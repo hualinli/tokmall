@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -16,6 +17,9 @@ func TestLoadDevelopmentUsesLocalDefaults(t *testing.T) {
 	require.Equal(t, defaultCursorSecret, cfg.CursorSecret)
 	require.Equal(t, "localhost", cfg.DBConfig.Host)
 	require.False(t, cfg.MinIOConfig.UseSSL)
+	require.True(t, cfg.OrderExpiryWorkerEnabled)
+	require.Equal(t, 5*time.Second, cfg.OrderExpiryWorkerInterval)
+	require.Equal(t, 100, cfg.OrderExpiryWorkerBatchSize)
 }
 
 func TestLoadExplicitDevelopmentConfig(t *testing.T) {
@@ -111,8 +115,25 @@ func TestLoadRejectsExplicitMalformedValuesInEveryEnvironment(t *testing.T) {
 		{"FEED_CACHE_TTL", "soon", "environment variable FEED_CACHE_TTL must be a valid duration"},
 		{"FEED_CACHE_ENABLED", "sometimes", "environment variable FEED_CACHE_ENABLED must be a boolean"},
 		{"MINIO_USE_SSL", "yes-please", "environment variable MINIO_USE_SSL must be a boolean"},
+		{"ORDER_EXPIRY_WORKER_ENABLED", "sometimes", "environment variable ORDER_EXPIRY_WORKER_ENABLED must be a boolean"},
+		{"ORDER_EXPIRY_WORKER_INTERVAL", "soon", "environment variable ORDER_EXPIRY_WORKER_INTERVAL must be a valid duration"},
+		{"ORDER_EXPIRY_WORKER_BATCH_SIZE", "many", "environment variable ORDER_EXPIRY_WORKER_BATCH_SIZE must be an integer"},
 	}
 	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			setDevelopmentEnv(t)
+			t.Setenv(tt.key, tt.value)
+			_, err := Load()
+			require.EqualError(t, err, tt.want)
+		})
+	}
+}
+
+func TestLoadRejectsNonPositiveOrderExpiryWorkerConfig(t *testing.T) {
+	for _, tt := range []struct{ key, value, want string }{
+		{"ORDER_EXPIRY_WORKER_INTERVAL", "0s", "ORDER_EXPIRY_WORKER_INTERVAL must be positive"},
+		{"ORDER_EXPIRY_WORKER_BATCH_SIZE", "0", "ORDER_EXPIRY_WORKER_BATCH_SIZE must be positive"},
+	} {
 		t.Run(tt.key, func(t *testing.T) {
 			setDevelopmentEnv(t)
 			t.Setenv(tt.key, tt.value)
@@ -184,6 +205,7 @@ func clearConfigEnv(t *testing.T) {
 		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB", "REDIS_USE_TLS", "FEED_CACHE_TTL", "FEED_CACHE_ENABLED",
 		"FEED_FOLLOWING_CACHE_ENABLED", "FEED_RANK_STRATEGY", "RATE_LIMIT_ENABLED",
 		"RATE_LIMIT_AUTH_ACCOUNT", "RATE_LIMIT_AUTH_IP", "RATE_LIMIT_WRITE", "RATE_LIMIT_READ",
+		"ORDER_EXPIRY_WORKER_ENABLED", "ORDER_EXPIRY_WORKER_INTERVAL", "ORDER_EXPIRY_WORKER_BATCH_SIZE",
 	} {
 		t.Setenv(key, "")
 	}
