@@ -34,6 +34,7 @@ import (
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"gorm.io/gorm"
 )
@@ -113,15 +114,12 @@ func run() error {
 	// 关闭时会得到"typed nil"——接口判 nil 为真但方法调用即 panic。
 	var feedCache feed.FirstPageCache
 	var feedInvalidator video.FeedCacheInvalidator
-	var followingCache feed.FollowingFeedCache
 	if cfg.FeedCacheEnabled {
 		redisFeedCache := feed.NewRedisFeedCache(redisClient, cfg.FeedCacheTTL)
 		feedCache = redisFeedCache
 		feedInvalidator = redisFeedCache
 	}
-	if cfg.FollowingCacheEnabled {
-		followingCache = feed.NewRedisFollowingFeedCache(redisClient, cfg.FeedCacheTTL)
-	}
+	followingCache, followingFeedInvalidator := assembleFollowingFeedCache(cfg.RedisConfig, redisClient)
 	// 限流器（M7）：Redis 固定窗口计数；关闭（压测/调试）时 nil，registerRoutes 不挂载。
 	var rateLimiter middleware.Limiter
 	if cfg.RateLimitEnabled {
@@ -156,6 +154,7 @@ func run() error {
 		interaction.NewRepository(db),
 		storageClient,
 		cfg.CursorSecret,
+		followingFeedInvalidator,
 	))
 	productHandler := product.NewHandler(product.NewService(
 		product.NewRepository(db),
@@ -201,6 +200,17 @@ func run() error {
 		slog.Info("server stopped gracefully")
 		return nil
 	}
+}
+
+// assembleFollowingFeedCache 在 main 统一装配 feed 的缓存实现，并把同一个实例
+// 以 interaction 消费侧接口注入关注服务。缓存关闭时返回真正的 nil 接口，避免
+// typed nil 在关注写路径上触发方法调用；关闭缓存只损失性能，不改变关注正确性。
+func assembleFollowingFeedCache(cfg config.RedisConfig, redisClient *redis.Client) (feed.FollowingFeedCache, interaction.FollowingFeedInvalidator) {
+	if !cfg.FollowingCacheEnabled || redisClient == nil {
+		return nil, nil
+	}
+	c := feed.NewRedisFollowingFeedCache(redisClient, cfg.FeedCacheTTL)
+	return c, c
 }
 
 // newRanker 根据配置装配排序器（M8 实验开关）：

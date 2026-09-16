@@ -5,15 +5,18 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/lihualin/tokmall/internal/api"
+	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/interaction"
 	"github.com/lihualin/tokmall/internal/inventory"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -73,4 +76,25 @@ func TestOpenAPISync(t *testing.T) {
 
 	require.Empty(t, missing, "路由表存在但 openapi.yaml 缺失（改端点必须同步改文档）")
 	require.Empty(t, stale, "openapi.yaml 存在但路由表没有（文档残留，端点已删除）")
+}
+
+func TestAssembleFollowingFeedCacheInjectsSameImplementation(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6380"})
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	cfg := config.RedisConfig{FollowingCacheEnabled: true, FeedCacheTTL: time.Minute}
+
+	cache, invalidator := assembleFollowingFeedCache(cfg, client)
+	require.NotNil(t, cache)
+	require.NotNil(t, invalidator)
+	require.Same(t, cache, invalidator, "feed cache 与 interaction invalidator 必须共享同一实现")
+
+	disabled := cfg
+	disabled.FollowingCacheEnabled = false
+	cache, invalidator = assembleFollowingFeedCache(disabled, client)
+	require.Nil(t, cache)
+	require.Nil(t, invalidator)
+
+	cache, invalidator = assembleFollowingFeedCache(cfg, nil)
+	require.Nil(t, cache)
+	require.Nil(t, invalidator)
 }

@@ -30,17 +30,32 @@ type AvatarURLProvider interface {
 	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 }
 
-type Service struct {
-	repo   Repository
-	avatar AvatarURLProvider
-	cursor *codec
+// FollowingFeedInvalidator 是 interaction 的消费侧接口：关注关系成功变更后，
+// 只需要通知 follower 自己的关注 Feed 第一页失效。interaction 不依赖 feed
+// 模块的缓存实现或排序类型，具体装配由 main 完成。
+type FollowingFeedInvalidator interface {
+	InvalidateFollowingFeed(ctx context.Context, followerID int64) error
 }
 
-func NewService(repo Repository, avatar AvatarURLProvider, cursorSecret string) *Service {
+type Service struct {
+	repo                     Repository
+	avatar                   AvatarURLProvider
+	cursor                   *codec
+	followingFeedInvalidator FollowingFeedInvalidator
+}
+
+// NewService 构造 interaction 服务。invalidator 可选：缓存关闭时传 nil，
+// 关注写入仍保持正确，只是不做缓存加速。
+func NewService(repo Repository, avatar AvatarURLProvider, cursorSecret string, invalidators ...FollowingFeedInvalidator) *Service {
+	var invalidator FollowingFeedInvalidator
+	if len(invalidators) > 0 {
+		invalidator = invalidators[0]
+	}
 	return &Service{
-		repo:   repo,
-		avatar: avatar,
-		cursor: NewCodec(cursorSecret),
+		repo:                     repo,
+		avatar:                   avatar,
+		cursor:                   NewCodec(cursorSecret),
+		followingFeedInvalidator: invalidator,
 	}
 }
 
@@ -115,6 +130,7 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID int64) (*Fo
 		slog.Error("add follow failed", "follower_id", followerID, "followee_id", followeeID, "err", err)
 		return nil, fmt.Errorf("add follow: %w", err)
 	}
+	s.invalidateFollowingFeed(ctx, followerID)
 	return &FollowResult{FolloweeID: followeeID, Following: true}, nil
 }
 
@@ -127,7 +143,20 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeID int64) (*
 		slog.Error("remove follow failed", "follower_id", followerID, "followee_id", followeeID, "err", err)
 		return nil, fmt.Errorf("remove follow: %w", err)
 	}
+	s.invalidateFollowingFeed(ctx, followerID)
 	return &FollowResult{FolloweeID: followeeID, Following: false}, nil
+}
+
+// invalidateFollowingFeed 只在关注写入成功后调用，遵循“先写库、后删缓存”。
+// 缓存是加速层：删除失败只记录 Warn，让 TTL 最终收敛，不能把已经成功的
+// 关注/取关改写成失败；invalidator 为 nil 时表示缓存关闭，安全降级直查。
+func (s *Service) invalidateFollowingFeed(ctx context.Context, followerID int64) {
+	if s.followingFeedInvalidator == nil {
+		return
+	}
+	if err := s.followingFeedInvalidator.InvalidateFollowingFeed(ctx, followerID); err != nil {
+		slog.Warn("invalidate following feed cache failed", "user_id", followerID, "err", err)
+	}
 }
 
 // ensureActiveUser 是 interaction 对 users 表的最小 read model：只有未软删且

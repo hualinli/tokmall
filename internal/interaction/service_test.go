@@ -2,6 +2,7 @@ package interaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -76,6 +77,25 @@ type fakeAvatar struct{}
 
 func (fakeAvatar) PresignAvatarURL(_ context.Context, objectKey string) (string, error) {
 	return "http://minio.local/signed/" + objectKey, nil
+}
+
+type fakeFollowingInvalidator struct {
+	mu    sync.Mutex
+	calls []int64
+	err   error
+}
+
+func (f *fakeFollowingInvalidator) InvalidateFollowingFeed(_ context.Context, followerID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, followerID)
+	return f.err
+}
+
+func (f *fakeFollowingInvalidator) calledIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.calls...)
 }
 
 // ListFollowing/ListFollowers 从 follows map 构造 FollowEdge（按 follower/followee 过滤）。
@@ -243,6 +263,54 @@ func TestFollow_RepeatAndUnfollow(t *testing.T) {
 	res, err = svc.Follow(context.Background(), 1, 4)
 	require.NoError(t, err)
 	require.True(t, res.Following)
+}
+
+func TestFollow_InvalidatesFollowerFeedAfterSuccessfulWrites(t *testing.T) {
+	repo := newFakeRepo()
+	invalidator := &fakeFollowingInvalidator{}
+	svc := NewService(repo, fakeAvatar{}, "test-cursor-secret", invalidator)
+
+	// 关注关系改变的是 follower=1 看到的关注 Feed；不能误删 followee=4 的缓存。
+	_, err := svc.Follow(context.Background(), 1, 4)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1}, invalidator.calledIDs())
+
+	// 关系表的幂等重复也返回成功；重新失效是安全的，避免实现依赖“是否真的插入”
+	// 这个额外结果，且不会改变对外幂等语义。
+	_, err = svc.Follow(context.Background(), 1, 4)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 1}, invalidator.calledIDs())
+
+	_, err = svc.Unfollow(context.Background(), 1, 4)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 1, 1}, invalidator.calledIDs())
+
+	// 重复取消同样成功并失效同一个 follower 的第一页。
+	_, err = svc.Unfollow(context.Background(), 1, 4)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 1, 1, 1}, invalidator.calledIDs())
+}
+
+func TestFollow_InvalidationFailureDoesNotFailSuccessfulWrite(t *testing.T) {
+	repo := newFakeRepo()
+	invalidator := &fakeFollowingInvalidator{err: errors.New("redis unavailable")}
+	svc := NewService(repo, fakeAvatar{}, "test-cursor-secret", invalidator)
+
+	result, err := svc.Follow(context.Background(), 1, 4)
+	require.NoError(t, err, "缓存失效失败不能回滚已经成功的关注写入")
+	require.True(t, result.Following)
+	require.Equal(t, []int64{1}, invalidator.calledIDs())
+
+	repo.mu.Lock()
+	require.True(t, repo.follows[[2]int64{1, 4}], "数据库写入应保留，等待 TTL 收敛缓存")
+	repo.mu.Unlock()
+}
+
+func TestFollow_CacheDisabledIsNilSafe(t *testing.T) {
+	// NewService 的可选 invalidator 为 nil 时，关注路径仍正常工作。
+	result, err := newTestService(newFakeRepo()).Follow(context.Background(), 1, 4)
+	require.NoError(t, err)
+	require.True(t, result.Following)
 }
 
 // TestListFollowing_Visibility 关注列表：匿名 is_following 全 false，

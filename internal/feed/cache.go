@@ -18,6 +18,14 @@ const (
 	followingCachePrefix = "feed:following"
 )
 
+// supportedFollowingRankVersions 是当前代码支持的关注 Feed 排序版本。
+// 关注缓存 key 按 rank_version 隔离，因此失效时必须覆盖这里登记的每个版本；
+// 使用固定 key 列表而不是 SCAN，避免按前缀遍历 Redis，也避免误删其他用户的 key。
+// 新增可对外使用的关注排序版本时，必须同步加入这里并补缓存失效测试。
+func supportedFollowingRankVersions() []string {
+	return []string{TimeRanker{}.Version(), HotRanker{}.Version()}
+}
+
 // FirstPageCache feed 消费侧接口：缓存的是 service 拼完 URL 的产物
 // （FeedResult），所以 Get/Set 操作的是完整结果而不是 model。
 type FirstPageCache interface {
@@ -31,6 +39,14 @@ type FirstPageCache interface {
 type FollowingFeedCache interface {
 	Get(ctx context.Context, userID int64, rankVersion string) (*FeedResult, error)
 	Set(ctx context.Context, userID int64, rankVersion string, result *FeedResult) error
+}
+
+// followingRedisClient 是 RedisFollowingFeedCache 实际需要的最小 Redis 能力。
+// 用消费侧最小接口保留可测试性；生产中的 *redis.Client 自动满足它。
+type followingRedisClient interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
 }
 
 // CacheStats 缓存命中统计：装配方（main）用 prometheus counter 实现，
@@ -65,7 +81,7 @@ func jitteredTTL(base time.Duration) time.Duration {
 
 // RedisFollowingFeedCache 关注 Feed 第一页缓存的 Redis 实现（个性化 key）。
 type RedisFollowingFeedCache struct {
-	client *redis.Client
+	client followingRedisClient
 	ttl    time.Duration
 }
 
@@ -77,7 +93,19 @@ func followingCacheKey(userID int64, rankVersion string) string {
 	return fmt.Sprintf("%s:%d:%s", followingCachePrefix, userID, rankVersion)
 }
 
+func followingCacheKeys(userID int64) []string {
+	versions := supportedFollowingRankVersions()
+	keys := make([]string, 0, len(versions))
+	for _, version := range versions {
+		keys = append(keys, followingCacheKey(userID, version))
+	}
+	return keys
+}
+
 func (c *RedisFollowingFeedCache) Get(ctx context.Context, userID int64, rankVersion string) (*FeedResult, error) {
+	if c == nil || c.client == nil {
+		return nil, nil
+	}
 	data, err := c.client.Get(ctx, followingCacheKey(userID, rankVersion)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
@@ -93,11 +121,25 @@ func (c *RedisFollowingFeedCache) Get(ctx context.Context, userID int64, rankVer
 }
 
 func (c *RedisFollowingFeedCache) Set(ctx context.Context, userID int64, rankVersion string, result *FeedResult) error {
+	if c == nil || c.client == nil {
+		return nil
+	}
 	data, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
 	return c.client.Set(ctx, followingCacheKey(userID, rankVersion), data, jitteredTTL(c.ttl)).Err()
+}
+
+// InvalidateFollowingFeed 精确删除一个 follower 的关注 Feed 第一页缓存。
+// 当前 key 以 rank_version 隔离，所以一次 DEL 显式覆盖所有当前支持版本；不使用
+// SCAN，避免全库遍历和误删其他用户。缓存删除失败由调用方记录 Warn，业务写入
+// 不回滚，TTL 负责最终收敛。
+func (c *RedisFollowingFeedCache) InvalidateFollowingFeed(ctx context.Context, followerID int64) error {
+	if c == nil || c.client == nil || followerID <= 0 {
+		return nil
+	}
+	return c.client.Del(ctx, followingCacheKeys(followerID)...).Err()
 }
 
 func (c *RedisFeedCache) Get(ctx context.Context) (*FeedResult, error) {
