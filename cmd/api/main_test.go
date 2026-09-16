@@ -13,6 +13,7 @@ import (
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/interaction"
 	"github.com/lihualin/tokmall/internal/inventory"
+	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
@@ -63,6 +64,7 @@ func TestOpenAPISync(t *testing.T) {
 		interaction: interaction.NewHandler(nil),
 		product:     product.NewHandler(nil),
 		inventory:   inventory.NewHandler(nil),
+		order:       order.NewHandler(nil),
 	})
 
 	routeKeys := map[string]bool{}

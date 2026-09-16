@@ -28,6 +28,7 @@ import (
 	"github.com/lihualin/tokmall/internal/inventory"
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/observability"
+	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
@@ -168,6 +169,7 @@ func run() error {
 	inventoryHandler := inventory.NewHandler(inventory.NewService(
 		inventory.NewRepository(db),
 	))
+	orderHandler := order.NewHandler(order.NewService(order.NewRepository(db)))
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -177,6 +179,7 @@ func run() error {
 		interaction: interactionHandler,
 		product:     productHandler,
 		inventory:   inventoryHandler,
+		order:       orderHandler,
 		rateLimiter: rateLimiter,
 		rateRules: rateRules{
 			authAccount: middleware.RateLimitRule{Scope: "auth-account", Limit: cfg.AuthAccountLimit, Window: time.Minute},
@@ -244,6 +247,7 @@ type routes struct {
 	interaction *interaction.Handler
 	product     *product.Handler
 	inventory   *inventory.Handler
+	order       *order.Handler
 	rateLimiter middleware.Limiter
 	rateRules   rateRules
 }
@@ -303,4 +307,5 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.interaction.RegisterProtectedRoutes(protected)
 	r.product.RegisterProtectedRoutes(protected)
 	r.inventory.RegisterProtectedRoutes(protected)
+	r.order.RegisterProtectedRoutes(protected)
 }

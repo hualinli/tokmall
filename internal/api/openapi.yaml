@@ -22,6 +22,10 @@ tags:
     description: 点赞/关注（需认证）
   - name: user
     description: 个人资料（需认证）
+  - name: products
+    description: 商品与库存
+  - name: orders
+    description: 订单（需认证）
   - name: health
     description: 探针（公开）
 
@@ -749,6 +753,43 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/orders:
+    post:
+      tags: [orders]
+      summary: 创建单 SKU 订单
+      description: >-
+        当前用户身份只取自 Bearer Token。创建订单、条件扣库存、库存流水和订单项在同一事务提交；
+        同一用户使用相同 idempotency_key 和相同载荷重试时返回同一订单，且仍返回 201。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: 创建成功或相同载荷的幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrderResponse"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: SKU 不可售或完整来源关系无效
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: 库存不足，或幂等键已被不同请求载荷占用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1381,6 +1422,92 @@ components:
           type: string
           format: date-time
           nullable: true
+    CreateOrderRequest:
+      type: object
+      required: [sku_id, quantity, idempotency_key]
+      properties:
+        sku_id:
+          type: integer
+          format: int64
+          minimum: 1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 1000
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 128
+        source:
+          $ref: "#/components/schemas/CreateOrderSource"
+    CreateOrderSource:
+      type: object
+      description: 可选的完整内容带货来源；三个字段必须同时提供并匹配启用中的挂载关系
+      required: [video_id, author_id, product_id]
+      properties:
+        video_id:
+          type: integer
+          format: int64
+          minimum: 1
+        author_id:
+          type: integer
+          format: int64
+          minimum: 1
+        product_id:
+          type: integer
+          format: int64
+          minimum: 1
+    CreateOrderResponse:
+      type: object
+      required: [order_id, order_no, status, total_amount, expires_at, item, replayed]
+      properties:
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        status:
+          type: string
+          enum: [PENDING_PAYMENT]
+        total_amount:
+          type: integer
+          format: int64
+          description: 订单总金额，单位分
+        expires_at:
+          type: string
+          format: date-time
+        item:
+          $ref: "#/components/schemas/OrderItem"
+        replayed:
+          type: boolean
+          description: true 表示返回的是先前相同请求创建的订单
+    OrderItem:
+      type: object
+      required: [product_id, sku_id, merchant_id, product_title, sku_spec, unit_price, quantity, line_amount]
+      properties:
+        product_id:
+          type: integer
+          format: int64
+        sku_id:
+          type: integer
+          format: int64
+        merchant_id:
+          type: integer
+          format: int64
+        product_title:
+          type: string
+        sku_spec:
+          type: string
+        unit_price:
+          type: integer
+          format: int64
+        quantity:
+          type: integer
+          format: int32
+        line_amount:
+          type: integer
+          format: int64
     PlayRequest:
       type: object
       required: [event_id]
