@@ -214,7 +214,7 @@ PENDING_PAYMENT → EXPIRED
 | 模块 | 状态 | 实现提交 | 讲解文档 | 验收结果 |
 |---|---|---|---|---|
 | 实施计划 | 完成 | 待填写 | 本文 | 静态审阅形成路线 |
-| 0.1 视频发布授权 | 待开始 |  |  |  |
+| 0.1 视频发布授权 | 完成 | `96139af` | `docs/interview-notes/video-publish-authorization.md` | video/cmd-api 测试 + video race 通过 |
 | 0.2 互动与用户可见性 | 待开始 |  |  |  |
 | 0.3 Feed 正确性 | 待开始 |  |  |  |
 | 0.4 播放事件幂等 | 待开始 |  |  |  |
