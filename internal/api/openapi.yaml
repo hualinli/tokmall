@@ -790,6 +790,70 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/orders/{id}/pay:
+    post:
+      tags: [orders]
+      summary: 模拟当前用户支付订单
+      description: >-
+        仅用于学习环境的受保护用户命令，不是支付渠道回调。订单必须属于当前 Bearer Token 用户；
+        不存在与非本人订单统一返回 404。真实渠道回调必须使用独立入口，并先校验渠道签名、时间窗和防重放。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayOrderRequest"
+      responses:
+        "200":
+          description: 支付成功或相同支付事实的幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayOrderResponse"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 金额不一致、订单状态冲突，或支付标识被不同事实占用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/orders/{id}/cancel:
+    post:
+      tags: [orders]
+      summary: 当前用户取消订单
+      description: >-
+        仅允许订单本人取消。取消订单、库存回补和回补流水在同一事务提交；
+        对已取消订单重复请求返回原结果，不重复回补库存。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 取消成功或幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelOrderResponse"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 订单已支付、已过期或处于其他不可取消状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -840,6 +904,14 @@ components:
       schema:
         type: integer
         format: int64
+    OrderID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
     UserID:
       name: id
       in: path
@@ -891,6 +963,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    OrderNotFound:
+      description: 订单不存在或不属于当前用户（统一 404，不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     DuplicateAction:
       description: 重复操作（邮箱/用户名已存在、状态冲突）
       content:
@@ -917,7 +995,8 @@ components:
             code:
               type: string
               enum: [INVALID_ARGUMENT, INVALID_CURSOR, VIDEO_NOT_FOUND, VIDEO_NOT_PUBLISHED,
-                USER_NOT_FOUND, PRODUCT_NOT_FOUND, INSUFFICIENT_STOCK, UNAUTHENTICATED,
+                USER_NOT_FOUND, PRODUCT_NOT_FOUND, INSUFFICIENT_STOCK, ORDER_NOT_FOUND,
+                ORDER_STATE_CONFLICT, PAYMENT_AMOUNT_MISMATCH, UNAUTHENTICATED,
                 FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION, IDEMPOTENCY_CONFLICT,
                 UPLOAD_URL_EXPIRED, INTERNAL,
                 DEPENDENCY_UNAVAILABLE, MISSING_AUTH_HEADER, INVALID_AUTH_TYPE, INVALID_TOKEN]
@@ -1482,6 +1561,66 @@ components:
         replayed:
           type: boolean
           description: true 表示返回的是先前相同请求创建的订单
+    PayOrderRequest:
+      type: object
+      required: [payment_no, provider_trade_no, amount]
+      properties:
+        payment_no:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 模拟支付请求号；真实场景由本系统支付域生成
+        provider_trade_no:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 模拟渠道交易号
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 支付金额，单位分；必须与服务端订单金额一致
+    PayOrderResponse:
+      type: object
+      required: [order_id, order_no, status, payment_no, provider_trade_no, amount, paid_at, replayed]
+      properties:
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        status:
+          type: string
+          enum: [PAID]
+        payment_no:
+          type: string
+        provider_trade_no:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        paid_at:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+    CancelOrderResponse:
+      type: object
+      required: [order_id, order_no, status, canceled_at, replayed]
+      properties:
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        status:
+          type: string
+          enum: [CANCELED]
+        canceled_at:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
     OrderItem:
       type: object
       required: [product_id, sku_id, merchant_id, product_title, sku_spec, unit_price, quantity, line_amount]

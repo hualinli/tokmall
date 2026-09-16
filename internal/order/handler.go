@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -20,6 +21,8 @@ func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
 func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	g.POST("/orders", h.create)
+	g.POST("/orders/:id/pay", h.pay)
+	g.POST("/orders/:id/cancel", h.cancel)
 }
 
 // CreateOrderRequest 是 HTTP 边界 DTO。user_id 刻意不在请求体中，防止调用者
@@ -58,6 +61,33 @@ type OrderItemResponse struct {
 	LineAmount   Amount `json:"line_amount"`
 }
 
+// PayOrderRequest 是学习环境中的用户主动模拟支付请求，不是支付渠道回调。
+// 真实渠道回调必须使用独立入口并在进入领域服务前完成签名、时间窗与防重放校验。
+type PayOrderRequest struct {
+	PaymentNo       string `json:"payment_no" binding:"required"`
+	ProviderTradeNo string `json:"provider_trade_no" binding:"required"`
+	Amount          Amount `json:"amount" binding:"required"`
+}
+
+type PayOrderResponse struct {
+	OrderID         int64     `json:"order_id"`
+	OrderNo         string    `json:"order_no"`
+	Status          Status    `json:"status"`
+	PaymentNo       string    `json:"payment_no"`
+	ProviderTradeNo string    `json:"provider_trade_no"`
+	Amount          Amount    `json:"amount"`
+	PaidAt          time.Time `json:"paid_at"`
+	Replayed        bool      `json:"replayed"`
+}
+
+type CancelOrderResponse struct {
+	OrderID    int64     `json:"order_id"`
+	OrderNo    string    `json:"order_no"`
+	Status     Status    `json:"status"`
+	CanceledAt time.Time `json:"canceled_at"`
+	Replayed   bool      `json:"replayed"`
+}
+
 func (h *Handler) create(ctx context.Context, c *app.RequestContext) {
 	var req CreateOrderRequest
 	if err := c.BindAndValidate(&req); err != nil {
@@ -84,6 +114,60 @@ func (h *Handler) create(ctx context.Context, c *app.RequestContext) {
 	response.Created(c, mapCreateResponse(result))
 }
 
+func (h *Handler) pay(ctx context.Context, c *app.RequestContext) {
+	orderID, err := parseOrderID(c.Param("id"))
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	var req PayOrderRequest
+	if err := c.BindAndValidate(&req); err != nil {
+		slog.Debug("bind simulated payment request failed", "err", err)
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	result, err := h.service.Pay(ctx, PayParams{
+		UserID: c.GetInt64(middleware.CtxUserIDKey), OrderID: orderID,
+		PaymentNo: req.PaymentNo, ProviderTradeNo: req.ProviderTradeNo, Amount: req.Amount,
+	})
+	if err != nil {
+		h.mapError(c, err)
+		return
+	}
+	response.OK(c, PayOrderResponse{
+		OrderID: result.OrderID, OrderNo: result.OrderNo, Status: result.Status,
+		PaymentNo: result.PaymentNo, ProviderTradeNo: result.ProviderTradeNo,
+		Amount: result.Amount, PaidAt: result.PaidAt, Replayed: result.Replayed,
+	})
+}
+
+func (h *Handler) cancel(ctx context.Context, c *app.RequestContext) {
+	orderID, err := parseOrderID(c.Param("id"))
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	result, err := h.service.Cancel(ctx, CancelParams{
+		UserID: c.GetInt64(middleware.CtxUserIDKey), OrderID: orderID,
+	})
+	if err != nil {
+		h.mapError(c, err)
+		return
+	}
+	response.OK(c, CancelOrderResponse{
+		OrderID: result.OrderID, OrderNo: result.OrderNo, Status: result.Status,
+		CanceledAt: result.CanceledAt, Replayed: result.Replayed,
+	})
+}
+
+func parseOrderID(raw string) (int64, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, ErrInvalidParam
+	}
+	return id, nil
+}
+
 func (h *Handler) mapError(c *app.RequestContext, err error) {
 	switch {
 	case errors.Is(err, ErrInvalidParam):
@@ -95,8 +179,15 @@ func (h *Handler) mapError(c *app.RequestContext, err error) {
 		response.Error(c, response.ErrInsufficientStock)
 	case errors.Is(err, ErrIdempotencyConflict):
 		response.Error(c, response.ErrIdempotencyConflict)
+	case errors.Is(err, ErrOrderNotFound):
+		// 不区分订单不存在与不属于当前用户，防止枚举他人订单。
+		response.Error(c, response.ErrOrderNotFound)
+	case errors.Is(err, ErrOrderStateConflict):
+		response.Error(c, response.ErrOrderStateConflict)
+	case errors.Is(err, ErrPaymentAmountMismatch):
+		response.Error(c, response.ErrPaymentAmountMismatch)
 	default:
-		slog.Error("create order internal error", "err", err)
+		slog.Error("order command internal error", "err", err)
 		response.Error(c, response.ErrInternal)
 	}
 }

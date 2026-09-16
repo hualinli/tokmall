@@ -80,7 +80,8 @@ type createRecord struct {
 }
 
 type PayParams struct {
-	OrderNo         string
+	UserID          int64
+	OrderID         int64
 	PaymentNo       string
 	ProviderTradeNo string
 	Amount          Amount
@@ -145,11 +146,10 @@ type Repository interface {
 }
 
 func (s *Service) Pay(ctx context.Context, params PayParams) (*PaymentResult, error) {
-	params.OrderNo = strings.TrimSpace(params.OrderNo)
 	params.PaymentNo = strings.TrimSpace(params.PaymentNo)
 	params.ProviderTradeNo = strings.TrimSpace(params.ProviderTradeNo)
-	if params.OrderNo == "" || params.PaymentNo == "" || params.ProviderTradeNo == "" || params.Amount <= 0 ||
-		len(params.OrderNo) > 64 || len(params.PaymentNo) > 64 || len(params.ProviderTradeNo) > 128 {
+	if params.UserID <= 0 || params.OrderID <= 0 || params.PaymentNo == "" || params.ProviderTradeNo == "" || params.Amount <= 0 ||
+		len(params.PaymentNo) > 64 || len(params.ProviderTradeNo) > 128 {
 		return nil, ErrInvalidParam
 	}
 	record, err := s.repo.Pay(ctx, PayCommand{PayParams: params, PaidAt: s.now()})

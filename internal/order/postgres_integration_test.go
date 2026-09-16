@@ -127,7 +127,7 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			_, err := svc.Pay(ctx, PayParams{
-				OrderNo: created.OrderNo, PaymentNo: "payment-race", ProviderTradeNo: "provider-race", Amount: created.TotalAmount,
+				UserID: buyerIDs[0], OrderID: created.OrderID, PaymentNo: "payment-race", ProviderTradeNo: "provider-race", Amount: created.TotalAmount,
 			})
 			errs <- err
 		}()
@@ -179,7 +179,7 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			result, err := svc.Pay(ctx, PayParams{
-				OrderNo: created.OrderNo, PaymentNo: "payment-replay", ProviderTradeNo: "provider-replay", Amount: created.TotalAmount,
+				UserID: buyerIDs[0], OrderID: created.OrderID, PaymentNo: "payment-replay", ProviderTradeNo: "provider-replay", Amount: created.TotalAmount,
 			})
 			if err == nil && result.Status != StatusPaid {
 				return fmt.Errorf("unexpected status %s", result.Status)
@@ -199,7 +199,7 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		_, err = svc.Cancel(context.Background(), CancelParams{UserID: buyerIDs[0], OrderID: created.OrderID})
 		require.NoError(t, err)
 		_, err = svc.Pay(context.Background(), PayParams{
-			OrderNo: created.OrderNo, PaymentNo: "payment-late", ProviderTradeNo: "provider-late", Amount: created.TotalAmount,
+			UserID: buyerIDs[0], OrderID: created.OrderID, PaymentNo: "payment-late", ProviderTradeNo: "provider-late", Amount: created.TotalAmount,
 		})
 		require.ErrorIs(t, err, ErrOrderStateConflict)
 		assertTransitionAccounting(t, db, created.OrderID, skuID)
@@ -213,7 +213,7 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		})
 		require.NoError(t, err)
 		params := PayParams{
-			OrderNo: created.OrderNo, PaymentNo: "payment-conflict", ProviderTradeNo: "provider-conflict", Amount: created.TotalAmount,
+			UserID: buyerIDs[0], OrderID: created.OrderID, PaymentNo: "payment-conflict", ProviderTradeNo: "provider-conflict", Amount: created.TotalAmount,
 		}
 		_, err = svc.Pay(context.Background(), params)
 		require.NoError(t, err)
@@ -242,6 +242,27 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		require.Equal(t, StatusPendingPayment, status)
 		require.Zero(t, stock)
 		require.Zero(t, canceledCount)
+	})
+
+	t.Run("only order owner can pay", func(t *testing.T) {
+		buyerIDs, skuID := seedOrderFixture(t, db, "pay-owner", 2, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "pay-owner",
+		})
+		require.NoError(t, err)
+		_, err = svc.Pay(context.Background(), PayParams{
+			UserID: buyerIDs[1], OrderID: created.OrderID,
+			PaymentNo: "payment-owner", ProviderTradeNo: "provider-owner", Amount: created.TotalAmount,
+		})
+		require.ErrorIs(t, err, ErrOrderNotFound)
+
+		var status Status
+		var paymentCount int64
+		require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, created.OrderID).Scan(&status).Error)
+		require.NoError(t, db.Raw(`SELECT count(*) FROM payments WHERE order_id = ?`, created.OrderID).Scan(&paymentCount).Error)
+		require.Equal(t, StatusPendingPayment, status)
+		require.Zero(t, paymentCount)
 	})
 }
 

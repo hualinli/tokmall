@@ -19,6 +19,9 @@ var (
 	ErrUserNotFound          = &BizError{Code: "USER_NOT_FOUND", Message: "user not found"}
 	ErrProductNotFound       = &BizError{Code: "PRODUCT_NOT_FOUND", Message: "product not found"}
 	ErrInsufficientStock     = &BizError{Code: "INSUFFICIENT_STOCK", Message: "insufficient stock"}
+	ErrOrderNotFound         = &BizError{Code: "ORDER_NOT_FOUND", Message: "order not found"}
+	ErrOrderStateConflict    = &BizError{Code: "ORDER_STATE_CONFLICT", Message: "order state conflict"}
+	ErrPaymentAmountMismatch = &BizError{Code: "PAYMENT_AMOUNT_MISMATCH", Message: "payment amount mismatch"}
 	ErrUnauthenticated       = &BizError{Code: "UNAUTHENTICATED", Message: "invalid credentials"}
 	ErrForbidden             = &BizError{Code: "FORBIDDEN", Message: "forbidden"}
 	ErrRateLimited           = &BizError{Code: "RATE_LIMITED", Message: "too many requests"}
@@ -33,24 +36,27 @@ var (
 )
 
 var statusByCode = map[string]int{
-	"INVALID_ARGUMENT":       consts.StatusBadRequest,
-	"INVALID_CURSOR":         consts.StatusBadRequest,
-	"VIDEO_NOT_FOUND":        consts.StatusNotFound,
-	"VIDEO_NOT_PUBLISHED":    consts.StatusNotFound,
-	"USER_NOT_FOUND":         consts.StatusNotFound,
-	"PRODUCT_NOT_FOUND":      consts.StatusNotFound,
-	"INSUFFICIENT_STOCK":     consts.StatusConflict,
-	"UNAUTHENTICATED":        consts.StatusUnauthorized,
-	"MISSING_AUTH_HEADER":    consts.StatusUnauthorized,
-	"INVALID_AUTH_TYPE":      consts.StatusUnauthorized,
-	"INVALID_TOKEN":          consts.StatusUnauthorized,
-	"FORBIDDEN":              consts.StatusForbidden,
-	"RATE_LIMITED":           consts.StatusTooManyRequests,
-	"DUPLICATE_ACTION":       consts.StatusConflict,
-	"IDEMPOTENCY_CONFLICT":   consts.StatusConflict,
-	"UPLOAD_URL_EXPIRED":     consts.StatusBadRequest,
-	"INTERNAL":               consts.StatusInternalServerError,
-	"DEPENDENCY_UNAVAILABLE": consts.StatusServiceUnavailable,
+	"INVALID_ARGUMENT":        consts.StatusBadRequest,
+	"INVALID_CURSOR":          consts.StatusBadRequest,
+	"VIDEO_NOT_FOUND":         consts.StatusNotFound,
+	"VIDEO_NOT_PUBLISHED":     consts.StatusNotFound,
+	"USER_NOT_FOUND":          consts.StatusNotFound,
+	"PRODUCT_NOT_FOUND":       consts.StatusNotFound,
+	"INSUFFICIENT_STOCK":      consts.StatusConflict,
+	"ORDER_NOT_FOUND":         consts.StatusNotFound,
+	"ORDER_STATE_CONFLICT":    consts.StatusConflict,
+	"PAYMENT_AMOUNT_MISMATCH": consts.StatusConflict,
+	"UNAUTHENTICATED":         consts.StatusUnauthorized,
+	"MISSING_AUTH_HEADER":     consts.StatusUnauthorized,
+	"INVALID_AUTH_TYPE":       consts.StatusUnauthorized,
+	"INVALID_TOKEN":           consts.StatusUnauthorized,
+	"FORBIDDEN":               consts.StatusForbidden,
+	"RATE_LIMITED":            consts.StatusTooManyRequests,
+	"DUPLICATE_ACTION":        consts.StatusConflict,
+	"IDEMPOTENCY_CONFLICT":    consts.StatusConflict,
+	"UPLOAD_URL_EXPIRED":      consts.StatusBadRequest,
+	"INTERNAL":                consts.StatusInternalServerError,
+	"DEPENDENCY_UNAVAILABLE":  consts.StatusServiceUnavailable,
 }
 
 func OK(ctx *app.RequestContext, data any) {

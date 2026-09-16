@@ -228,10 +228,11 @@ func TestServicePayCanonicalizesAndMapsResult(t *testing.T) {
 	}}
 	svc := newTestOrderService(repo)
 	result, err := svc.Pay(context.Background(), PayParams{
-		OrderNo: " order-8 ", PaymentNo: " payment-1 ", ProviderTradeNo: " provider-1 ", Amount: 1999,
+		UserID: 7, OrderID: 8, PaymentNo: " payment-1 ", ProviderTradeNo: " provider-1 ", Amount: 1999,
 	})
 	require.NoError(t, err)
-	require.Equal(t, "order-8", repo.payCommand.OrderNo)
+	require.Equal(t, int64(7), repo.payCommand.UserID)
+	require.Equal(t, int64(8), repo.payCommand.OrderID)
 	require.Equal(t, "payment-1", repo.payCommand.PaymentNo)
 	require.Equal(t, "provider-1", repo.payCommand.ProviderTradeNo)
 	require.Equal(t, time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC), repo.payCommand.PaidAt)
@@ -241,12 +242,12 @@ func TestServicePayCanonicalizesAndMapsResult(t *testing.T) {
 
 func TestServicePayValidatesAndPropagatesBusinessErrors(t *testing.T) {
 	svc := newTestOrderService(&fakeTransitionRepository{})
-	for _, params := range []PayParams{{}, {OrderNo: "o", PaymentNo: "p", ProviderTradeNo: "t", Amount: 0}} {
+	for _, params := range []PayParams{{}, {UserID: 1, OrderID: 2, PaymentNo: "p", ProviderTradeNo: "t", Amount: 0}} {
 		_, err := svc.Pay(context.Background(), params)
 		require.ErrorIs(t, err, ErrInvalidParam)
 	}
 	svc = newTestOrderService(&fakeTransitionRepository{err: ErrPaymentAmountMismatch})
-	_, err := svc.Pay(context.Background(), PayParams{OrderNo: "o", PaymentNo: "p", ProviderTradeNo: "t", Amount: 1})
+	_, err := svc.Pay(context.Background(), PayParams{UserID: 1, OrderID: 2, PaymentNo: "p", ProviderTradeNo: "t", Amount: 1})
 	require.ErrorIs(t, err, ErrPaymentAmountMismatch)
 }
 

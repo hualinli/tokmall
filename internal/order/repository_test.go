@@ -87,10 +87,12 @@ func TestOrderTransitionQueriesUseRowLockAndSourceStatus(t *testing.T) {
 	db := dryRunOrderDB(t)
 	lockQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
 		var order Order
-		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_no = ?", "order-1").Take(&order)
+		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ?", 31, 42).Take(&order)
 	}))
 	require.Contains(t, lockQuery, "for update")
-	require.Contains(t, lockQuery, "order_no")
+	require.Contains(t, lockQuery, "id = 31")
+	require.Contains(t, lockQuery, "user_id = 42")
 
 	payQuery := strings.ToLower(db.ToSQL(func(tx *gorm.DB) *gorm.DB {
 		return tx.Model(&Order{}).Where("id = ? AND status = ?", 1, string(StatusPendingPayment)).

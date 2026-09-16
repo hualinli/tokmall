@@ -143,7 +143,7 @@ func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecor
 	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		var order Order
 		err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("order_no = ?", cmd.OrderNo).Take(&order).Error
+			Where("id = ? AND user_id = ?", cmd.OrderID, cmd.UserID).Take(&order).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrOrderNotFound
 		}
