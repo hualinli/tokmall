@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"time"
 
@@ -13,11 +14,15 @@ import (
 // 模块不直接持有原始 client 的玩法在这里终结：模块各自定义消费侧接口，
 // main.go 装配时把 client 注入对应的 Redis 实现。
 func NewClient(cfg config.RedisConfig) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{
+	options := &redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
-	})
+	}
+	if cfg.UseTLS {
+		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	client := redis.NewClient(options)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {

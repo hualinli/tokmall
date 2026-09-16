@@ -1,7 +1,7 @@
 GO ?= go
 BIN := bin/api
 
-# 开发环境默认值（可用 make dev JWT_SECRET=xxx 覆盖）
+# 开发环境默认值（可用 make dev JWT_SECRET=xxx 覆盖；生产环境不应使用 Makefile 启动）
 JWT_SECRET ?= test
 API_LOG := logs/api.log
 WEB_LOG := logs/web.log
@@ -47,8 +47,8 @@ dev:
 dev-backend:
 	$(MAKE) build
 	@mkdir -p $(dir $(API_LOG))
-	(env JWT_SECRET=$(JWT_SECRET) nohup $(BIN) > $(API_LOG) 2>&1 < /dev/null &)
-	@sleep 2 && echo "✅ 后端已起 (PID $$(pgrep -f 'bin/api')，JWT_SECRET=$(JWT_SECRET))"
+	(env APP_ENV=development JWT_SECRET=$(JWT_SECRET) nohup $(BIN) > $(API_LOG) 2>&1 < /dev/null &)
+	@sleep 2 && echo "✅ 后端已起 (PID $$(pgrep -f 'bin/api'))"
 
 # 仅起前端（Vite dev server，日志落 logs/web.log）
 dev-web:

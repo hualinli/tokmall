@@ -1,13 +1,25 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestReadConfigSuccess(t *testing.T) {
-	clearConfigEnv(t)
+func TestLoadDevelopmentUsesLocalDefaults(t *testing.T) {
+	setDevelopmentEnv(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, EnvironmentDevelopment, cfg.Environment)
+	require.Equal(t, defaultJWTSecret, cfg.JWTSecret)
+	require.Equal(t, defaultCursorSecret, cfg.CursorSecret)
+	require.Equal(t, "localhost", cfg.DBConfig.Host)
+	require.False(t, cfg.MinIOConfig.UseSSL)
+}
+
+func TestLoadExplicitDevelopmentConfig(t *testing.T) {
+	setDevelopmentEnv(t)
 	t.Setenv("SERVER_PORT", "9999")
 	t.Setenv("JWT_SECRET", "TEST_JWT_SECRET")
 	t.Setenv("DB_HOST", "127.0.0.1")
@@ -18,59 +30,160 @@ func TestReadConfigSuccess(t *testing.T) {
 	t.Setenv("DB_SSL_MODE", "full")
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	require.Equal(t, cfg.ServerPort, "9999")
-	require.Equal(t, cfg.JWTSecret, "TEST_JWT_SECRET")
-	require.Equal(t, cfg.DBConfig.Host, "127.0.0.1")
-	require.Equal(t, cfg.DBConfig.Port, "9990")
-	require.Equal(t, cfg.DBConfig.User, "testuser")
-	require.Equal(t, cfg.DBConfig.Password, "test")
-	require.Equal(t, cfg.DBConfig.Database, "tbase")
-	require.Equal(t, cfg.DBConfig.SSLMode, "full")
+	require.Equal(t, "9999", cfg.ServerPort)
+	require.Equal(t, "TEST_JWT_SECRET", cfg.JWTSecret)
+	require.Equal(t, "127.0.0.1", cfg.DBConfig.Host)
+	require.Equal(t, "9990", cfg.DBConfig.Port)
+	require.Equal(t, "testuser", cfg.DBConfig.User)
+	require.Equal(t, "test", cfg.DBConfig.Password)
+	require.Equal(t, "tbase", cfg.DBConfig.Database)
+	require.Equal(t, "full", cfg.DBConfig.SSLMode)
 	require.Equal(t, "time", cfg.FeedRankStrategy)
 }
 
-func TestReadConfigNotSetRequiredEnv(t *testing.T) {
-	clearConfigEnv(t)
+func TestLoadProductionAcceptsExplicitSecureConfig(t *testing.T) {
+	setValidProductionEnv(t)
 	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, EnvironmentProduction, cfg.Environment)
+	require.True(t, cfg.MinIOConfig.UseSSL)
+	require.True(t, cfg.RedisConfig.UseTLS)
+}
+
+func TestLoadProductionRequiresEveryCriticalSetting(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("REDIS_PASSWORD", "")
+	cfg, err := Load()
+	require.Nil(t, cfg)
+	require.EqualError(t, err, "production configuration invalid: environment variable REDIS_PASSWORD is required")
+}
+
+func TestLoadProductionRejectsWeakSecretsWithoutEchoingThem(t *testing.T) {
+	setValidProductionEnv(t)
+	weak := "super-private-but-too-short"
+	t.Setenv("JWT_SECRET", weak)
+	cfg, err := Load()
+	require.Nil(t, cfg)
 	require.Error(t, err)
-	require.Nil(t, cfg)
+	require.NotContains(t, err.Error(), weak)
 }
 
-func TestReadConfigRejectsHotRankStrategy(t *testing.T) {
+func TestLoadProductionRejectsExamplePlaceholders(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("DB_PASSWORD", "replace-me")
+	_, err := Load()
+	require.EqualError(t, err, "production configuration invalid: development or placeholder credentials are not allowed")
+}
+
+func TestLoadProductionRejectsSharedSigningSecrets(t *testing.T) {
+	setValidProductionEnv(t)
+	shared := strings.Repeat("a", 40)
+	t.Setenv("JWT_SECRET", shared)
+	t.Setenv("FEED_CURSOR_SECRET", shared)
+	_, err := Load()
+	require.EqualError(t, err, "production configuration invalid: JWT_SECRET and FEED_CURSOR_SECRET must be different")
+}
+
+func TestLoadProductionRejectsInsecureTransports(t *testing.T) {
+	t.Run("database TLS disabled", func(t *testing.T) {
+		setValidProductionEnv(t)
+		t.Setenv("DB_SSL_MODE", "disable")
+		_, err := Load()
+		require.EqualError(t, err, "production configuration invalid: DB_SSL_MODE must enable TLS")
+	})
+	t.Run("object storage TLS disabled", func(t *testing.T) {
+		setValidProductionEnv(t)
+		t.Setenv("MINIO_USE_SSL", "false")
+		_, err := Load()
+		require.EqualError(t, err, "production configuration invalid: MINIO_USE_SSL must be true")
+	})
+	t.Run("redis TLS disabled", func(t *testing.T) {
+		setValidProductionEnv(t)
+		t.Setenv("REDIS_USE_TLS", "false")
+		_, err := Load()
+		require.EqualError(t, err, "production configuration invalid: REDIS_USE_TLS must be true")
+	})
+}
+
+func TestLoadRejectsExplicitMalformedValuesInEveryEnvironment(t *testing.T) {
+	tests := []struct{ key, value, want string }{
+		{"REDIS_DB", "one", "environment variable REDIS_DB must be an integer"},
+		{"FEED_CACHE_TTL", "soon", "environment variable FEED_CACHE_TTL must be a valid duration"},
+		{"FEED_CACHE_ENABLED", "sometimes", "environment variable FEED_CACHE_ENABLED must be a boolean"},
+		{"MINIO_USE_SSL", "yes-please", "environment variable MINIO_USE_SSL must be a boolean"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			setDevelopmentEnv(t)
+			t.Setenv(tt.key, tt.value)
+			_, err := Load()
+			require.EqualError(t, err, tt.want)
+		})
+	}
+}
+
+func TestLoadRejectsInvalidEnvironment(t *testing.T) {
 	clearConfigEnv(t)
-	t.Setenv("JWT_SECRET", "TEST_JWT_SECRET")
+	t.Setenv("APP_ENV", "prod")
+	_, err := Load()
+	require.EqualError(t, err, `APP_ENV must be "development" or "production"`)
+}
+
+func TestLoadRequiresExplicitEnvironment(t *testing.T) {
+	clearConfigEnv(t)
+	_, err := Load()
+	require.EqualError(t, err, "environment variable APP_ENV is required")
+}
+
+func TestLoadRejectsHotRankStrategy(t *testing.T) {
+	setDevelopmentEnv(t)
 	t.Setenv("FEED_RANK_STRATEGY", "hot")
-
 	cfg, err := Load()
 	require.ErrorIs(t, err, ErrInvalidFeedRankStrategy)
 	require.Nil(t, cfg)
-
 }
 
-func TestReadConfigRejectsUnknownRankStrategy(t *testing.T) {
-	clearConfigEnv(t)
-	t.Setenv("JWT_SECRET", "TEST_JWT_SECRET")
+func TestLoadRejectsUnknownRankStrategy(t *testing.T) {
+	setDevelopmentEnv(t)
 	t.Setenv("FEED_RANK_STRATEGY", "typo")
-
 	cfg, err := Load()
 	require.ErrorIs(t, err, ErrInvalidFeedRankStrategy)
 	require.Nil(t, cfg)
+}
+
+func setValidProductionEnv(t *testing.T) {
+	t.Helper()
+	clearConfigEnv(t)
+	values := map[string]string{
+		"APP_ENV": EnvironmentProduction, "JWT_SECRET": strings.Repeat("j", 40),
+		"FEED_CURSOR_SECRET": strings.Repeat("c", 40), "DB_HOST": "postgres.internal",
+		"DB_PORT": "5432", "DB_USER": "tokmall_app", "DB_PASSWORD": "database-password",
+		"DB_DATABASE": "tokmall", "DB_SSL_MODE": "verify-full", "MINIO_ENDPOINT": "objects.internal:9000",
+		"MINIO_ACCESS_KEY": "object-access-key", "MINIO_SECRET_KEY": "object-secret-key",
+		"MINIO_BUCKET": "tokmall-production", "MINIO_USE_SSL": "true",
+		"REDIS_ADDR": "redis.internal:6379", "REDIS_PASSWORD": "redis-password", "REDIS_USE_TLS": "true",
+	}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+}
+
+func setDevelopmentEnv(t *testing.T) {
+	t.Helper()
+	clearConfigEnv(t)
+	t.Setenv("APP_ENV", EnvironmentDevelopment)
 }
 
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
-
 	for _, key := range []string{
-		"SERVER_PORT",
-		"JWT_SECRET",
-		"DB_HOST",
-		"DB_PORT",
-		"DB_USER",
-		"DB_PASSWORD",
-		"DB_DATABASE",
-		"DB_SSL_MODE",
-		"FEED_RANK_STRATEGY",
+		"APP_ENV", "SERVER_PORT", "JWT_SECRET", "FEED_CURSOR_SECRET",
+		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE", "DB_SSL_MODE",
+		"MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET", "MINIO_USE_SSL",
+		"MINIO_UPLOAD_EXPIRY", "MINIO_DOWNLOAD_EXPIRY", "MINIO_AVATAR_EXPIRY",
+		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB", "REDIS_USE_TLS", "FEED_CACHE_TTL", "FEED_CACHE_ENABLED",
+		"FEED_FOLLOWING_CACHE_ENABLED", "FEED_RANK_STRATEGY", "RATE_LIMIT_ENABLED",
+		"RATE_LIMIT_AUTH_ACCOUNT", "RATE_LIMIT_AUTH_IP", "RATE_LIMIT_WRITE", "RATE_LIMIT_READ",
 	} {
 		t.Setenv(key, "")
 	}

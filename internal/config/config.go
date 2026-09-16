@@ -3,13 +3,19 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
+	EnvironmentDevelopment = "development"
+	EnvironmentProduction  = "production"
+
 	defaultServerPort       = "8080"
+	defaultJWTSecret        = "dev-only-jwt-secret"
 	defaultDBHost           = "localhost"
 	defaultDBPort           = "5432"
 	defaultDBUser           = "tokmall"
@@ -41,6 +47,7 @@ const (
 var ErrInvalidFeedRankStrategy = errors.New("invalid feed rank strategy")
 
 type Config struct {
+	Environment  string
 	ServerPort   string
 	JWTSecret    string
 	CursorSecret string
@@ -66,6 +73,7 @@ type RedisConfig struct {
 	Addr     string
 	Password string
 	DB       int
+	UseTLS   bool
 	// FeedCacheTTL 是 feed 首页缓存的过期时间：TTL 兜底防删缓存失败导致
 	// 脏数据永久存活（先写库再删缓存的 Cache-Aside 策略依赖它）。
 	FeedCacheTTL time.Duration
@@ -100,17 +108,78 @@ type MinIOConfig struct {
 }
 
 func Load() (*Config, error) {
-	jwtsecret, err := requiredEnv("JWT_SECRET")
+	environment, err := requiredEnv("APP_ENV")
 	if err != nil {
 		return nil, err
+	}
+	if environment != EnvironmentDevelopment && environment != EnvironmentProduction {
+		return nil, fmt.Errorf("APP_ENV must be %q or %q", EnvironmentDevelopment, EnvironmentProduction)
 	}
 	feedRankStrategy := envString("FEED_RANK_STRATEGY", defaultRankStrategy)
 	if err := validateFeedRankStrategy(feedRankStrategy); err != nil {
 		return nil, err
 	}
-	return &Config{
+	redisDB, err := envInt("REDIS_DB", defaultRedisDB)
+	if err != nil {
+		return nil, err
+	}
+	feedCacheTTL, err := envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+	feedCacheEnabled, err := envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn)
+	if err != nil {
+		return nil, err
+	}
+	followingCacheEnabled, err := envBool("FEED_FOLLOWING_CACHE_ENABLED", defaultFollowingCacheOn)
+	if err != nil {
+		return nil, err
+	}
+	redisUseTLS, err := envBool("REDIS_USE_TLS", false)
+	if err != nil {
+		return nil, err
+	}
+	minIOUseSSL, err := envBool("MINIO_USE_SSL", false)
+	if err != nil {
+		return nil, err
+	}
+	uploadExpiry, err := envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry)
+	if err != nil {
+		return nil, err
+	}
+	downloadExpiry, err := envDuration("MINIO_DOWNLOAD_EXPIRY", defaultDownloadExpiry)
+	if err != nil {
+		return nil, err
+	}
+	avatarExpiry, err := envDuration("MINIO_AVATAR_EXPIRY", defaultAvatarExpiry)
+	if err != nil {
+		return nil, err
+	}
+	rateLimitEnabled, err := envBool("RATE_LIMIT_ENABLED", rateLimitOn)
+	if err != nil {
+		return nil, err
+	}
+	authAccountLimit, err := envInt("RATE_LIMIT_AUTH_ACCOUNT", defaultAuthAccountLimit)
+	if err != nil {
+		return nil, err
+	}
+	authIPLimit, err := envInt("RATE_LIMIT_AUTH_IP", defaultAuthIPLimit)
+	if err != nil {
+		return nil, err
+	}
+	writeLimit, err := envInt("RATE_LIMIT_WRITE", defaultWriteLimit)
+	if err != nil {
+		return nil, err
+	}
+	readLimit, err := envInt("RATE_LIMIT_READ", defaultReadLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &Config{
+		Environment:  environment,
 		ServerPort:   envString("SERVER_PORT", defaultServerPort),
-		JWTSecret:    jwtsecret,
+		JWTSecret:    envString("JWT_SECRET", defaultJWTSecret),
 		CursorSecret: envString("FEED_CURSOR_SECRET", defaultCursorSecret),
 		DBConfig: DBConfig{
 			Host:     envString("DB_HOST", defaultDBHost),
@@ -125,26 +194,105 @@ func Load() (*Config, error) {
 			AccessKey:         envString("MINIO_ACCESS_KEY", "tokmall"),
 			SecretKey:         envString("MINIO_SECRET_KEY", "tokmall123"),
 			Bucket:            envString("MINIO_BUCKET", defaultMinIOBucket),
-			UseSSL:            envString("MINIO_USE_SSL", "") == "true",
-			UploadURLExpiry:   envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry),
-			DownloadURLExpiry: envDuration("MINIO_DOWNLOAD_EXPIRY", defaultDownloadExpiry),
-			AvatarURLExpiry:   envDuration("MINIO_AVATAR_EXPIRY", defaultAvatarExpiry),
+			UseSSL:            minIOUseSSL,
+			UploadURLExpiry:   uploadExpiry,
+			DownloadURLExpiry: downloadExpiry,
+			AvatarURLExpiry:   avatarExpiry,
 		},
 		RedisConfig: RedisConfig{
 			Addr:                  envString("REDIS_ADDR", defaultRedisAddr),
 			Password:              envString("REDIS_PASSWORD", ""),
-			DB:                    envInt("REDIS_DB", defaultRedisDB),
-			FeedCacheTTL:          envDuration("FEED_CACHE_TTL", defaultFeedCacheTTL),
-			FeedCacheEnabled:      envBool("FEED_CACHE_ENABLED", defaultFeedCacheOn),
-			FollowingCacheEnabled: envBool("FEED_FOLLOWING_CACHE_ENABLED", defaultFollowingCacheOn),
+			DB:                    redisDB,
+			UseTLS:                redisUseTLS,
+			FeedCacheTTL:          feedCacheTTL,
+			FeedCacheEnabled:      feedCacheEnabled,
+			FollowingCacheEnabled: followingCacheEnabled,
 		},
 		FeedRankStrategy: feedRankStrategy,
-		RateLimitEnabled: envBool("RATE_LIMIT_ENABLED", rateLimitOn),
-		AuthAccountLimit: envInt("RATE_LIMIT_AUTH_ACCOUNT", defaultAuthAccountLimit),
-		AuthIPLimit:      envInt("RATE_LIMIT_AUTH_IP", defaultAuthIPLimit),
-		WriteRateLimit:   envInt("RATE_LIMIT_WRITE", defaultWriteLimit),
-		ReadRateLimit:    envInt("RATE_LIMIT_READ", defaultReadLimit),
-	}, nil
+		RateLimitEnabled: rateLimitEnabled,
+		AuthAccountLimit: authAccountLimit,
+		AuthIPLimit:      authIPLimit,
+		WriteRateLimit:   writeLimit,
+		ReadRateLimit:    readLimit,
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (c *Config) validate() error {
+	if _, err := strconv.ParseUint(c.ServerPort, 10, 16); err != nil || c.ServerPort == "0" {
+		return errors.New("SERVER_PORT must be an integer between 1 and 65535")
+	}
+	if _, err := strconv.ParseUint(c.DBConfig.Port, 10, 16); err != nil || c.DBConfig.Port == "0" {
+		return errors.New("DB_PORT must be an integer between 1 and 65535")
+	}
+	if c.RedisConfig.DB < 0 {
+		return errors.New("REDIS_DB must be non-negative")
+	}
+	if c.FeedCacheTTL <= 0 || c.UploadURLExpiry <= 0 || c.DownloadURLExpiry <= 0 || c.AvatarURLExpiry <= 0 {
+		return errors.New("cache and signed URL expiry values must be positive")
+	}
+	if c.RateLimitEnabled && (c.AuthAccountLimit <= 0 || c.AuthIPLimit <= 0 || c.WriteRateLimit <= 0 || c.ReadRateLimit <= 0) {
+		return errors.New("rate limit values must be positive when rate limiting is enabled")
+	}
+	if c.Environment != EnvironmentProduction {
+		return nil
+	}
+
+	required := []string{
+		"JWT_SECRET", "FEED_CURSOR_SECRET",
+		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE", "DB_SSL_MODE",
+		"MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET", "MINIO_USE_SSL",
+		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_USE_TLS",
+	}
+	for _, key := range required {
+		if _, err := requiredEnv(key); err != nil {
+			return fmt.Errorf("production configuration invalid: %w", err)
+		}
+	}
+	if len(c.JWTSecret) < 32 {
+		return errors.New("production configuration invalid: JWT_SECRET must contain at least 32 characters")
+	}
+	if len(c.CursorSecret) < 32 {
+		return errors.New("production configuration invalid: FEED_CURSOR_SECRET must contain at least 32 characters")
+	}
+	if c.JWTSecret == c.CursorSecret {
+		return errors.New("production configuration invalid: JWT_SECRET and FEED_CURSOR_SECRET must be different")
+	}
+	if isKnownDevelopmentSecret(c.JWTSecret) || isKnownDevelopmentSecret(c.CursorSecret) ||
+		isKnownDevelopmentSecret(c.DBConfig.Password) || isKnownDevelopmentSecret(c.MinIOConfig.AccessKey) ||
+		isKnownDevelopmentSecret(c.MinIOConfig.SecretKey) || isKnownDevelopmentSecret(c.RedisConfig.Password) ||
+		c.DBConfig.Password == defaultDBPassword || c.MinIOConfig.SecretKey == "tokmall123" {
+		return errors.New("production configuration invalid: development or placeholder credentials are not allowed")
+	}
+	if c.DBConfig.SSLMode == "disable" {
+		return errors.New("production configuration invalid: DB_SSL_MODE must enable TLS")
+	}
+	if !c.MinIOConfig.UseSSL {
+		return errors.New("production configuration invalid: MINIO_USE_SSL must be true")
+	}
+	if !c.RedisConfig.UseTLS {
+		return errors.New("production configuration invalid: REDIS_USE_TLS must be true")
+	}
+	if host, _, err := net.SplitHostPort(c.MinIOConfig.Endpoint); err != nil || strings.TrimSpace(host) == "" {
+		return errors.New("production configuration invalid: MINIO_ENDPOINT must use host:port format")
+	}
+	return nil
+}
+
+func isKnownDevelopmentSecret(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if strings.Contains(normalized, "replace-me") || strings.Contains(normalized, "changeme") {
+		return true
+	}
+	switch normalized {
+	case "test", "secret", "changeme", "change-me", defaultJWTSecret, defaultCursorSecret:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateFeedRankStrategy(strategy string) error {
@@ -156,7 +304,7 @@ func validateFeedRankStrategy(strategy string) error {
 
 func requiredEnv(key string) (string, error) {
 	value, ok := os.LookupEnv(key)
-	if !ok || value == "" {
+	if !ok || strings.TrimSpace(value) == "" {
 		return "", fmt.Errorf("environment variable %s is required", key)
 	}
 	return value, nil
@@ -170,38 +318,38 @@ func envString(key, fallback string) string {
 	return value
 }
 
-func envInt(key string, fallback int) int {
+func envInt(key string, fallback int) (int, error) {
 	value := envString(key, "")
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("environment variable %s must be an integer", key)
 	}
-	return n
+	return n, nil
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	value := envString(key, "")
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	duration, err := time.ParseDuration(value)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("environment variable %s must be a valid duration", key)
 	}
-	return duration
+	return duration, nil
 }
 
-func envBool(key string, fallback bool) bool {
+func envBool(key string, fallback bool) (bool, error) {
 	value := envString(key, "")
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	b, err := strconv.ParseBool(value)
 	if err != nil {
-		return fallback
+		return false, fmt.Errorf("environment variable %s must be a boolean", key)
 	}
-	return b
+	return b, nil
 }
