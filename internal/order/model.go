@@ -105,3 +105,14 @@ type VideoProduct struct {
 }
 
 func (VideoProduct) TableName() string { return "video_products" }
+
+// SellableSKU 是订单模块自己的只读投影。订单事务必须把当前商品事实复制成
+// 快照，不能把 product 模块的可变 model 暴露到订单领域。
+type SellableSKU struct {
+	SKUID        int64  `gorm:"column:sku_id"`
+	ProductID    int64  `gorm:"column:product_id"`
+	MerchantID   int64  `gorm:"column:merchant_id"`
+	ProductTitle string `gorm:"column:product_title"`
+	SKUSpec      string `gorm:"column:sku_spec"`
+	UnitPrice    Amount `gorm:"column:unit_price"`
+}
