@@ -124,7 +124,9 @@ function ProductPage() {
           />
         </label>
         {paidOrder ? (
-          <p className="mt-6 rounded-lg bg-emerald-950 p-3 text-emerald-300">订单 #{paidOrder} 已模拟支付成功</p>
+          <p className="mt-6 rounded-lg bg-emerald-950 p-3 text-emerald-300">
+            订单 #{paidOrder} 已模拟支付成功 · <Link to="/orders" className="underline">查看订单</Link>
+          </p>
         ) : accessToken ? (
           <Button
             className="mt-6 w-full" disabled={!selectedSKU || item.status !== 'ON_SALE' || checkout.isPending}

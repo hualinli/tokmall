@@ -5,7 +5,7 @@ import { loginViaUi, registerUser } from './utils'
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 
-test('视频挂商品 → 商品卡 → 下单支付 → 作者统计', async ({ page }) => {
+test('视频挂商品 → 下单支付 → 发货完成 → 作者统计', async ({ page }) => {
   test.setTimeout(90_000)
   const author = await registerUser(page)
   await loginViaUi(page, author.username, author.password)
@@ -47,6 +47,26 @@ test('视频挂商品 → 商品卡 → 下单支付 → 作者统计', async ({
   await page.getByRole('link', { name: new RegExp(productTitle) }).click()
   await page.getByRole('button', { name: '下单并模拟支付' }).click()
   await expect(page.getByText(/已模拟支付成功/)).toBeVisible()
+  await page.goto('/orders')
+  await expect(page.getByRole('link', { name: productTitle })).toBeVisible()
+  await expect(page.getByText('待发货')).toBeVisible()
+  await page.getByRole('link', { name: productTitle }).click()
+  await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible()
+  await expect(page.getByText('合计：¥12.50')).toBeVisible()
+
+  await page.getByRole('button', { name: '退出' }).click()
+  await loginViaUi(page, author.username, author.password)
+  await page.goto('/orders')
+  await page.getByRole('button', { name: '我销售的' }).click()
+  await expect(page.getByText(productTitle)).toBeVisible()
+  await page.getByRole('button', { name: '模拟发货' }).click()
+  await expect(page.getByText('待确认收货')).toBeVisible()
+
+  await page.getByRole('button', { name: '退出' }).click()
+  await loginViaUi(page, buyer.username, buyer.password)
+  await page.goto('/orders')
+  await page.getByRole('button', { name: '确认收货' }).click()
+  await expect(page.getByText('已完成')).toBeVisible()
 
   await page.getByRole('button', { name: '退出' }).click()
   await loginViaUi(page, author.username, author.password)

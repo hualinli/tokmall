@@ -232,6 +232,7 @@ PENDING_PAYMENT → EXPIRED
 | 3A 视频挂商品 | 完成 | `ca9855c` | `docs/interview-notes/video-product-linking.md` | 真实 PG：并发上限、幂等挂载、权限与失效后取消均通过 |
 | 3B 商品卡装配 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG 商品卡查询、缓存命中后的动态卡片测试、前端构建及浏览器链路通过 |
 | 3C 作者成交统计 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG：支付口径、去重购买人数、下架后历史归因；本人可见及浏览器链路通过 |
+| 3D Commerce v1 订单收尾 | 完成（待合并） |  | `docs/interview-notes/order-read-fulfillment.md` | 买家/商家订单查询、模拟发货与确认完成；真实 PG 权限/并发测试及浏览器链路通过 |
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
 | 5 工程化与可证明性 | 待开始 |  |  |  |
 | 6 简历与面试交付 | 待开始 |  |  |  |

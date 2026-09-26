@@ -61,14 +61,14 @@ type CreateResult struct {
 }
 
 type ItemView struct {
-	ProductID    int64
-	SKUID        int64
-	MerchantID   int64
-	ProductTitle string
-	SKUSpec      string
-	UnitPrice    Amount
-	Quantity     int32
-	LineAmount   Amount
+	ProductID    int64  `json:"product_id"`
+	SKUID        int64  `json:"sku_id"`
+	MerchantID   int64  `json:"merchant_id"`
+	ProductTitle string `json:"product_title"`
+	SKUSpec      string `json:"sku_spec"`
+	UnitPrice    Amount `json:"unit_price"`
+	Quantity     int32  `json:"quantity"`
+	LineAmount   Amount `json:"line_amount"`
 }
 
 // createRecord 是 repository 到 service 的内部数据载体，持久化 model
@@ -120,6 +120,8 @@ var orderStatusTransitions = map[Status]map[Status]struct{}{
 	StatusPendingPayment: {
 		StatusPaid: {}, StatusCanceled: {}, StatusExpired: {},
 	},
+	StatusPaid:       {StatusFulfilling: {}},
+	StatusFulfilling: {StatusCompleted: {}},
 }
 
 func canOrderTransition(from, to Status) bool {
@@ -143,6 +145,9 @@ type Repository interface {
 	Create(ctx context.Context, cmd CreateCommand) (*createRecord, error)
 	Pay(ctx context.Context, cmd PayCommand) (*paymentRecord, error)
 	Cancel(ctx context.Context, userID, orderID int64, canceledAt time.Time) (*cancelRecord, error)
+	Get(ctx context.Context, actorID, orderID int64, merchant bool) (*orderRecord, error)
+	List(ctx context.Context, actorID, beforeID int64, limit int, merchant bool) ([]orderRecord, error)
+	Transition(ctx context.Context, actorID, orderID int64, merchant bool, to Status, at time.Time) (*transitionRecord, error)
 }
 
 func (s *Service) Pay(ctx context.Context, params PayParams) (*PaymentResult, error) {

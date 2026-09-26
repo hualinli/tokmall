@@ -48,6 +48,8 @@ type Order struct {
 	SourceProductID    *int64     `gorm:"column:source_product_id"`
 	ExpiresAt          time.Time  `gorm:"column:expires_at"`
 	PaidAt             *time.Time `gorm:"column:paid_at"`
+	FulfillingAt       *time.Time `gorm:"column:fulfilling_at"`
+	CompletedAt        *time.Time `gorm:"column:completed_at"`
 	CanceledAt         *time.Time `gorm:"column:canceled_at"`
 	ExpiredAt          *time.Time `gorm:"column:expired_at"`
 	CreatedAt          time.Time  `gorm:"column:created_at"`

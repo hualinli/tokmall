@@ -21,8 +21,86 @@ func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 
 func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	g.POST("/orders", h.create)
+	g.GET("/orders", h.listBuyer)
+	g.GET("/orders/:id", h.getBuyer)
 	g.POST("/orders/:id/pay", h.pay)
 	g.POST("/orders/:id/cancel", h.cancel)
+	g.POST("/orders/:id/complete", h.complete)
+	g.GET("/merchant/orders", h.listMerchant)
+	g.GET("/merchant/orders/:id", h.getMerchant)
+	g.POST("/merchant/orders/:id/fulfill", h.fulfill)
+}
+
+func (h *Handler) getBuyer(ctx context.Context, c *app.RequestContext)    { h.get(ctx, c, false) }
+func (h *Handler) getMerchant(ctx context.Context, c *app.RequestContext) { h.get(ctx, c, true) }
+
+func (h *Handler) get(ctx context.Context, c *app.RequestContext, merchant bool) {
+	id, err := parseOrderID(c.Param("id"))
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	view, err := h.service.Get(ctx, c.GetInt64(middleware.CtxUserIDKey), id, merchant)
+	if err != nil {
+		h.mapError(c, err)
+		return
+	}
+	response.OK(c, view)
+}
+
+func (h *Handler) listBuyer(ctx context.Context, c *app.RequestContext)    { h.list(ctx, c, false) }
+func (h *Handler) listMerchant(ctx context.Context, c *app.RequestContext) { h.list(ctx, c, true) }
+
+func (h *Handler) list(ctx context.Context, c *app.RequestContext, merchant bool) {
+	limit := 20
+	beforeID := int64(0)
+	var err error
+	if raw := c.Query("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+	}
+	if err == nil {
+		if raw := c.Query("before_id"); raw != "" {
+			beforeID, err = parseOrderID(raw)
+		}
+	}
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	page, err := h.service.List(ctx, c.GetInt64(middleware.CtxUserIDKey), beforeID, limit, merchant)
+	if err != nil {
+		h.mapError(c, err)
+		return
+	}
+	response.OK(c, page)
+}
+
+func (h *Handler) fulfill(ctx context.Context, c *app.RequestContext) {
+	h.transition(ctx, c, true)
+}
+
+func (h *Handler) complete(ctx context.Context, c *app.RequestContext) {
+	h.transition(ctx, c, false)
+}
+
+func (h *Handler) transition(ctx context.Context, c *app.RequestContext, merchant bool) {
+	id, err := parseOrderID(c.Param("id"))
+	if err != nil {
+		response.Error(c, response.ErrInvalidArgument)
+		return
+	}
+	actorID := c.GetInt64(middleware.CtxUserIDKey)
+	var result *TransitionResult
+	if merchant {
+		result, err = h.service.Fulfill(ctx, actorID, id)
+	} else {
+		result, err = h.service.Complete(ctx, actorID, id)
+	}
+	if err != nil {
+		h.mapError(c, err)
+		return
+	}
+	response.OK(c, result)
 }
 
 // CreateOrderRequest 是 HTTP 边界 DTO。user_id 刻意不在请求体中，防止调用者

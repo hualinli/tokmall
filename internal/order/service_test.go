@@ -54,6 +54,16 @@ func (f *fakeOrderRepository) Cancel(context.Context, int64, int64, time.Time) (
 	return nil, errors.New("not implemented")
 }
 
+func (f *fakeOrderRepository) Get(context.Context, int64, int64, bool) (*orderRecord, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeOrderRepository) List(context.Context, int64, int64, int, bool) ([]orderRecord, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeOrderRepository) Transition(context.Context, int64, int64, bool, Status, time.Time) (*transitionRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
 type fakeTransitionRepository struct {
 	payRecord     *paymentRecord
 	cancelRecord  *cancelRecord
@@ -76,6 +86,16 @@ func (f *fakeTransitionRepository) Pay(_ context.Context, cmd PayCommand) (*paym
 func (f *fakeTransitionRepository) Cancel(_ context.Context, userID, orderID int64, at time.Time) (*cancelRecord, error) {
 	f.cancelUserID, f.cancelOrderID, f.canceledAt = userID, orderID, at
 	return f.cancelRecord, f.err
+}
+
+func (f *fakeTransitionRepository) Get(context.Context, int64, int64, bool) (*orderRecord, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeTransitionRepository) List(context.Context, int64, int64, int, bool) ([]orderRecord, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeTransitionRepository) Transition(context.Context, int64, int64, bool, Status, time.Time) (*transitionRecord, error) {
+	return nil, errors.New("not implemented")
 }
 
 func newTestOrderService(repo Repository) *Service {
@@ -252,11 +272,19 @@ func TestServicePayValidatesAndPropagatesBusinessErrors(t *testing.T) {
 }
 
 func TestOrderStatusTransitions(t *testing.T) {
-	require.True(t, canOrderTransition(StatusPendingPayment, StatusPaid))
-	require.True(t, canOrderTransition(StatusPendingPayment, StatusCanceled))
-	require.True(t, canOrderTransition(StatusPendingPayment, StatusExpired))
-	require.False(t, canOrderTransition(StatusCanceled, StatusPaid))
-	require.False(t, canOrderTransition(StatusPaid, StatusCanceled))
+	states := []Status{StatusPendingPayment, StatusPaid, StatusFulfilling, StatusCompleted, StatusCanceled, StatusExpired}
+	legal := map[[2]Status]bool{
+		{StatusPendingPayment, StatusPaid}: true,
+		{StatusPendingPayment, StatusCanceled}: true,
+		{StatusPendingPayment, StatusExpired}: true,
+		{StatusPaid, StatusFulfilling}: true,
+		{StatusFulfilling, StatusCompleted}: true,
+	}
+	for _, from := range states {
+		for _, to := range states {
+			require.Equalf(t, legal[[2]Status{from, to}], canOrderTransition(from, to), "%s -> %s", from, to)
+		}
+	}
 }
 
 func TestServiceCancelPassesAuthenticatedOwnerAndMapsReplay(t *testing.T) {

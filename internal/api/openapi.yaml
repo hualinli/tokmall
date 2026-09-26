@@ -870,6 +870,23 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   /api/v1/orders:
+    get:
+      tags: [orders]
+      summary: 当前买家订单列表（按 ID 倒序游标分页）
+      parameters:
+        - $ref: "#/components/parameters/OrderBeforeID"
+        - $ref: "#/components/parameters/OrderLimit"
+      responses:
+        "200":
+          description: 仅包含自己的订单
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderPage"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
     post:
       tags: [orders]
       summary: 创建单 SKU 订单
@@ -905,6 +922,109 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/orders/{id}:
+    get:
+      tags: [orders]
+      summary: 当前买家查看订单详情
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 订单详情及下单时商品快照
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+
+  /api/v1/merchant/orders:
+    get:
+      tags: [orders]
+      summary: 当前商家订单列表
+      parameters:
+        - $ref: "#/components/parameters/OrderBeforeID"
+        - $ref: "#/components/parameters/OrderLimit"
+      responses:
+        "200":
+          description: 仅包含自己的商品订单
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderPage"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /api/v1/merchant/orders/{id}:
+    get:
+      tags: [orders]
+      summary: 当前商家查看订单详情
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 订单详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+
+  /api/v1/merchant/orders/{id}/fulfill:
+    post:
+      tags: [orders]
+      summary: 商家确认模拟发货（PAID → FULFILLING）
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 状态变更或相同操作重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderTransitionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          $ref: "#/components/responses/OrderStateConflict"
+
+  /api/v1/orders/{id}/complete:
+    post:
+      tags: [orders]
+      summary: 买家确认完成（FULFILLING → COMPLETED）
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 状态变更或相同操作重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderTransitionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          $ref: "#/components/responses/OrderStateConflict"
 
   /api/v1/orders/{id}/pay:
     post:
@@ -1063,6 +1183,22 @@ components:
         type: integer
         format: int64
         minimum: 1
+    OrderBeforeID:
+      name: before_id
+      in: query
+      description: 上一页最后一笔订单 ID
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    OrderLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 50
     UserID:
       name: id
       in: path
@@ -1115,7 +1251,13 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     OrderNotFound:
-      description: 订单不存在或不属于当前用户（统一 404，不泄露存在性）
+      description: 订单不存在或不属于当前买家/商家（统一 404，不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OrderStateConflict:
+      description: 订单不处于允许的状态
       content:
         application/json:
           schema:
@@ -1817,6 +1959,78 @@ components:
         replayed:
           type: boolean
           description: true 表示返回的是先前相同请求创建的订单
+    OrderDetail:
+      type: object
+      required: [order_id, order_no, user_id, merchant_id, status, total_amount, expires_at, created_at, item]
+      properties:
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        user_id:
+          type: integer
+          format: int64
+        merchant_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED]
+        total_amount:
+          type: integer
+          format: int64
+        source:
+          $ref: "#/components/schemas/CreateOrderSource"
+        expires_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: string
+          format: date-time
+        fulfilling_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        canceled_at:
+          type: string
+          format: date-time
+        expired_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        item:
+          $ref: "#/components/schemas/OrderItem"
+    OrderPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderDetail"
+        next_before_id:
+          type: integer
+          format: int64
+          description: 下一页查询的 before_id；缺失表示已经到末页
+    OrderTransitionResponse:
+      type: object
+      required: [order_id, order_no, status, replayed]
+      properties:
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        status:
+          type: string
+          enum: [FULFILLING, COMPLETED]
+        replayed:
+          type: boolean
     PayOrderRequest:
       type: object
       required: [payment_no, provider_trade_no, amount]
@@ -1847,7 +2061,7 @@ components:
           type: string
         status:
           type: string
-          enum: [PAID]
+          enum: [PAID, FULFILLING, COMPLETED]
         payment_no:
           type: string
         provider_trade_no:

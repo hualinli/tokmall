@@ -67,6 +67,16 @@ func (r *handlerOrderRepository) Cancel(_ context.Context, userID, orderID int64
 	}, Replayed: r.replay}, nil
 }
 
+func (r *handlerOrderRepository) Get(context.Context, int64, int64, bool) (*orderRecord, error) {
+	return nil, r.err
+}
+func (r *handlerOrderRepository) List(context.Context, int64, int64, int, bool) ([]orderRecord, error) {
+	return nil, r.err
+}
+func (r *handlerOrderRepository) Transition(context.Context, int64, int64, bool, Status, time.Time) (*transitionRecord, error) {
+	return nil, r.err
+}
+
 func newOrderHandlerEngine(repo Repository, userID int64) *route.Engine {
 	h := route.NewEngine(config.NewOptions([]config.Option{}))
 	h.Use(func(ctx context.Context, c *app.RequestContext) {

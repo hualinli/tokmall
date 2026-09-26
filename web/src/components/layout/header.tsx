@@ -59,6 +59,9 @@ export function Header() {
               <Link to="/upload" className="rounded-lg px-3 py-2 hover:bg-zinc-800">
                 上传
               </Link>
+              <Link to="/orders" className="rounded-lg px-3 py-2 hover:bg-zinc-800">
+                订单
+              </Link>
               <Link to="/me" className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-zinc-800">
                 {user?.avatar_url ? (
                   <img
