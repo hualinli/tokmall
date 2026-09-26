@@ -55,12 +55,15 @@ type FeedCacheInvalidator interface {
 }
 
 type Service struct {
-	repo      Repository
-	storage   Storage
-	expiry    time.Duration
-	feedCache FeedCacheInvalidator
-	cursor    *codec
+	repo         Repository
+	productCards ProductCardReader
+	storage      Storage
+	expiry       time.Duration
+	feedCache    FeedCacheInvalidator
+	cursor       *codec
 }
+
+func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
 
 func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, cursorSecret string, feedCache FeedCacheInvalidator) *Service {
 	return &Service{
@@ -127,17 +130,18 @@ type PublishResult struct {
 }
 
 type VideoDetail struct {
-	VideoID         int64      `json:"video_id"`
-	AuthorID        int64      `json:"author_id"`
-	Title           string     `json:"title"`
-	VideoURL        string     `json:"video_url"`
-	DurationSeconds int        `json:"duration_seconds"`
-	Status          Status     `json:"status"`
-	PublishedAt     *time.Time `json:"published_at"`
-	CreatedAt       time.Time  `json:"created_at"`
-	Author          AuthorRef  `json:"author"`
-	LikeCount       int64      `json:"like_count"`
-	IsLiked         bool       `json:"is_liked"`
+	VideoID         int64         `json:"video_id"`
+	AuthorID        int64         `json:"author_id"`
+	Title           string        `json:"title"`
+	VideoURL        string        `json:"video_url"`
+	DurationSeconds int           `json:"duration_seconds"`
+	Status          Status        `json:"status"`
+	PublishedAt     *time.Time    `json:"published_at"`
+	CreatedAt       time.Time     `json:"created_at"`
+	Author          AuthorRef     `json:"author"`
+	LikeCount       int64         `json:"like_count"`
+	IsLiked         bool          `json:"is_liked"`
+	ProductCards    []ProductCard `json:"product_cards"`
 }
 
 // AuthorRef 详情页作者信息（与 feed 同形状，模块各自定义类型）。
@@ -619,6 +623,24 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 			return nil, fmt.Errorf("is liked: %w", err)
 		}
 		detail.IsLiked = liked
+	}
+	detail.ProductCards = []ProductCard{}
+	if v.Status == StatusPublished && s.productCards != nil {
+		rows, err := s.productCards.ListProductCards(ctx, videoID)
+		if err != nil {
+			return nil, fmt.Errorf("list product cards: %w", err)
+		}
+		for _, row := range rows {
+			card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, SortOrder: row.SortOrder}
+			if row.CoverKey != "" {
+				url, err := s.storage.PresignGetURL(ctx, row.CoverKey)
+				if err != nil {
+					return nil, fmt.Errorf("presign product cover: %w", err)
+				}
+				card.CoverURL = &url
+			}
+			detail.ProductCards = append(detail.ProductCards, card)
+		}
 	}
 	return detail, nil
 }

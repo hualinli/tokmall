@@ -10,6 +10,8 @@ import { StatusBadge } from '../features/video/status-badge'
 import { LikeButton } from '../features/interaction/like-button'
 import { formatRelativeTime } from '../features/feed/format'
 import { Button } from '../components/ui/button'
+import { ProductCards } from '../features/product/product-cards'
+import { VideoPromotionManager } from '../features/product/video-promotion-manager'
 
 export const Route = createFileRoute('/video/$id')({
   component: VideoPage,
@@ -133,6 +135,9 @@ function VideoPage() {
           </Button>
         )}
       </div>
+
+      <ProductCards cards={data.product_cards} videoId={data.video_id} authorId={data.author_id} />
+      {isMine && data.status === 'PUBLISHED' && <VideoPromotionManager videoId={data.video_id} cards={data.product_cards} />}
 
       {remove.isPending && <p className="mt-2 text-sm text-zinc-500">删除中…</p>}
     </div>

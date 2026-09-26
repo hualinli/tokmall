@@ -10,12 +10,14 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/lihualin/tokmall/internal/api"
+	"github.com/lihualin/tokmall/internal/attribution"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/interaction"
 	"github.com/lihualin/tokmall/internal/inventory"
 	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
+	"github.com/lihualin/tokmall/internal/promotion"
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
 	"github.com/redis/go-redis/v9"
@@ -84,6 +86,8 @@ func TestOpenAPISync(t *testing.T) {
 		product:     product.NewHandler(nil),
 		inventory:   inventory.NewHandler(nil),
 		order:       order.NewHandler(nil),
+		promotion:   promotion.NewHandler(nil),
+		attribution: attribution.NewHandler(nil),
 	})
 
 	routeKeys := map[string]bool{}

@@ -19,6 +19,7 @@ import (
 	hertzmonitor "github.com/hertz-contrib/monitor-prometheus"
 	"github.com/hertz-contrib/requestid"
 	"github.com/lihualin/tokmall/internal/api"
+	"github.com/lihualin/tokmall/internal/attribution"
 	"github.com/lihualin/tokmall/internal/cache"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
@@ -30,6 +31,7 @@ import (
 	"github.com/lihualin/tokmall/internal/observability"
 	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
+	"github.com/lihualin/tokmall/internal/promotion"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
@@ -138,6 +140,7 @@ func run() error {
 		cfg.CursorSecret,
 		feedInvalidator,
 	)
+	videoService.SetProductCardReader(video.NewProductCardReader(db))
 	userHandler := user.NewHandler(user.NewService(
 		user.NewRepository(db),
 		tokenManager,
@@ -145,7 +148,7 @@ func run() error {
 		storageClient,
 		videoService,
 	))
-	feedHandler := feed.NewHandler(feed.NewService(
+	feedService := feed.NewService(
 		feed.NewRepository(db),
 		feed.NewCodec(cfg.CursorSecret),
 		storageClient,
@@ -153,7 +156,9 @@ func run() error {
 		followingCache,
 		observability.NewFeedCacheStats(metricsRegistry),
 		ranker,
-	))
+	)
+	feedService.SetProductCardReader(feed.NewProductCardReader(db))
+	feedHandler := feed.NewHandler(feedService)
 	videoHandler := video.NewHandler(videoService)
 	interactionHandler := interaction.NewHandler(interaction.NewService(
 		interaction.NewRepository(db),
@@ -171,6 +176,8 @@ func run() error {
 	))
 	orderRepository := order.NewRepository(db)
 	orderHandler := order.NewHandler(order.NewService(orderRepository))
+	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
+	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
 	var expiryWorkerCancel context.CancelFunc
 	var expiryWorkerDone chan struct{}
 	if cfg.OrderExpiryWorkerEnabled {
@@ -193,6 +200,8 @@ func run() error {
 		product:     productHandler,
 		inventory:   inventoryHandler,
 		order:       orderHandler,
+		promotion:   promotionHandler,
+		attribution: attributionHandler,
 		rateLimiter: rateLimiter,
 		rateRules: rateRules{
 			authAccount: middleware.RateLimitRule{Scope: "auth-account", Limit: cfg.AuthAccountLimit, Window: time.Minute},
@@ -284,6 +293,8 @@ type routes struct {
 	product     *product.Handler
 	inventory   *inventory.Handler
 	order       *order.Handler
+	promotion   *promotion.Handler
+	attribution *attribution.Handler
 	rateLimiter middleware.Limiter
 	rateRules   rateRules
 }
@@ -331,6 +342,7 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.video.RegisterOptionalRoutes(optional)
 	r.interaction.RegisterOptionalRoutes(optional)
 	r.product.RegisterOptionalRoutes(optional)
+	r.promotion.RegisterOptionalRoutes(optional)
 	protected := g.Group("/", middleware.AuthMiddleware(r.token))
 	if r.rateLimiter != nil {
 		// 写接口：用户级限流（ByUser，登录后按 user_id）
@@ -344,4 +356,6 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.product.RegisterProtectedRoutes(protected)
 	r.inventory.RegisterProtectedRoutes(protected)
 	r.order.RegisterProtectedRoutes(protected)
+	r.promotion.RegisterProtectedRoutes(protected)
+	r.attribution.RegisterProtectedRoutes(protected)
 }

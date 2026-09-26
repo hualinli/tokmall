@@ -26,6 +26,10 @@ tags:
     description: 商品与库存
   - name: orders
     description: 订单（需认证）
+  - name: promotions
+    description: 视频挂商品推广关系
+  - name: attribution
+    description: 作者带货归因统计
   - name: health
     description: 探针（公开）
 
@@ -753,6 +757,118 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/videos/{id}/products:
+    get:
+      tags: [promotions]
+      summary: 查询已发布视频启用中的商品卡（公开）
+      description: 只返回 ACTIVE 关系、ON_SALE 商品和至少一个 ACTIVE SKU；不暴露库存，封面 URL 留待 Feed 批量装配。
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      responses:
+        "200":
+          description: 商品卡按 sort_order、关系 ID 稳定排序；视频不可见时返回空列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoProductCardList"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+    post:
+      tags: [promotions]
+      summary: 挂载或重新启用商品
+      description: >-
+        v1 尚无平台招商与选品授权，仅允许当前用户把自己已发布的视频挂到自己名下的在售商品。
+        重复挂载同一商品会更新排序并重新启用；每个视频最多 5 个 ACTIVE 商品。
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LinkVideoProductRequest"
+      responses:
+        "200":
+          description: 挂载、幂等更新或重新启用成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoProductLink"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: 视频/商品不存在、越权、视频未发布或商品不在售（统一隐藏）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: 视频已经达到 5 个启用商品上限
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/videos/{id}/products/{product_id}:
+    patch:
+      tags: [promotions]
+      summary: 调整已挂商品排序
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+        - $ref: "#/components/parameters/VideoProductID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVideoProductSortRequest"
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoProductLink"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: 关系或当前可管理资源不可见（统一 404）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [promotions]
+      summary: 停用挂载关系
+      description: 保留关系与历史归因；之后再次 POST 可重新启用。
+      parameters:
+        - $ref: "#/components/parameters/VideoID"
+        - $ref: "#/components/parameters/VideoProductID"
+      responses:
+        "200":
+          description: 停用成功（对已停用关系重复调用仍返回 DISABLED）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoProductLink"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: 关系或当前可管理资源不可见（统一 404）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/orders:
     post:
       tags: [orders]
@@ -854,6 +970,33 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/authors/{id}/sales:
+    get:
+      tags: [attribution]
+      summary: 查看自己的已支付带货统计
+      description: 仅作者本人可查看；基于订单创建时的来源快照与支付事实实时聚合。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: 作者带货统计
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorSales"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -890,6 +1033,14 @@ components:
       schema:
         type: integer
         format: int64
+    VideoProductID:
+      name: product_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
     BeforeID:
       name: before_id
       in: query
@@ -998,6 +1149,7 @@ components:
                 USER_NOT_FOUND, PRODUCT_NOT_FOUND, INSUFFICIENT_STOCK, ORDER_NOT_FOUND,
                 ORDER_STATE_CONFLICT, PAYMENT_AMOUNT_MISMATCH, UNAUTHENTICATED,
                 FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION, IDEMPOTENCY_CONFLICT,
+                VIDEO_PRODUCT_LIMIT, VIDEO_PRODUCT_NOT_FOUND,
                 UPLOAD_URL_EXPIRED, INTERNAL,
                 DEPENDENCY_UNAVAILABLE, MISSING_AUTH_HEADER, INVALID_AUTH_TYPE, INVALID_TOKEN]
             message:
@@ -1216,7 +1368,7 @@ components:
 
     FeedItem:
       type: object
-      required: [video_id, author_id, title, video_url, duration_seconds, author, like_count]
+      required: [video_id, author_id, title, video_url, duration_seconds, author, like_count, product_cards]
       properties:
         video_id:
           type: integer
@@ -1244,6 +1396,11 @@ components:
           type: integer
           format: int64
           description: 点赞数（现查，准实时）
+        product_cards:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/VideoProductCard"
     AuthorRef:
       type: object
       required: [user_id, username, avatar_url]
@@ -1274,7 +1431,7 @@ components:
     VideoDetail:
       type: object
       required: [video_id, author_id, title, video_url, duration_seconds, status,
-        created_at, author, like_count, is_liked]
+        created_at, author, like_count, is_liked, product_cards]
       properties:
         video_id:
           type: integer
@@ -1305,6 +1462,11 @@ components:
         is_liked:
           type: boolean
           description: 当前用户是否已点赞（匿名 false）
+        product_cards:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/VideoProductCard"
     VideoListItem:
       type: object
       properties:
@@ -1501,6 +1663,97 @@ components:
           type: string
           format: date-time
           nullable: true
+    LinkVideoProductRequest:
+      type: object
+      required: [product_id]
+      properties:
+        product_id:
+          type: integer
+          format: int64
+          minimum: 1
+        sort_order:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 0
+    UpdateVideoProductSortRequest:
+      type: object
+      required: [sort_order]
+      properties:
+        sort_order:
+          type: integer
+          format: int32
+          minimum: 0
+    VideoProductLink:
+      type: object
+      required: [video_id, product_id, status, sort_order]
+      properties:
+        video_id:
+          type: integer
+          format: int64
+        product_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        sort_order:
+          type: integer
+          format: int32
+    VideoProductCard:
+      type: object
+      required: [product_id, title, min_price, sort_order]
+      properties:
+        product_id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        min_price:
+          type: integer
+          format: int64
+          minimum: 1
+          description: ACTIVE SKU 的最低价格，单位分
+        cover_url:
+          type: string
+          nullable: true
+          description: 动态签发的商品封面 URL
+        sort_order:
+          type: integer
+          format: int32
+    VideoProductCardList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/VideoProductCard"
+    AuthorSalesSlice:
+      type: object
+      required: [id, order_count, buyer_count, units_sold, gmv]
+      properties:
+        id: { type: integer, format: int64 }
+        order_count: { type: integer, format: int64 }
+        buyer_count: { type: integer, format: int64 }
+        units_sold: { type: integer, format: int64 }
+        gmv: { type: integer, format: int64, description: 人民币分 }
+    AuthorSales:
+      type: object
+      required: [author_id, order_count, buyer_count, units_sold, gmv, by_video, by_product]
+      properties:
+        author_id: { type: integer, format: int64 }
+        order_count: { type: integer, format: int64 }
+        buyer_count: { type: integer, format: int64 }
+        units_sold: { type: integer, format: int64 }
+        gmv: { type: integer, format: int64, description: 人民币分 }
+        by_video:
+          type: array
+          items: { $ref: "#/components/schemas/AuthorSalesSlice" }
+        by_product:
+          type: array
+          items: { $ref: "#/components/schemas/AuthorSalesSlice" }
     CreateOrderRequest:
       type: object
       required: [sku_id, quantity, idempotency_key]

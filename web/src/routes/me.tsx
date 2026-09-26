@@ -8,6 +8,8 @@ import { StatusBadge } from '../features/video/status-badge'
 import { formatRelativeTime } from '../features/feed/format'
 import { Button } from '../components/ui/button'
 import { Card } from '../components/ui/card'
+import { useAuthStore } from '../lib/auth-store'
+import { CommerceManager } from '../features/product/commerce-manager'
 
 export const Route = createFileRoute('/me')({
   beforeLoad: ({ context }) => {
@@ -20,6 +22,19 @@ export const Route = createFileRoute('/me')({
 
 function MePage() {
   const queryClient = useQueryClient()
+  const me = useAuthStore((state) => state.user)
+
+  const sales = useQuery({
+    queryKey: ['author-sales', me?.user_id],
+    enabled: Boolean(me?.user_id),
+    queryFn: async () => {
+      const res = await client.GET('/api/v1/authors/{id}/sales', {
+        params: { path: { id: me!.user_id } },
+      })
+      if (res.error) throw new Error(apiErrorMessage(res.error))
+      return res.data
+    },
+  })
 
   const { data: profile } = useQuery({
     queryKey: ['me'],
@@ -78,6 +93,17 @@ function MePage() {
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-8">
+      {sales.data && (
+        <Card className="mb-6">
+          <h2 className="font-semibold">带货数据</h2>
+          <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+            <p>支付订单 <strong className="block text-lg">{sales.data.order_count}</strong></p>
+            <p>购买人数 <strong className="block text-lg">{sales.data.buyer_count}</strong></p>
+            <p>成交金额 <strong className="block text-lg">¥{(sales.data.gmv / 100).toFixed(2)}</strong></p>
+          </div>
+        </Card>
+      )}
+      <CommerceManager />
       {/* 资料卡 */}
       <Card className="flex items-center gap-4">
         {profile?.avatar_url ? (

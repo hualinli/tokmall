@@ -5,6 +5,7 @@ import type { components } from '../../api/types'
 import { LikeButton } from '../interaction/like-button'
 import { formatDuration } from './format'
 import { usePlayReport } from '../video/use-play-report'
+import { ProductCards } from '../product/product-cards'
 
 type FeedItem = components['schemas']['FeedItem']
 
@@ -95,6 +96,9 @@ export function FeedCard({ item, active, onActivate, onRetry }: FeedCardProps) {
       {/* 底部信息遮罩 */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent px-6 pb-8 pt-20">
         <p className="line-clamp-2 text-lg font-semibold drop-shadow">{item.title}</p>
+        <div className="pointer-events-auto mt-2 max-w-[80%]">
+          <ProductCards cards={item.product_cards} videoId={item.video_id} authorId={item.author_id} />
+        </div>
         <div className="mt-3 flex items-center gap-2">
           <Link
             to="/user/$id"

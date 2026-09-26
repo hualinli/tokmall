@@ -42,6 +42,7 @@ type PlayURLProvider interface {
 
 type Service struct {
 	repo           Repository
+	productCards   ProductCardReader
 	cursor         *codec
 	storage        PlayURLProvider
 	cache          FirstPageCache
@@ -50,6 +51,8 @@ type Service struct {
 	group          singleflight.Group
 	ranker         Ranker
 }
+
+func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
 
 // NewService 构造 feed 服务。cache/followingCache 可为 nil（缓存禁用时降级直查）；
 // ranker 可选（variadic）：缺省 TimeRanker（当前生产语义）。
@@ -81,15 +84,16 @@ type AuthorRef struct {
 }
 
 type FeedItem struct {
-	VideoID         int64      `json:"video_id"`
-	AuthorID        int64      `json:"author_id"`
-	Title           string     `json:"title"`
-	CoverURL        *string    `json:"cover_url"`
-	VideoURL        string     `json:"video_url"`
-	DurationSeconds int        `json:"duration_seconds"`
-	PublishedAt     *time.Time `json:"published_at"`
-	Author          AuthorRef  `json:"author"`
-	LikeCount       int64      `json:"like_count"`
+	VideoID         int64         `json:"video_id"`
+	AuthorID        int64         `json:"author_id"`
+	Title           string        `json:"title"`
+	CoverURL        *string       `json:"cover_url"`
+	VideoURL        string        `json:"video_url"`
+	DurationSeconds int           `json:"duration_seconds"`
+	PublishedAt     *time.Time    `json:"published_at"`
+	Author          AuthorRef     `json:"author"`
+	LikeCount       int64         `json:"like_count"`
+	ProductCards    []ProductCard `json:"product_cards"`
 }
 
 type FeedResult struct {
@@ -131,6 +135,9 @@ func (s *Service) List(ctx context.Context, limit int, cursorRaw string) (*FeedR
 	if err := s.fillLikeCounts(ctx, result); err != nil {
 		return nil, err
 	}
+	if err := s.fillProductCards(ctx, result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -152,6 +159,9 @@ func (s *Service) ListByAuthor(ctx context.Context, authorID int64, limit int, c
 		return nil, err
 	}
 	if err := s.fillLikeCounts(ctx, result); err != nil {
+		return nil, err
+	}
+	if err := s.fillProductCards(ctx, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -199,7 +209,48 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 	if err := s.fillLikeCounts(ctx, result); err != nil {
 		return nil, err
 	}
+	if err := s.fillProductCards(ctx, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// Product relations and cover URLs are request-time data. They must not be
+// stored in the shared first-page cache: unlinking or taking a product off
+// sale must be visible on the next request without invalidating every feed.
+func (s *Service) fillProductCards(ctx context.Context, result *FeedResult) error {
+	ids := make([]int64, 0, len(result.Items))
+	for _, item := range result.Items {
+		ids = append(ids, item.VideoID)
+	}
+	var rows []productCardRow
+	if s.productCards != nil && len(ids) > 0 {
+		var err error
+		rows, err = s.productCards.ListProductCards(ctx, ids)
+		if err != nil {
+			return fmt.Errorf("list product cards: %w", err)
+		}
+	}
+	byVideo := make(map[int64][]ProductCard, len(ids))
+	for _, row := range rows {
+		card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, SortOrder: row.SortOrder}
+		if row.CoverKey != "" {
+			url, err := s.storage.PresignGetURL(ctx, row.CoverKey)
+			if err != nil {
+				return fmt.Errorf("presign product cover: %w", err)
+			}
+			card.CoverURL = &url
+		}
+		byVideo[row.VideoID] = append(byVideo[row.VideoID], card)
+	}
+	for i := range result.Items {
+		cards := byVideo[result.Items[i].VideoID]
+		if cards == nil {
+			cards = []ProductCard{}
+		}
+		result.Items[i].ProductCards = cards
+	}
+	return nil
 }
 
 // followingFirstPage 关注 Feed 第一页缓存：cache-aside + singleflight + double-check，

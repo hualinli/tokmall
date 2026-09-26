@@ -1,6 +1,6 @@
 # Commerce v1 技术设计
 
-> 状态：技术设计草案（未实现）
+> 状态：历史技术设计草案。商品、库存、单 SKU 订单、模拟支付、视频挂商品、商品卡和基础作者成交统计已实现；实际表结构与接口以 migrations 和 OpenAPI 为准。3A-3C 的隔离 PostgreSQL 集成测试与完整浏览器交易 E2E 均已通过。
 > 关联文档：
 > - 业务梳理：[docs/commerce-business.md](./commerce-business.md)
 > - 总作战手册：[docs/content-commerce-backend-agent-guide.md](./content-commerce-backend-agent-guide.md)
