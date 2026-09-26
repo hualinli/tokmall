@@ -229,9 +229,9 @@ PENDING_PAYMENT → EXPIRED
 | 2A 支付与用户取消竞争 | 完成 | `1fef9a2` | `docs/interview-notes/payment-cancel-race.md` | order/cmd-api 测试与 race；真实 PG 支付/取消竞争、重复回调和单次回补通过 |
 | 2B 支付/取消 API | 完成 | `ec0b2d5` | `docs/interview-notes/payment-cancel-api-security.md` | 全量测试 + order/response/cmd-api race；真实 PG 越权支付/取消无副作用 |
 | 2C 超时关单 Worker | 完成 | `ca648c4` | `docs/interview-notes/order-expiry-worker.md` | order/config/cmd-api 测试与 race；真实 PG 多 Worker 单次回补、支付/过期竞争通过 |
-| 3A 视频挂商品 | 已实现 | 工作区未提交 | `docs/interview-notes/video-product-linking.md` | 真实 PG：并发上限、幂等挂载、权限与失效后取消均通过 |
-| 3B 商品卡装配 | 已实现 | 工作区未提交 | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG 商品卡查询、缓存命中后的动态卡片测试、前端构建及浏览器链路通过 |
-| 3C 作者成交统计 | 已实现 | 工作区未提交 | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG：支付口径、去重购买人数、下架后历史归因；本人可见及浏览器链路通过 |
+| 3A 视频挂商品 | 完成 | `ca9855c` | `docs/interview-notes/video-product-linking.md` | 真实 PG：并发上限、幂等挂载、权限与失效后取消均通过 |
+| 3B 商品卡装配 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG 商品卡查询、缓存命中后的动态卡片测试、前端构建及浏览器链路通过 |
+| 3C 作者成交统计 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG：支付口径、去重购买人数、下架后历史归因；本人可见及浏览器链路通过 |
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
 | 5 工程化与可证明性 | 待开始 |  |  |  |
 | 6 简历与面试交付 | 待开始 |  |  |  |
