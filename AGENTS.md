@@ -18,7 +18,7 @@ TokMall：基于 CloudWeGo 技术栈（Hertz）的短视频 Feed + 商城一体�
 - 缓存：Redis（6380），cache-aside + singleflight + double-check（ADR-012）
 - 观测：slog 结构化日志（stdout + lumberjack 轮转文件）、Prometheus /metrics（独立 9091 端口）
 - 契约：OpenAPI 3（internal/api/openapi.yaml，route-sync 测试防路由漂移）
-- 测试：后端 testify（require）+ hertz ut 内存链路；前端 Vitest + Playwright e2e
+- 测试：后端 testify（require）+ hertz ut 内存链路 + 显式开启的真实 PG 集成测试；前端以 Playwright e2e 为主（Vitest 已配置，当前无单测文件）
 - 前端：React + TanStack Router + React Query + Vite + Tailwind（web/，openapi-typescript 生成类型）
 
 ## 目录结构
@@ -39,8 +39,13 @@ internal/
   video/                 发布/详情/发布/删除 + upload_ticket 防伪造（状态机）+ 作者视频列表 + 播放事件
   interaction/           点赞/关注（幂等，ON CONFLICT DO NOTHING）+ 关注/粉丝列表
   feed/                  Feed 游标分页（HMAC 签名游标）+ 首页缓存 + 关注 Feed（拉模式）+ Ranker 排序 + read model
+  product/               商品/SKU、上下架与商品列表/详情
+  inventory/             库存与幂等流水
+  order/                 单 SKU 订单、模拟支付、取消/超时关单、买卖双方查询与履约状态机
+  promotion/             已发布视频挂本人在售商品
+  attribution/           作者已支付订单数、购买人数与 GMV
   observability/         db_pool / feed_cache 指标 collector
-migrations/             SQL 迁移（001 users、002 软删、003 videos+tickets、004 follows+likes、005 作者索引、006 play_events）
+migrations/             版本化 SQL 迁移（000001～000014；商域从 000007 起，履约时间戳在 000014）
 web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
 scripts/                seed_perf.sql 百万数据造数（压测用）
 docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部使用）
@@ -63,13 +68,16 @@ docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部
 | M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 时间游标下推 + 空关注短路；HotRanker 仅保留为包内排序实验 |
 | M8 排序演进 | ✅（边界已收口） | Ranker 接口 + TimeRanker 生产游标分页；HotRanker 仅单元实验（排序键未与游标闭合，配置 fail-fast 禁止启用）；HybridRanker 待做 |
 | M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
+| Commerce 阶段 1～3 | ✅ 已合并远端 `main` | 商品/SKU/库存、下单/支付/关单、视频挂商品与卡片、作者成交统计；`ab9d062` |
+| Commerce v1 订单收尾 | ✅ 当前分支，待合并 | 买家/商家订单查询、模拟发货与确认完成、前端订单页；`b5349ea` |
 | M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
+| Outbox + Kafka | 未开始 | 准生产级实施计划的阶段 4；与已搁置的播放事件异步化是不同决策 |
 
 > 注：M4+ 三行不在原里程碑规划内（按 mentor 手册"出现可测量问题再引入技术"，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
-> M5/M6/M8/M7 为方向 1 + 治理交付（详见 docs/feed-system-mentor-guide.md §9-12、§7），
-> 下一步候选：Commerce v1（先做普通商品/订单/视频挂商品/作者带货归因，业务梳理见 docs/commerce-business.md，
-> 技术指南见 docs/content-commerce-backend-agent-guide.md）。M5-Kafka 已通过压测搁置，不再作为近期候选。
+> M5/M6/M8/M7 为方向 1 + 治理交付。Commerce v1 的当前范围与实现见
+> `docs/commerce-business.md`、`docs/commerce-v1-technical-design.md`；后续工程化方向见
+> `docs/interview-production-readiness-plan.md`。文档入口和历史设计说明见 `docs/README.md`。
 
 ## 关键设计约定（改代码前必读）
 

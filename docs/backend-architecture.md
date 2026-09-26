@@ -1,129 +1,53 @@
-# 后端架构与模块依赖图
+# 后端架构与模块边界
 
-> 本文档描述 `internal/` 各模块的依赖关系与数据所有权。
-> 核心原则：**接口定义在消费侧（依赖倒置），main.go 是唯一装配点；
-> 模块间不共享类型，只读共享表时用各自的 read model / 直接 SQL。**
+> 更新于 2026-09-26。以 [`cmd/api/main.go`](../cmd/api/main.go)、[`OpenAPI`](../internal/api/openapi.yaml) 和 [`migrations`](../migrations/) 为当前事实来源。TokMall 是模块化单体，Hertz API 在一个进程中装配各业务模块，PostgreSQL 是交易事实库。
 
-## 1. 分层总览
+## 分层
 
 ```text
-┌────────────────────────────────────────────────────────────────┐
-│  入口 / 装配层                                                  │
-│                                                                │
-│  cmd/api/main.go         唯一装配点 + 路由注册（public/protected）│
-│  internal/api            OpenAPI 契约（embed openapi.yaml）    │
-│  cmd/api/main_test.go    route-sync 测试（契约 ↔ 路由双向 diff）│
-└──────────────┬─────────────────────────────────────────────────┘
-               │ 挂载中间件
-┌──────────────▼─────────────────────────────────────────────────┐
-│  中间件层                                                      │
-│  middleware/auth      Bearer 校验 → 注入 user_id/role           │
-│  middleware/recovery  panic → 统一错误响应                      │
-│  middleware/requestid UUID v7（透传）                          │
-│    └→ 依赖 token（验签）、response（Abort）                     │
-└──────────────┬─────────────────────────────────────────────────┘
-               │ handler 层调用
-┌──────────────▼─────────────────────────────────────────────────┐
-│  业务域层（模块化单体：模块间不共享类型）                        │
-│                                                                │
-│  ┌───────┐    ┌───────┐    ┌───────────┐    ┌───────┐         │
-│  │ user  │    │ video │    │interaction│    │ feed  │         │
-│  └───┬───┘    └───┬───┘    └─────┬─────┘    └───┬───┘         │
-│      │      ┌─────┘               │             │             │
-│      └──►接口◄──┘                 │             │             │
-│         （见 §3 装配矩阵）          │             │             │
-│                                    ▼             │             │
-│                         各模块 service ← GormRepository（db）  │
-└──────────────┬─────────────────────────────────────────────────┘
-               │ 消费侧接口（实现由 main 注入）
-┌──────────────▼─────────────────────────────────────────────────┐
-│  基础设施层（无业务依赖）                                       │
-│                                                                │
-│  storage  MinIO（预签名 PUT/GET、Stat、Delete）                 │
-│  cache    Redis client（main 持有，按接口分发）                 │
-│  token    JWT Manager（access/refresh 类型区分）                │
-│  database GORM + 连接池 + migrate                               │
-│  response BizError 统一错误码 + HTTP 映射                       │
-│  config   环境变量（默认值 + required）                         │
-│  observability Prometheus collector（db_pool / feed_cache）    │
-│  health   存活 / 就绪探针                                       │
-└────────────────────────────────────────────────────────────────┘
+HTTP 请求
+  → Hertz 路由 / requestid / recovery / auth / 限流
+  → 模块 Handler（HTTP DTO、错误码映射）
+  → 模块 Service（业务规则、消费侧接口）
+  → Repository（GORM/SQL、事务、领域错误翻译）
+  → PostgreSQL / Redis / MinIO
 ```
 
-## 2. 业务模块依赖图（箭头 = 依赖方向）
+`cmd/api/main.go` 是唯一装配点；`internal/api/openapi.yaml` 是公开接口契约，`cmd/api/main_test.go` 双向检查路由与契约。数据库仅通过版本化 SQL 迁移修改，禁止 AutoMigrate。`/metrics` 在独立 9091 端口暴露。
 
-```text
-  user ──────────► token          （JWT 签发/验签）
-    │      ─────► storage         （头像 URL）
-    │      ─────► redis-client    （refresh 黑名单实现内部持有）
-    │      ─────► video           （ImageUploadValidator：头像票证校验）
-    │
-  video ─────────► storage        （预签名/Stat/Delete）
-    │      ─────► feed            （FeedCacheInvalidator：发布/删除后失效首页缓存）
-    │
-  interaction ───► storage        （列表头像 URL）
-    │
-  feed  ─────────► storage        （播放 URL + 头像 URL）
-    │      ─────► cache/redis     （首页缓存 FirstPageCache 的 Redis 实现）
-    │      ─────► observability   （CacheStats 埋点）
-    │      （内部）Ranker：TimeRanker（生产）/ HotRanker（仅排序实验，未开放游标分页）
-```
+## 业务模块
 
-**要点**：
-- 业务模块之间的依赖只有两条，且都是**消费侧接口 + main 装配**：
-  `user → video.Service`、`video → feed.RedisFeedCache`。被依赖方不知道依赖方存在。
-- 不存在 `feed → video` 或 `video → interaction` 等反向依赖：feed 需要视频/点赞/关注
-  数据时**直接只读共享表**（见 §4），不调用对方代码。
-
-## 3. 装配矩阵（依赖倒置的核心）
-
-所有接口定义在**消费方**，实现由 `cmd/api/main.go` 注入：
-
-| 消费侧接口 | 定义位置 | 实现（main 装配） |
+| 模块 | 主要职责 | 拥有的事实 |
 |---|---|---|
-| `user.TokenManager` | user/service.go | `token.Manager` |
-| `user.RefreshTokenBlacklist` | user/blacklist.go | `user.RedisRefreshTokenBlacklist`（Redis） |
-| `user.AvatarURLProvider` | user/service.go | `storage.Client` |
-| `user.ImageUploadValidator` | user/service.go | **`video.Service`** |
-| `video.Storage` | video/service.go | `storage.Client` |
-| `video.FeedCacheInvalidator` | video/service.go | **`feed.RedisFeedCache`** |
-| `interaction.AvatarURLProvider` | interaction/service.go | `storage.Client` |
-| `feed.PlayURLProvider` | feed/service.go | `storage.Client` |
-| `feed.FirstPageCache` | feed/cache.go | `feed.RedisFeedCache` |
-| `feed.CacheStats` | feed/cache.go | `observability.FeedCacheStats` |
-| `各模块 Repository` | 各 service.go | 各 `GormRepository` |
+| `user` | 注册/登录、刷新旋转/登出、主页 | `users` |
+| `video` | 上传票证、发布/删除、播放事件、详情与作者视频列表 | `videos`、`upload_tickets`、`play_events` |
+| `interaction` | 点赞/关注幂等、社交列表 | `likes`、`follows` |
+| `feed` | 时间游标、关注 Feed、首页缓存、商品卡装配 | 不拥有视频或交易事实 |
+| `product` | 商品/SKU、状态与查询 | `products`、`skus` |
+| `inventory` | 商家库存调整和流水 | `inventory`、`inventory_transactions`；订单事务会在同库扣减/回补 |
+| `order` | 单 SKU 订单、模拟支付、取消/过期、查询和履约状态 | `orders`、`order_items`、`payments` |
+| `promotion` | 视频与商品挂载、排序和取消 | `video_products` |
+| `attribution` | 作者成交统计 | 无写入；读取已支付订单和订单项 |
 
-> 反直觉点：`feed.RedisFeedCache` 同时实现 `feed.FirstPageCache`（自己用）和
-> `video.FeedCacheInvalidator`（video 用）——同一 Redis key 的读写与失效，两个接口两面。
+业务模块不共享 Go model 类型。跨模块只读表时，在消费模块声明自己的 read model 或直接写 SQL；写入规则尽量由拥有事实的模块承担。订单与库存目前共享一个 PostgreSQL 事务，这是模块化单体的显式一致性边界，不应伪装成跨服务事务。
 
-## 4. 数据所有权与跨模块读表（read model）
+## 主要装配关系
 
-| 表 | 写方（拥有） | 读方（跨模块只读，不共享类型） |
+| 消费侧需要 | 由 `main.go` 注入的实现 | 用途 |
 |---|---|---|
-| `users` | user | video（JOIN 作者）、interaction（JOIN 列表）、feed（JOIN 作者） |
-| `videos` | video | feed（Feed 查询）、user 不读 |
-| `upload_tickets` | video | 仅 video |
-| `follows` | interaction | user（关注计数/状态）、feed（关注 Feed 的关注列表） |
-| `likes` | interaction | video（点赞数/状态）、feed（点赞数） |
-| `play_events` | video（Play 写入） | feed（HotRanker 播放计数） |
+| `user.ImageUploadValidator`、`product.ImageTicketValidator` | `video.Service` | 头像/商品封面上传票证校验 |
+| `video.FeedCacheInvalidator` | `feed.RedisFeedCache` | 视频状态变化后失效 Feed 缓存 |
+| `interaction` 的关注 Feed 失效接口 | 关注 Feed Redis 缓存实现 | 关注关系变化后失效对应首页 |
+| `feed`/`video` 的商品卡读接口 | 各自的 PostgreSQL read model | 批量装配商品卡，避免 N+1 |
+| `feed` 的播放 URL、缓存和统计接口 | `storage.Client`、Redis 缓存、Prometheus collector | 短效预签名 URL 与缓存观测 |
+| 各模块的 Repository 接口 | 各自 `GormRepository` | 保持 Service 不依赖 GORM 类型 |
 
-- **跨模块读全部走各自的 SQL / read model**（如 feed 的 `ListFollowingIDs` 直接查
-  `follows`），不 import 对方模块的 model 类型，未来拆服务时按表边界切。
-- 计数不冗余：`like_count`/`play_count` 实时 `COUNT(*)` 聚合（`LikeCounts`/`PlayCounts`
-  批量 IN 查询），不维护计数器行（详见 supplement §3.7 实现版）。
+`order.ExpiryWorker` 由 API 进程按配置启动，扫描待支付到期订单，用 `FOR UPDATE SKIP LOCKED` 支持多实例竞争；它不是 Kafka consumer，也没有独立 Worker 进程。
 
-## 5. 单向依赖保证（无环检查）
+## 数据流中的三个关键边界
 
-```text
-基础设施层（config/database/cache/storage/token/response/observability/health）
-    ↑ 被依赖
-中间件层（middleware）→ 仅基础设施
-    ↑ 被依赖
-业务域层（user / video / interaction / feed）
-    ↑ 被依赖
-装配层（cmd/api main.go）
-```
+1. **内容与交易**：Feed/视频详情展示商品卡，但不修改库存和订单。下单时订单模块重查 SKU/商品状态、服务端单价与挂载来源，并在事务里保存快照。
+2. **作者与商家**：`video_products.author_id` 是推广作者，`products.merchant_id` 是商品所有者。当前推广授权简化为只能挂本人商品；订单同时保留商家与来源作者，成交统计按来源作者聚合。
+3. **缓存与事实**：Feed 主体可缓存，商品卡在响应装配时按页动态读取，因此下架状态不会被旧 Feed 缓存固定住。Redis 缓存失效或限流故障不能改变 PostgreSQL 交易事实。
 
-- 业务模块**不反向依赖**装配层；基础设施层不依赖任何业务模块。
-- 潜在环：`user → video → feed → (storage/cache/observability)` 是纯单向链；
-  唯一的"反向"是接口实现方向（feed 实现 video 的接口），由 main 装配切断编译期耦合。
+订单状态、幂等和数据库不变量见 [Commerce v1 当前技术实现](commerce-v1-technical-design.md)；历史 Feed 方案见 [Feed Mentor 手册](feed-system-mentor-guide.md)，其早期目录与“下一步”描述不作为当前架构依据。

@@ -1,8 +1,8 @@
 # Feed 系统补充设计与决策记录
 
-> 本文件是对 `content-commerce-backend-agent-guide.md` 和 `feed-system-mentor-guide.md`
-> 的补充，填补两文未覆盖的细节。包含完整的 API 契约、数据模型 DDL、认证方案、
-> 上传流程、错误码、缓存规范和关键 ADR。编码前应当阅读。
+> 本文件保留 Feed 早期 API/DDL 草案、认证演进设想和 ADR 推演，**不是当前接口契约**。
+> 现行路由与 DTO 以 [`OpenAPI`](../internal/api/openapi.yaml) 为准，schema 以 [`migrations`](../migrations/) 为准，
+> 进度见 [文档导航](README.md)。阅读下文的“当前”“后续”均需按原写作时点理解。
 
 ---
 
@@ -311,8 +311,7 @@ Query 参数：`limit`（默认 20，1-100）、`cursor`（可选）。
 - 游标无效/篡改/rank_version 不匹配：`400 INVALID_CURSOR`，客户端应清空游标重新请求第一页。
 - `limit > 100`：`400 INVALID_ARGUMENT`。
 
-> **`product_ids`**：松耦合设计。Feed v1 中始终返回空数组或商品 ID 列表，不包含商品详情。
-> Commerce v1 阶段才填充非空值，客户端拿到 `product_ids` 后通过商品详情接口获取信息。
+> **商品卡现状**：Feed 与视频详情已按页动态装配 `product_cards` DTO；下架商品保留卡片并标记不可购买。下文的 `product_ids` 是早期设计，不是当前客户端接入指南。
 >
 > **`is_liked`**：当前登录用户对该视频的点赞状态，由 `likes` 表批量查询填充。
 >
@@ -681,7 +680,7 @@ CREATE TABLE play_events (
 - `event_id` 使用 UUID 以便客户端和服务端独立生成，不依赖数据库自增
 - `played_at` 区分事件发生时间和入库时间（`created_at`）
 - **实现状态**：M5 前是同步写入（POST /videos/{id}/play 直接 INSERT，event_id 唯一约束幂等）；
-  M5 异步化时由 Kafka consumer 写入，仅保留最近 N 天数据，后续通过定时任务清理。
+  原 M5 异步化方案设想由 Kafka consumer 写入；当前 API 同步写入，保留/清理策略尚未实现。
   索引 idx_play_events_video_time 已建（HotRanker 的 PlayCounts 聚合在线查询用）
 
 ### 3.6 feed_cursors（可选）
@@ -1110,13 +1109,13 @@ h.Use(recovery.Recovery(
 **决策**：方案 2（松耦合）。
 
 **理由**：
-- Feed v1 尚未引入 Commerce 模块，松耦合允许 Feed 独立开发和测试
+- 当时 Feed v1 尚未引入 Commerce，松耦合有利于先独立开发和测试
 - 商品详情有自己的缓存策略和错误处理，不应让 Feed 的响应延迟受商品查询影响
-- Commerce v1 阶段，可通过 "Feed 增加 product 嵌套" 功能展示模块间集成能力
+- 当前已按页批量装配 `product_cards`；本段仅保留早期方案比较
 
 **代价**：
 - 客户端需要额外一次请求获取商品详情
-- 但 Commerce v1 阶段可以在 API Gateway 层（或 BFF）做聚合，对客户端透明
+- 当前由 Feed/视频模块直接装配商品卡，未引入 API Gateway 或 BFF
 
 ### ADR-004：拉模式 + K=5 作为关注 Feed 默认策略
 
@@ -1411,7 +1410,7 @@ func GetFollowingFeed(ctx, viewerID, cursor, limit) (items, nextCursor, hasMore)
 | 热门/推荐排序 | V2 / M8 | V1 只用 `published_at` |
 | 视频转码 | 不做（项目声明） | 非求职目标 |
 | Session 认证 | V2 | 见 ADR-001 |
-| Outbox 模式 | Commerce v1 | Feed 的播放事件可接受短暂丢失 |
+| Outbox 模式 | 后续阶段 4 候选 | Commerce v1 未实现 Kafka 或 Outbox |
 | 计数聚合表（`video_stats`） | V2 | 已实现为实时 COUNT 查询（§3.7 实现版）；拆独立表等计数成为读瓶颈再做 |
 | Feed 全量列表缓存（ZSET + fanout） | V2 | 见 ADR-012 |
 | per-user 当前 jti 白名单 | V2 | 见 ADR-011 |

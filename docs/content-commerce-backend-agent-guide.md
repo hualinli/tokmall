@@ -1,4 +1,6 @@
-# 内容电商后端与 Agent 项目作战手册
+# 内容电商后端与 Agent 候选路线图（历史手册）
+
+> 本文形成于 Feed/Commerce 实施之前，保留方案比较与面试讨论。**当前交付状态**见 [文档导航](README.md)、[项目记忆](../AGENTS.md)；已实现 API 与表结构以 OpenAPI 和 migrations 为准。下文的 Agent、秒杀、Kafka、Kitex、OpenSearch、ClickHouse 等是候选，不代表已上线。
 
 ## 0. 项目定位
 
@@ -9,8 +11,8 @@
 核心用户链路：
 
 1. 用户浏览视频 Feed，并产生点赞、关注、播放等行为。
-2. 用户在活动期间购买限量商品，系统保证不超卖、不重复下单。
-3. 用户向 AI 客服咨询商品、订单和售后，Agent 通过受控业务工具完成处理。
+2. 用户购买普通商品，系统用事务与条件扣减保证不超卖、不重复下单；限量秒杀仍是候选。
+3. 用户向 AI 客服咨询商品、订单和售后，Agent 通过受控业务工具完成处理（未实现）。
 4. 作者通过视频为商家带货，系统能统计每个作者带来的订单、人数和 GMV。
 
 > 商城业务的产品视角（角色、流程、范围、验收标准）见 [docs/commerce-business.md](./commerce-business.md)。
@@ -25,17 +27,17 @@
 - **Commerce v1**：商品、SKU、库存、普通订单、模拟支付、视频挂商品、订单归因、作者带货统计；秒杀作为后续阶段。
 - **Agent v1**：商品查询、订单查询、售后规则、转人工和工具调用审计。
 
-公共基础设施可以逐步引入：Feed 先用 PostgreSQL + Redis + MinIO；Commerce 再引入 Kafka；Agent 最后接入向量检索和 LLM。不要为了“完整技术栈”提前部署所有中间件。
+当前 Feed 与 Commerce 均运行在 PostgreSQL + Redis + MinIO 的模块化单体中。Commerce v1 没有 Kafka；只有阶段 4 的 Outbox 可靠事件实验需要它。不要为了“完整技术栈”提前部署中间件。
 
-### 第二版再做
+### 当时的第二版候选（已实现项见下）
 
-- 关注 Feed 和热门排序
+- 关注 Feed 已实现拉模式；HotRanker 仍是单元实验，线上热榜/HybridRanker 未实现
 - 搜索（OpenSearch）
 - 行为分析（ClickHouse）
 - Outbox 事件投递
 - 独立 Feed、Commerce、Agent 服务
-- Kitex RPC、服务发现、限流和降级
-- Prometheus、Grafana、OpenTelemetry、Jaeger/Tempo
+- Kitex RPC、服务发现、独立服务；Redis 限流与 fail-open 降级已实现
+- Grafana、OpenTelemetry、Jaeger/Tempo；Prometheus `/metrics` 已实现
 
 ### 明确不做
 
@@ -46,11 +48,11 @@
 - 一开始就拆成十几个微服务
 - 无法解释的多 Agent 自主协作
 
-任何新想法先记录到 `later.md`，不在当前迭代直接实现。
+新想法先与 [当前实施计划](interview-production-readiness-plan.md) 对照，避免把历史候选直接当作当期任务。
 
 ## 2. 推荐技术栈与选型口径
 
-### 技术栈
+### 技术栈候选（已落地组件见 `AGENTS.md`）
 
 - Go：业务服务、Worker、Agent Gateway
 - Hertz：HTTP 接入层
@@ -76,15 +78,15 @@
 
 ## 3. 目标架构
 
-第一阶段：
+当前模块化单体：
 
 ```text
 Client -> Hertz API -> module service -> PostgreSQL/Redis
-                              -> Kafka -> Worker
 Video files -----------------> MinIO
+订单到期扫描 -----------------> API 进程内 Worker（PostgreSQL SKIP LOCKED）
 ```
 
-第二阶段：
+后续服务拆分候选（未实现）：
 
 ```text
 Client -> Hertz Gateway
@@ -271,7 +273,7 @@ Feed v1 只做时间排序和关注关系，不做复杂推荐模型。先把“
 4. 混合 Feed：关注内容、热门内容和新内容按比例召回。
 5. 生产化讨论：大 V 推拉混合、候选集缓存、排序版本、实验分流。
 
-Feed v1 的完成标准：分页稳定、内容可见性正确、缓存有命中率指标、播放事件异步化、删除和封禁可在合理时间内生效，并有一份压测报告。
+原计划把播放事件异步化列为 Feed v1 完成标准；实际同步版已完成，Kafka 化经压测搁置。当前完成范围见 [项目记忆](../AGENTS.md)。
 
 ## 11. Commerce v1 详细拆解
 
@@ -297,9 +299,9 @@ Commerce v1 必须明确：**作者不是商家，作者是带货渠道。**
 ### 11.1 订单状态机
 
 ```text
-CREATED -> PENDING_PAYMENT -> PAID -> FULFILLING -> COMPLETED
-    |             |             |
-    +-> CANCELED  +-> EXPIRED   +-> REFUNDING -> REFUNDED
+PENDING_PAYMENT -> PAID -> FULFILLING -> COMPLETED
+    ├── CANCELED（仅待支付）
+    └── EXPIRED（仅待支付）
 ```
 
 每次状态变化必须带版本或条件更新，例如 `UPDATE ... WHERE status = ?`，防止并发请求覆盖状态。
@@ -330,9 +332,9 @@ CREATED -> PENDING_PAYMENT -> PAID -> FULFILLING -> COMPLETED
 - **数据库条件扣减**：实现简单、一致性直观；高并发下数据库成为瓶颈。
 - **Redis 预扣 + 消息队列**：削峰效果好；需要处理少卖、消息失败、对账和补偿。
 
-项目实现第二种，但保留第一种作为对照实验。面试时重点讲清楚“最终一致性如何收敛”，不要只说“用了 Redis 所以不会超卖”。
+项目当前实现第一种（PostgreSQL 本地事务 + 条件扣减）。第二种只有测得热点库存行瓶颈且具备对账/补偿方案时才考虑；面试中应据实说明取舍。
 
-Commerce v1 的完成标准：状态机完整、请求和消费幂等、超卖与少卖都有测试、订单超时可回补、压测中有可重复的库存对账结果、订单归因准确、作者带货统计可对账。
+Commerce v1 当前验收以 [业务范围](commerce-business.md) 与 [当前技术实现](commerce-v1-technical-design.md) 为准。消费幂等、消息丢失补偿与 Kafka 压测属于后续阶段，不能描述成已实现。
 
 ## 12. Agent v1 详细拆解
 
@@ -374,7 +376,9 @@ Kitex + IDL + OpenSearch + ClickHouse + Kubernetes
 
 这样每次增加技术都有对应业务压力：Feed 需要缓存和事件，秒杀需要削峰和补偿，Agent 需要工具治理和评测，Kitex 则由服务拆分需求触发。
 
-## 14. 如何合并成一个大项目：内容电商平台
+## 14. 原始内容电商与 Agent 组合设想（非当前实现）
+
+> 本节的店铺、秒杀活动、点击事件、Agent 和物化统计表是完整产品愿景，不是 TokMall 当前 schema。现有 Commerce v1 以 [当前技术实现](commerce-v1-technical-design.md) 为准。
 
 三个模块通过业务链路连接，而不是共享所有内部代码：
 
@@ -429,7 +433,7 @@ Kitex + IDL + OpenSearch + ClickHouse + Kubernetes
 - `campaign`：`campaign_id`, `sku_id`, `start_at`, `end_at`, `stock`
 - `click_event`：`event_id`, `user_id`, `video_id`, `author_id`, `product_id`, `request_id`
 - `order`：`order_id`, `user_id`, `shop_id`, `source_video_id`, `source_author_id`, `status`
-- `author_sales_stats`：`author_id`, `order_count`, `buyer_count`, `gmv`, `updated_at`
+- `author_sales_stats`：候选物化统计表；当前不建表，从订单事实实时聚合
 
 `video_product` 是最重要的连接表，它支持一个视频挂一个或多个商品，也允许商品下架后视频仍然存在但商品卡显示不可购买。<br>
 它同时冗余 `author_id`，方便按作者维度统计带货效果。

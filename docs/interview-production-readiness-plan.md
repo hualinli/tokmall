@@ -1,6 +1,6 @@
 # TokMall 准生产级（面试）实施计划
 
-> 状态：执行中  
+> 状态：阶段 0～3 已实现；Commerce v1 订单收尾提交 `b5349ea` 在当前分支，待合并；阶段 4～6 未开始。
 > 目标：在不过度设计、不虚构业务规模的前提下，把 TokMall 建设为可用代码、测试、压测与故障演练自证的内容电商后端项目。
 
 ## 1. 最终交付主线
@@ -16,9 +16,9 @@
         ↓
 库存回补与流水对账
         ↓
-Transactional Outbox + Kafka
+带货归因、实时只读统计（已实现）
         ↓
-带货归因、统计等异步消费方
+Transactional Outbox + Kafka（阶段 4 计划，未实现）
 ```
 
 “准生产级”在本项目中的含义：核心业务正确；权限、并发、幂等和失败语义明确；关键结论有自动化测试或实验数据；具备观测与恢复手段；所有简化均通过 ADR 诚实记录。它不代表系统已经达到真实大型电商的流量和组织复杂度。
@@ -125,7 +125,7 @@ docs(order): explain transaction and idempotency design
 
 ## 5. 阶段 2：支付、取消与超时关单
 
-订单状态机：
+阶段 2 的订单状态机（履约迁移已在阶段 3D 补齐）：
 
 ```text
 PENDING_PAYMENT → PAID
@@ -134,7 +134,7 @@ PENDING_PAYMENT → EXPIRED
 ```
 
 - 所有迁移使用带来源状态的条件更新。
-- 模拟支付回调必须处理重复、金额不一致、晚到和不存在订单。
+- 受 JWT 保护的买家模拟支付命令必须处理重复、金额不一致、晚到和不存在订单；它不是支付渠道回调。
 - 取消/过期与库存回补在同一事务中完成，并通过流水业务键保证只回补一次。
 - 超时 Worker 使用批量扫描和 `FOR UPDATE SKIP LOCKED`，支持多实例与优雅停机。
 
@@ -152,6 +152,8 @@ PENDING_PAYMENT → EXPIRED
 - 订单记录来源视频和来源作者。
 - 支付成功形成成交归因。
 - 提供作者支付订单数、销量和 GMV 的基础统计。
+- 阶段 3D 增加买家/商家订单列表与详情、商家模拟发货和买家确认完成；
+  状态继续从 `PAID → FULFILLING → COMPLETED`，真实物流不在本阶段。
 
 验收演示链路：上传视频 → 创建商品/SKU → 补库存 → 视频挂商品 → Feed 浏览 → 下单 → 支付 → 库存变化 → 作者统计变化。
 
@@ -223,16 +225,16 @@ PENDING_PAYMENT → EXPIRED
 | 0.4 播放事件幂等 | 完成 | `91049d8` | `docs/interview-notes/play-event-idempotency.md` | video/cmd-api 测试 + video race 通过 |
 | 0.5A 库存幂等与数据库不变量 | 完成 | `d1e1cd9` | `docs/interview-notes/inventory-idempotency-and-invariants.md` | inventory/product/cmd-api 测试 + inventory/product race 通过 |
 | 0.5B 生产配置收口 | 完成 | `95a5051` | `docs/interview-notes/production-config-validation.md` | config/cache/cmd-api 测试 + config/cache race 通过；生产依赖 TLS |
-| 1A 订单数据模型 | 完成 | `db061ec` | `docs/interview-notes/order-data-model.md` | order/cmd-api 测试 + order race 通过；真实 PG 迁移待 1C 并发实验验证 |
-| 1B 创建订单事务与幂等 | 完成 | `f5e4438` | `docs/interview-notes/order-create-transaction.md` | order/inventory/product/cmd-api 测试 + order race 通过；真实并发留待 1C |
+| 1A 订单数据模型 | 完成 | `db061ec` | `docs/interview-notes/order-data-model.md` | order/cmd-api 测试 + order race 通过；真实 PG 迁移与并发已在 1C 验证 |
+| 1B 创建订单事务与幂等 | 完成 | `f5e4438` | `docs/interview-notes/order-create-transaction.md` | order/inventory/product/cmd-api 测试 + order race 通过；真实并发已在 1C 验证 |
 | 1C 订单 API 与真实并发实验 | 完成 | `3aa6f0f` | `docs/interview-notes/order-concurrency-proof.md` | 全量测试 + order/cmd-api race；真实 PG：500 并发/100 库存恰好 100 成功，幂等并发仅扣一次 |
-| 2A 支付与用户取消竞争 | 完成 | `1fef9a2` | `docs/interview-notes/payment-cancel-race.md` | order/cmd-api 测试与 race；真实 PG 支付/取消竞争、重复回调和单次回补通过 |
+| 2A 支付与用户取消竞争 | 完成 | `1fef9a2` | `docs/interview-notes/payment-cancel-race.md` | order/cmd-api 测试与 race；真实 PG 支付/取消竞争、重复模拟支付与单次回补通过 |
 | 2B 支付/取消 API | 完成 | `ec0b2d5` | `docs/interview-notes/payment-cancel-api-security.md` | 全量测试 + order/response/cmd-api race；真实 PG 越权支付/取消无副作用 |
 | 2C 超时关单 Worker | 完成 | `ca648c4` | `docs/interview-notes/order-expiry-worker.md` | order/config/cmd-api 测试与 race；真实 PG 多 Worker 单次回补、支付/过期竞争通过 |
 | 3A 视频挂商品 | 完成 | `ca9855c` | `docs/interview-notes/video-product-linking.md` | 真实 PG：并发上限、幂等挂载、权限与失效后取消均通过 |
 | 3B 商品卡装配 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG 商品卡查询、缓存命中后的动态卡片测试、前端构建及浏览器链路通过 |
 | 3C 作者成交统计 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG：支付口径、去重购买人数、下架后历史归因；本人可见及浏览器链路通过 |
-| 3D Commerce v1 订单收尾 | 完成（待合并） |  | `docs/interview-notes/order-read-fulfillment.md` | 买家/商家订单查询、模拟发货与确认完成；真实 PG 权限/并发测试及浏览器链路通过 |
+| 3D Commerce v1 订单收尾 | 完成（当前分支，待合并） | `b5349ea` | `docs/interview-notes/order-read-fulfillment.md` | 买家/商家订单查询、模拟发货与确认完成；真实 PG 权限/并发测试及浏览器链路通过 |
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
 | 5 工程化与可证明性 | 待开始 |  |  |  |
 | 6 简历与面试交付 | 待开始 |  |  |  |

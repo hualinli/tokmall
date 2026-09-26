@@ -1,5 +1,7 @@
 # Feed 系统 Mentor 手册
 
+> 本手册保留从 M0 到 M8 的**原始设计与教学推演**。开头的目标目录、各阶段方案和后文“下一步”按写作时点理解；当前模块、路由与里程碑见 [文档导航](README.md)、[项目记忆](../AGENTS.md) 和 OpenAPI。
+
 ## 0. 你要完成什么
 
 目标不是一次实现 TikTok，而是通过一个可演进的 Feed 系统，掌握以下后端能力：
@@ -7,7 +9,7 @@
 - Go + Hertz HTTP 服务
 - PostgreSQL 建模、索引和游标分页
 - Redis 缓存、热点治理和限流
-- Kafka 事件和异步 Worker
+- Kafka 事件与异步 Worker 的引入判断（当前播放路径未使用）
 - 内容状态、可见性和幂等
 - 压测、指标、Trace 和故障排查
 - 从时间线演进到关注 Feed 和简单排序
@@ -15,9 +17,9 @@
 最终演示链路：
 
 ```text
-用户登录 -> 发布视频 -> Feed 拉取视频 -> 点赞/关注 -> 播放事件异步上报
+用户登录 -> 发布视频 -> Feed 拉取视频 -> 点赞/关注 -> 播放事件幂等写入
                          |
-                         -> 视频下方显示商品卡（为商城阶段预留）
+                         -> 视频下方显示已实现的商品卡
 ```
 
 第一版不做复杂推荐模型、不做真实转码、不做完整社交图谱。先把“返回正确的一页内容”做稳定。
@@ -48,11 +50,11 @@ Client
       -> feed service
       -> interaction service
       -> PostgreSQL
-      -> Redis（后续）
+      -> Redis
       -> MinIO（视频文件）
 ```
 
-推荐目录：
+原始推荐目录（含尚未创建的独立 Worker；当前目录见 `AGENTS.md`）：
 
 ```text
 cmd/api/main.go
@@ -83,12 +85,9 @@ Handler 只处理 HTTP；Service 处理业务规则；Repository 只访问数据
 
 ## 3. 里程碑总览
 
-> 状态：M0-M4 已完成（含基线压测，见 performance-baseline.md）；M4 之后实际还做了
-> auth 闭环（/refresh 旋转 + /logout 黑名单）、公共主页/作者列表/社交列表、
-> OpenAPI 契约 + React 前端 + Playwright e2e（详见 AGENTS.md 里程碑表）。
-> **方向 1 已交付**：M5 同步版（play 端点 + event_id 幂等）、M6（关注 Feed 拉模式）、
-> M8 基础（Ranker 接口 + HotRanker + 版本化 + 实验开关）。
-> **下一步**：M5 Kafka 异步化（先有消费方再引 Kafka，见 §9 顺序问题）、M7 限流。
+> 当前 M0～M4、M5 同步播放事件、M6 关注 Feed 拉模式、M7 限流均已完成。
+> M8 已完成安全的排序边界：TimeRanker 用于生产，HotRanker 仅包内实验，HybridRanker 未实现。
+> M5-Kafka 经压测搁置；Commerce v1 和后续 Outbox 计划见 [文档导航](README.md)。
 
 | 里程碑 | 解决的问题 | 主要技术 | 状态 |
 |---|---|---|---|
@@ -97,10 +96,10 @@ Handler 只处理 HTTP；Service 处理业务规则；Repository 只访问数据
 | M2 | Feed 能正确分页 | 复合索引、游标 | ✅ |
 | M3 | 用户能互动 | 唯一约束、幂等 | ✅ |
 | M4 | 读流量增加后仍稳定 | Redis、singleflight | ✅ |
-| M5 | 播放事件不阻塞接口 | Kafka、Worker | 🔶 同步版已完成，Kafka 待做 |
+| M5 | 播放事件幂等上报 | PostgreSQL 同步写入；Kafka 曾为候选 | ✅ 同步版；Kafka 化搁置 |
 | M6 | 关注 Feed 可扩展 | 拉模式、批量查询、缓存 | ✅ 拉模式（窗口函数 TOP K） |
-| M7 | 热点和异常可治理 | 限流、熔断、降级、观测 | ⏳ 待做 |
-| M8 | 排序可演进 | 候选集、版本化分数、实验 | 🔶 Ranker+Hot 已完成，Hybrid 待做 |
+| M7 | 热点和异常可治理 | Redis 固定窗口限流、fail-open、观测 | ✅ 已完成当前范围；熔断未实现 |
+| M8 | 排序可演进 | Ranker 与游标语义 | ✅ TimeRanker 线上；HotRanker 仅实验，Hybrid 未实现 |
 
 ## 4. M0：工程骨架
 
@@ -408,7 +407,9 @@ video:brief:{id}           -> 视频摘要
 - 停 Redis，确认接口仍能降级而不是请求风暴。
 - 手动发布和删除视频，确认缓存最终刷新。
 
-## 9. M5：播放事件异步化
+## 9. M5：播放事件异步化（原方案，已搁置）
+
+> 实际实现是 `POST /videos/{id}/play` 同步写 `play_events`，使用 UUID v7 `event_id` 幂等。压测未发现“同步写拖慢读路径”的证据，因此没有 Kafka producer、consumer 或独立 play-worker；本节以下是当时的候选方案，不是运行链路。详见 [性能基线](performance-baseline.md)。
 
 ### 问题：同步记录播放会拖慢 Feed
 
@@ -441,7 +442,7 @@ CREATE TABLE play_events (
 );
 ```
 
-> V1 中 play_events 通过 Kafka consumer 写入，`event_id` 由客户端生成（UUID v7），用于幂等去重。完整的索引策略和说明见补充文档 §3.5。
+> 原方案设想由 Kafka consumer 写入。当前由 API 同步写入，`event_id` 由客户端生成（UUID v7）用于幂等；真实字段与索引以迁移 `000006`、`000010` 为准。
 
 事件字段：`event_id`、`user_id`、`video_id`、`occurred_at`、`session_id`、`trace_id`。
 

@@ -1,5 +1,7 @@
 # 技术对比报告：tokmall vs feedsystem_video_go vs GCFeed
 
+> **历史快照**：这份报告比较的是当时检出的三个仓库，不是 TokMall 当前功能/代码量/风险清单。TokMall 后续已完成商品卡、视频推广、作者统计、订单查询和履约；当前状态请先看 [文档导航](README.md)。外部仓库之后也可能变化，本报告没有重新审计。
+
 > 静态代码分析报告，未运行任何项目（无依赖安装、无编译、无压测）。
 > 分析对象：
 > - **tokmall**：`~/Projects/tokmall`（本仓库）
@@ -27,9 +29,9 @@
 | 维度 | FSVG | GCFeed | tokmall |
 |---|---|---|---|
 | 后端非测试代码 | ~7.2k 行（backend）+ 2.3k 行（内嵌 simple-feed） | ~13.0k 行（api + worker） | ~5.9k 行 |
-| 测试代码 | backend ~530 行 + simple-feed ~1.5k 行 | ~5.4k 行（13 个 API 流程测试文件 + 单测） | ~4.0k 行（14 文件）+ 前端 Vitest/Playwright e2e |
+| 测试代码 | backend ~530 行 + simple-feed ~1.5k 行 | ~5.4k 行（13 个 API 流程测试文件 + 单测） | 当时约 4.0k 行（14 文件）+ 前端 Playwright e2e；Vitest 已配置但无单测 |
 | 前端 | Vue 3 + Pinia + spark-md5（分片上传客户端） | React 18 裸写（无路由/状态库） | React + TanStack Router/Query + openapi-typescript 生成类型 |
-| 业务域 | 账号/视频/点赞/评论/关注/Feed/私信/通知/话题标签 | 账号/视频/点赞/**收藏**/评论/关注/Feed/**推荐/曝光/播放优化/消息中心** | 账号/视频/点赞/关注/Feed/播放事件 + **商品/SKU/库存**（Commerce v1 已起步） |
+| 业务域 | 账号/视频/点赞/评论/关注/Feed/私信/通知/话题标签 | 账号/视频/点赞/**收藏**/评论/关注/Feed/**推荐/曝光/播放优化/消息中心** | 账号/视频/点赞/关注/Feed/播放事件 + **商品/SKU/库存**（该报告写作时 Commerce v1 刚起步） |
 | 部署形态 | docker-compose + start.sh（API 与 Worker 分进程） | docker-compose 全家桶（含 Prometheus/Grafana） | make dev（依赖容器 + 后端 + 前端） |
 
 值得注意的演化线索：FSVG 仓库里内嵌了一个 `simple-feed/` 子项目（Gin + PostgreSQL），它已经用上了消费侧接口（`simple-feed/internal/video/service.go:16 type VideoRepo interface`）和 gomock——说明作者在 FSVG → GCFeed 的过程中意识到了接口边界问题，GCFeed 全面落实了这一点。
