@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lihualin/tokmall/internal/feed"
+	"github.com/lihualin/tokmall/internal/promotion"
 	"github.com/lihualin/tokmall/internal/video"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -89,7 +90,14 @@ func TestPostgresCardsAndPaidAttribution(t *testing.T) {
 	require.NoError(t, db.Exec("UPDATE products SET status='OFF_SALE' WHERE id=?", productID).Error)
 	feedCards, err = feed.NewProductCardReader(db).ListProductCards(ctx, []int64{videoID})
 	require.NoError(t, err)
-	require.Empty(t, feedCards)
+	require.Len(t, feedCards, 1)
+	require.Equal(t, "OFF_SALE", feedCards[0].ProductStatus)
+	videoCards, err = video.NewProductCardReader(db).ListProductCards(ctx, videoID)
+	require.NoError(t, err)
+	require.Equal(t, "OFF_SALE", videoCards[0].ProductStatus)
+	promotionCards, err := promotion.NewRepository(db).ListActiveCards(ctx, videoID)
+	require.NoError(t, err)
+	require.Equal(t, "OFF_SALE", promotionCards[0].ProductStatus)
 	sales, err = NewRepository(db).Sales(ctx, authorID)
 	require.NoError(t, err)
 	require.Equal(t, int64(3000), sales.GMV, "historical payment survives product status changes")

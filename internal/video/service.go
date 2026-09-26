@@ -631,7 +631,7 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 			return nil, fmt.Errorf("list product cards: %w", err)
 		}
 		for _, row := range rows {
-			card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, SortOrder: row.SortOrder}
+			card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, ProductStatus: row.ProductStatus, SortOrder: row.SortOrder}
 			if row.CoverKey != "" {
 				url, err := s.storage.PresignGetURL(ctx, row.CoverKey)
 				if err != nil {

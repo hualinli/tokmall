@@ -761,7 +761,7 @@ paths:
     get:
       tags: [promotions]
       summary: 查询已发布视频启用中的商品卡（公开）
-      description: 只返回 ACTIVE 关系、ON_SALE 商品和至少一个 ACTIVE SKU；不暴露库存，封面 URL 留待 Feed 批量装配。
+      description: 返回已发布视频的 ACTIVE 关系与非删除商品；下架商品保留卡片并标明状态，不能购买。不暴露库存，封面 URL 留待 Feed 批量装配。
       security:
         - bearerAuth: []
         - {}
@@ -1702,7 +1702,7 @@ components:
           format: int32
     VideoProductCard:
       type: object
-      required: [product_id, title, min_price, sort_order]
+      required: [product_id, title, min_price, product_status, sort_order]
       properties:
         product_id:
           type: integer
@@ -1712,8 +1712,11 @@ components:
         min_price:
           type: integer
           format: int64
-          minimum: 1
-          description: ACTIVE SKU 的最低价格，单位分
+          minimum: 0
+          description: ACTIVE SKU 的最低价格，单位分；0 表示暂无可售规格
+        product_status:
+          type: string
+          enum: [ON_SALE, OFF_SALE]
         cover_url:
           type: string
           nullable: true

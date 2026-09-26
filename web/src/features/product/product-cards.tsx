@@ -22,7 +22,13 @@ export function ProductCards({ cards, videoId, authorId }: { cards: Card[]; vide
           )}
           <span className="min-w-0">
             <span className="block truncate">{card.title}</span>
-            <span className="text-amber-300">¥{(card.min_price / 100).toFixed(2)}</span>
+            {card.product_status === 'OFF_SALE' ? (
+              <span className="text-zinc-400">已下架 · 不可购买</span>
+            ) : card.min_price > 0 ? (
+              <span className="text-amber-300">¥{(card.min_price / 100).toFixed(2)}</span>
+            ) : (
+              <span className="text-zinc-400">暂无可售规格</span>
+            )}
           </span>
         </Link>
       ))}

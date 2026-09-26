@@ -21,7 +21,7 @@ func TestDetailCardsOnlyForPublishedVideo(t *testing.T) {
 	repo := newFakeRepo()
 	store := newFakeStorage()
 	svc := newTestService(repo, store)
-	cards := &fakeCardReader{rows: []productCardRow{{ProductID: 8, Title: "商品", MinPrice: 500, CoverKey: "products/8.jpg"}}}
+	cards := &fakeCardReader{rows: []productCardRow{{ProductID: 8, Title: "商品", MinPrice: 500, ProductStatus: "ON_SALE", CoverKey: "products/8.jpg"}}}
 	svc.SetProductCardReader(cards)
 	registerTicket(t, repo, 42, "videos/42/cards.mp4")
 	store.objectSizes["videos/42/cards.mp4"] = 1024

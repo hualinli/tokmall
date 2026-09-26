@@ -233,7 +233,7 @@ func (s *Service) fillProductCards(ctx context.Context, result *FeedResult) erro
 	}
 	byVideo := make(map[int64][]ProductCard, len(ids))
 	for _, row := range rows {
-		card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, SortOrder: row.SortOrder}
+		card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, ProductStatus: row.ProductStatus, SortOrder: row.SortOrder}
 		if row.CoverKey != "" {
 			url, err := s.storage.PresignGetURL(ctx, row.CoverKey)
 			if err != nil {

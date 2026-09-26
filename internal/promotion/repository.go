@@ -100,11 +100,12 @@ func (r *GormRepository) update(ctx context.Context, authorID, videoID, productI
 func (r *GormRepository) ListActiveCards(ctx context.Context, videoID int64) ([]ProductCard, error) {
 	var cards []ProductCard
 	err := r.db.WithContext(ctx).Raw(`
-		SELECT p.id AS product_id, p.title, min(s.price) AS min_price, vp.sort_order
+		SELECT p.id AS product_id, p.title, coalesce(min(s.price), 0) AS min_price,
+		       p.status AS product_status, vp.sort_order
 		FROM video_products vp
 		JOIN videos v ON v.id = vp.video_id AND v.status = 'PUBLISHED'
-		JOIN products p ON p.id = vp.product_id AND p.status = 'ON_SALE'
-		JOIN skus s ON s.product_id = p.id AND s.status = 'ACTIVE'
+		JOIN products p ON p.id = vp.product_id AND p.status <> 'DELETED'
+		LEFT JOIN skus s ON s.product_id = p.id AND s.status = 'ACTIVE'
 		WHERE vp.video_id = ? AND vp.status = 'ACTIVE'
 		GROUP BY p.id, p.title, vp.sort_order, vp.id
 		ORDER BY vp.sort_order ASC, vp.id ASC`, videoID).Scan(&cards).Error

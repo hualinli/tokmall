@@ -15,6 +15,7 @@ test('视频挂商品 → 商品卡 → 下单支付 → 作者统计', async ({
   await page.getByPlaceholder('商品名称').fill(productTitle)
   await page.getByRole('button', { name: '创建商品' }).click()
   await expect(page.getByRole('option', { name: new RegExp(productTitle) })).toHaveCount(1)
+  const productId = Number(await page.locator('select').first().inputValue())
   await page.getByPlaceholder('价格（元）').fill('12.50')
   await page.getByRole('button', { name: '添加规格' }).click()
   await page.getByPlaceholder('入库数量').fill('10')
@@ -51,4 +52,14 @@ test('视频挂商品 → 商品卡 → 下单支付 → 作者统计', async ({
   await loginViaUi(page, author.username, author.password)
   await page.goto('/me')
   await expect(page.getByText('¥12.50', { exact: true })).toBeVisible()
+
+  const authorToken = await page.evaluate(() => JSON.parse(localStorage.getItem('tokmall-auth') ?? '{}').state?.accessToken)
+  const offSale = await page.request.post(`/api/v1/products/${productId}/status`, {
+    headers: { Authorization: `Bearer ${authorToken}` }, data: { status: 'OFF_SALE' },
+  })
+  expect(offSale.ok()).toBe(true)
+  await page.goto(`/video/${videoId}`)
+  await expect(page.getByText('已下架 · 不可购买')).toBeVisible()
+  await page.getByRole('link', { name: new RegExp(productTitle) }).click()
+  await expect(page.getByRole('button', { name: '下单并模拟支付' })).toBeDisabled()
 })
