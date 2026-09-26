@@ -1,6 +1,6 @@
 # TokMall 准生产级（面试）实施计划
 
-> 状态：阶段 0～3 已实现；Commerce v1 订单收尾提交 `b5349ea` 在当前分支，待合并；阶段 4～6 未开始。
+> 状态：阶段 0～3 及 Commerce v1 订单收尾已实现；阶段 4～6 未开始。
 > 目标：在不过度设计、不虚构业务规模的前提下，把 TokMall 建设为可用代码、测试、压测与故障演练自证的内容电商后端项目。
 
 ## 1. 最终交付主线
@@ -234,7 +234,7 @@ PENDING_PAYMENT → EXPIRED
 | 3A 视频挂商品 | 完成 | `ca9855c` | `docs/interview-notes/video-product-linking.md` | 真实 PG：并发上限、幂等挂载、权限与失效后取消均通过 |
 | 3B 商品卡装配 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG 商品卡查询、缓存命中后的动态卡片测试、前端构建及浏览器链路通过 |
 | 3C 作者成交统计 | 完成 | `ca9855c` | `docs/interview-notes/commerce-card-and-attribution.md` | 真实 PG：支付口径、去重购买人数、下架后历史归因；本人可见及浏览器链路通过 |
-| 3D Commerce v1 订单收尾 | 完成（当前分支，待合并） | `b5349ea` | `docs/interview-notes/order-read-fulfillment.md` | 买家/商家订单查询、模拟发货与确认完成；真实 PG 权限/并发测试及浏览器链路通过 |
+| 3D Commerce v1 订单收尾 | 完成 | `b5349ea` | `docs/interview-notes/order-read-fulfillment.md` | 买家/商家订单查询、模拟发货与确认完成；真实 PG 权限/并发测试及浏览器链路通过 |
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
 | 5 工程化与可证明性 | 待开始 |  |  |  |
 | 6 简历与面试交付 | 待开始 |  |  |  |

@@ -4,7 +4,7 @@
 
 ## 1. 范围和交付状态
 
-远端 `main` 在 `ab9d062` 已完成内容电商演示链路：商品/SKU/库存、单 SKU 订单、买家模拟支付、取消/超时关闭、视频挂商品、Feed/视频详情商品卡及作者成交统计。当前工作分支 `codex/commerce-v1-finish` 的 `b5349ea` 又补齐买家/商家订单查询、模拟发货、买家确认完成和前端订单页；该提交尚未合并到远端 `main`。
+Commerce v1 已完成：商品/SKU/库存、单 SKU 订单、买家模拟支付、取消/超时关闭、视频挂商品、Feed/视频详情商品卡、作者成交统计，以及买家/商家订单查询、模拟发货、买家确认完成和前端订单页。阶段 3 基线为 `ab9d062`，订单收尾为 `b5349ea`。
 
 Commerce v1 不包含真实支付渠道、真实物流、退款/售后、佣金结算、秒杀或跨商家推广授权。Outbox + Kafka 是独立的后续工程化阶段；[播放事件 Kafka 化](performance-baseline.md)因缺少当前性能动机而搁置。
 
@@ -43,14 +43,14 @@ PENDING_PAYMENT ──模拟支付──▶ PAID ──商家模拟发货──�
 - `POST /api/v1/orders` 的用户身份来自 Bearer Token。相同 `(user_id, idempotency_key)` 和相同请求指纹返回原订单；复用 key 但改载荷返回冲突。订单、订单项、条件扣库存和库存流水在一个 PostgreSQL 事务中完成；并发买家不能超卖。
 - `POST /api/v1/orders/{id}/pay` 是**受 JWT 保护的买家模拟支付命令**，不是公网支付渠道回调。订单锁、支付号/模拟渠道交易号幂等、金额核验和 `PENDING_PAYMENT → PAID` 同属一笔事务。真实渠道接入需要独立适配器先验签、校验时间窗及商户金额，再提交可信支付事实；详见 [支付安全边界](interview-notes/payment-cancel-api-security.md)。
 - 买家取消与超时 Worker 都只处理待支付订单。订单状态、库存回补和流水在一个事务中提交；Worker 用 `FOR UPDATE SKIP LOCKED` 多实例扫描。支付、取消和关单由订单行锁与条件状态更新仲裁。
-- 当前工作分支增加商家 `PAID → FULFILLING` 和买家 `FULFILLING → COMPLETED`。转移由归属条件 `FOR UPDATE` 锁定，重复同一操作返回 `replayed=true`；非本人订单与不存在订单同为 404。`000014` 约束履约时间戳与状态一致。完成后的订单不能取消或回补库存。
+- 商家可将 `PAID → FULFILLING`，买家可将 `FULFILLING → COMPLETED`。转移由归属条件 `FOR UPDATE` 锁定，重复同一操作返回 `replayed=true`；非本人订单与不存在订单同为 404。`000014` 约束履约时间戳与状态一致。完成后的订单不能取消或回补库存。
 
 ## 5. 查询、推广和统计
 
-- 当前工作分支提供 `GET /api/v1/orders`、`GET /api/v1/orders/{id}` 与商家侧 `/api/v1/merchant/orders`、`/api/v1/merchant/orders/{id}`。列表按 ID 倒序，`before_id` 是上一页最后一条，最多 50 条；批量查询订单项，避免 N+1。买家按 `user_id`、商家按 `merchant_id` 在 SQL 中限定可见范围。
+- 系统提供 `GET /api/v1/orders`、`GET /api/v1/orders/{id}` 与商家侧 `/api/v1/merchant/orders`、`/api/v1/merchant/orders/{id}`。列表按 ID 倒序，`before_id` 是上一页最后一条，最多 50 条；批量查询订单项，避免 N+1。买家按 `user_id`、商家按 `merchant_id` 在 SQL 中限定可见范围。
 - 作者只能给自己的已发布视频挂自己创建的在售商品。挂载幂等，取消后允许在商品下架或视频不可售时清理关系。Feed 按页批量装配商品卡；缓存的 Feed 主体与动态商品卡分开，下架商品卡保留但不可购买。
 - `GET /api/v1/authors/{id}/sales` 仅作者本人可见，只计 `PAID`、`FULFILLING`、`COMPLETED` 且有支付事实的订单。返回订单数、去重买家数、销量、GMV，以及按视频和商品拆分。统计从订单事实实时计算，在只读 `REPEATABLE READ` 快照中保持各分组一致；当前没有 `author_sales_stats` 物化表。
-- 前端可从商品卡进入详情并下单模拟支付；当前工作分支再提供订单列表、详情、商家模拟发货和买家确认完成。操作均写明“模拟”，不暗示真实收款或物流。
+- 前端可从商品卡进入详情并下单模拟支付，也提供订单列表、详情、商家模拟发货和买家确认完成。操作均写明“模拟”，不暗示真实收款或物流。
 
 ## 6. 验证与后续边界
 

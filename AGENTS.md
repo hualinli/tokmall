@@ -68,8 +68,8 @@ docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部
 | M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 时间游标下推 + 空关注短路；HotRanker 仅保留为包内排序实验 |
 | M8 排序演进 | ✅（边界已收口） | Ranker 接口 + TimeRanker 生产游标分页；HotRanker 仅单元实验（排序键未与游标闭合，配置 fail-fast 禁止启用）；HybridRanker 待做 |
 | M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
-| Commerce 阶段 1～3 | ✅ 已合并远端 `main` | 商品/SKU/库存、下单/支付/关单、视频挂商品与卡片、作者成交统计；`ab9d062` |
-| Commerce v1 订单收尾 | ✅ 当前分支，待合并 | 买家/商家订单查询、模拟发货与确认完成、前端订单页；`b5349ea` |
+| Commerce 阶段 1～3 | ✅ | 商品/SKU/库存、下单/支付/关单、视频挂商品与卡片、作者成交统计；`ab9d062` |
+| Commerce v1 订单收尾 | ✅ | 买家/商家订单查询、模拟发货与确认完成、前端订单页；`b5349ea` |
 | M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
 | Outbox + Kafka | 未开始 | 准生产级实施计划的阶段 4；与已搁置的播放事件异步化是不同决策 |
 
