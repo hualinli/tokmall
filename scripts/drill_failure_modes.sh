@@ -63,12 +63,14 @@ note "投递次数超过上限的消息进入 DLQ Stream：tokmall:events:commer
 $REDIS XLEN tokmall:events:commerce.v1:dlq || true
 
 say "5/5 事件丢失检测（模拟 Redis 无 AOF 重启后事件真的没了）"
-note "把一条"已发布超过宽限期"的事件的回执删掉，模拟"下游从未收到"："
-note "（宽限期内的未回执属于正常消费延迟，不该报警——这正是 grace 存在的意义）"
-$PSQL -c "DELETE FROM consumed_events WHERE event_id = (
-  SELECT event_id FROM outbox_events
-  WHERE status='PUBLISHED' AND published_at < now() - interval '2 minutes'
-  ORDER BY id DESC LIMIT 1)"
+note "造一条"已发布、超过宽限期、且下游从未收到"的事件（event_id 随机）："
+note "为什么不是"删掉某条已消费事件的回执"——回执与投影在同一事务里写入，"
+note ""有投影但没回执"这种状态在系统内不可能出现；删回执再重放会把投影算两遍。"
+note "真实的事件丢失形态是：事件进了 broker 但下游从未处理，因此既没有回执也没有投影。"
+$PSQL -c "INSERT INTO outbox_events
+  (event_id, event_type, aggregate_type, aggregate_id, partition_key, payload, status, attempts, published_at, available_at)
+  VALUES (gen_random_uuid(), 'commerce.order.paid.v1', 'order', 0, 'drill', '{}'::jsonb,
+          'PUBLISHED', 1, now() - interval '10 minutes', now() - interval '10 minutes')"
 note "对账应把它报成 outbox_delivery 差异，并在 --replay 时重新放回待投递："
 (env APP_ENV=development JWT_SECRET=x FEED_CURSOR_SECRET=y ./bin/reconcile --replay | tail -12) || true
 note "结论：事件丢失不是靠"相信 broker"兜住的，而是靠对账发现 + 幂等重放修复。"
