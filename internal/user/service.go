@@ -240,6 +240,8 @@ func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, 
 		Username:     username,
 		PasswordHash: string(hash),
 		Bio:          "",
+		// 显式声明新用户可用：不依赖数据库默认值，也不给"空 status"任何机会。
+		Status: UserStatusActive,
 	}
 	err = s.repo.Create(ctx, &user)
 	switch {
