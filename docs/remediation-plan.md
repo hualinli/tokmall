@@ -31,6 +31,23 @@
 6. **演练**：至少 4 次依赖故障演练（PostgreSQL、Redis、MinIO、MQ/Consumer 或 Worker 重启），每次记录用户可见表现、指标变化、恢复步骤与数据一致性结论。
 7. **审计条目收口**：P0、P1 全部关闭；P2 全部关闭或记录为 ADR 化的已知取舍；`docs/` 中不存在"已完成"但无验收证据的功能。
 
+## 1.5 执行进度（2026-10-01 更新）
+
+| 阶段 | 状态 | 提交 | 验收证据 |
+|---|---|---|---|
+| A 安全与正确性收口 | ✅ 已完成 | `ab8c92a` | BE-P0-1、BE-P1-1..8 全部修复并回归；`go test ./...` 16 包全绿，6 个包 `-race` 通过；真实 PG 集成测试（含新增"晚到支付"用例）连续 3 次通过 |
+| B 前端与契约收口 | 🚧 进行中 | — | FE-*、CT-1/3/5 与 e2e 补强（见后续提交） |
+| C 售后/退款闭环 | ✅ 已完成 | `6e1dd1e` | `internal/order/refund_postgres_integration_test.go`：并发同意只执行一次、已发货不回补、拒绝后可再申请、两组竞争只有一个终态、越权无副作用；顺带修复"履约命令复用完整状态图"的缺陷 |
+| D Outbox + MQ | ✅ 已完成（Kafka 为可替换实现，未接入） | `ff288ac` | `internal/outbox/integration_test.go` 六场景全绿（恰好一次、重复不累加、退款冲减、回滚不留事件、DLQ 重放、崩溃认领）；`scripts/drill_commerce_loop.sh` 端到端跑通 |
+| E 对账与可证明性 | ✅ 已完成 | `1436fd5`、`68192ea` | 六项检查 + 对账驱动重放 + 读模型重建；契约 schema 级校验（变异验证）；CI 四 job；压测基线写入 `performance-baseline.md`；故障演练脚本可复现 |
+| F 文档与面试交付 | ✅ 已完成 | `73bfb45` | `docs/interview-walkthrough.md`（十个故事 + 问答速查 + 边界清单）、审核报告与修复计划、ADR-014～020、README 与 AGENTS 同步 |
+
+> 阶段 A/E 的执行过程中额外发现并修复了两个**计划外**的真实缺陷：
+> 1. 履约命令复用完整状态图，导致"退款中订单可被发货"（被数据库 CHECK 约束拦下，
+>    集成测试暴露）——见 `6e1dd1e` 与 `docs/interview-notes/refund-state-machine-and-stock.md`；
+> 2. User model 映射 `status` 后 GORM 写入空值，绕过 `DEFAULT 'ACTIVE'`，
+>    导致"注册成功但登录 401"——由端到端演练发现，见 `4a824a6`。
+
 ## 2. 阶段总览
 
 | 阶段 | 目标 | 覆盖审计条目 | 依赖 | 主要产出 |

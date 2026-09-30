@@ -14,3 +14,6 @@ logs/
 # 系统文件
 .DS_Store
 .alma-snapshots
+
+# 沙箱内 docker CLI 的匿名配置（绕过失效的凭证助手）
+.docker-anon/
