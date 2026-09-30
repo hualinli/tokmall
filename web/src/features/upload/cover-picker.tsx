@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { ImagePlus, X } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { IMAGE_MAX_SIZE } from './use-upload-flow'
@@ -13,7 +13,13 @@ interface CoverPickerProps {
 export function CoverPicker({ cover, onSelect, onClear }: CoverPickerProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-  const preview = cover ? URL.createObjectURL(cover) : null
+  // 对象 URL 不能在渲染期创建：每次渲染都会新建一个且旧的永不释放（内存泄漏 + 图片闪烁）。
+  // 这里按 File 记忆并在替换/卸载时撤销。
+  const preview = useMemo(() => (cover ? URL.createObjectURL(cover) : null), [cover])
+  useEffect(() => {
+    if (!preview) return
+    return () => URL.revokeObjectURL(preview)
+  }, [preview])
 
   function handleFile(f?: File) {
     if (f && f.type.startsWith('image/') && f.size <= IMAGE_MAX_SIZE) {

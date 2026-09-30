@@ -274,11 +274,11 @@ func TestServicePayValidatesAndPropagatesBusinessErrors(t *testing.T) {
 func TestOrderStatusTransitions(t *testing.T) {
 	states := []Status{StatusPendingPayment, StatusPaid, StatusFulfilling, StatusCompleted, StatusCanceled, StatusExpired}
 	legal := map[[2]Status]bool{
-		{StatusPendingPayment, StatusPaid}: true,
+		{StatusPendingPayment, StatusPaid}:     true,
 		{StatusPendingPayment, StatusCanceled}: true,
-		{StatusPendingPayment, StatusExpired}: true,
-		{StatusPaid, StatusFulfilling}: true,
-		{StatusFulfilling, StatusCompleted}: true,
+		{StatusPendingPayment, StatusExpired}:  true,
+		{StatusPaid, StatusFulfilling}:         true,
+		{StatusFulfilling, StatusCompleted}:    true,
 	}
 	for _, from := range states {
 		for _, to := range states {

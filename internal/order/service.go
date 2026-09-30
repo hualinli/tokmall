@@ -14,12 +14,15 @@ import (
 )
 
 var (
-	ErrInvalidParam          = errors.New("invalid param")
-	ErrNotFound              = errors.New("sellable sku or source not found")
-	ErrInsufficientStock     = errors.New("insufficient stock")
-	ErrIdempotencyConflict   = errors.New("idempotency key reused with different request")
-	ErrOrderNotFound         = errors.New("order not found")
-	ErrOrderStateConflict    = errors.New("order state conflict")
+	ErrInvalidParam        = errors.New("invalid param")
+	ErrNotFound            = errors.New("sellable sku or source not found")
+	ErrInsufficientStock   = errors.New("insufficient stock")
+	ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+	ErrOrderNotFound       = errors.New("order not found")
+	ErrOrderStateConflict  = errors.New("order state conflict")
+	// ErrOrderExpired：支付到达时订单已超过 expires_at。支付事务会顺手把订单
+	// 关单并回补库存（lazy expiry），因此这是终态而不是可重试的临时冲突。
+	ErrOrderExpired          = errors.New("order expired before payment")
 	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
 )
 
@@ -116,16 +119,48 @@ type CancelResult struct {
 	Replayed   bool
 }
 
+// orderStatusTransitions 是订单状态图的完整定义（含售后边）。
+// 退款相关迁移的含义：
+//   - PAID/FULFILLING → REFUND_REQUESTED：买家申请退款，订单离开可履约状态，
+//     因此"发货/确认收货"不需要额外查询退款表就能被状态机挡住；
+//   - REFUND_REQUESTED → REFUNDED：商家同意，退款成功，订单终态；
+//   - REFUND_REQUESTED → PAID/FULFILLING：商家拒绝，退回到 refund_from_status
+//     （由 refund_repository 从订单行读取，不接受调用方指定）。
+//
+// 这张图描述"状态之间能不能到达"，不描述"哪条命令能触发"。
+// 履约命令必须使用下面的 fulfillmentTransitions：否则 REFUND_REQUESTED → FULFILLING
+// 这条"拒绝退款时退回原状态"的边会被商家发货命令误用，绕过退款裁决。
+// （真实 PG 集成测试曾捕获该缺陷，数据库 CHECK 约束在应用层放行时兜住了它。）
 var orderStatusTransitions = map[Status]map[Status]struct{}{
 	StatusPendingPayment: {
 		StatusPaid: {}, StatusCanceled: {}, StatusExpired: {},
 	},
+	StatusPaid: {
+		StatusFulfilling: {}, StatusRefundRequested: {},
+	},
+	StatusFulfilling: {
+		StatusCompleted: {}, StatusRefundRequested: {},
+	},
+	StatusRefundRequested: {
+		StatusRefunded: {}, StatusPaid: {}, StatusFulfilling: {},
+	},
+}
+
+// fulfillmentTransitions 是"商家发货 / 买家确认收货"两条命令允许的迁移。
+// 与完整状态图分开，是为了让"状态可达性"和"命令权限"各自显式：
+// 退款申请把订单移出 PAID/FULFILLING 后，履约命令在这里没有出口。
+var fulfillmentTransitions = map[Status]map[Status]struct{}{
 	StatusPaid:       {StatusFulfilling: {}},
 	StatusFulfilling: {StatusCompleted: {}},
 }
 
 func canOrderTransition(from, to Status) bool {
 	_, ok := orderStatusTransitions[from][to]
+	return ok
+}
+
+func canFulfillTransition(from, to Status) bool {
+	_, ok := fulfillmentTransitions[from][to]
 	return ok
 }
 
@@ -189,10 +224,12 @@ func (s *Service) Cancel(ctx context.Context, params CancelParams) (*CancelResul
 }
 
 type Service struct {
-	repo       Repository
-	now        func() time.Time
-	newOrderNo func() (string, error)
-	paymentTTL time.Duration
+	repo        Repository
+	refunds     RefundRepository
+	now         func() time.Time
+	newOrderNo  func() (string, error)
+	newRefundNo func() (string, error)
+	paymentTTL  time.Duration
 }
 
 func NewService(repo Repository) *Service {
@@ -203,9 +240,14 @@ func NewService(repo Repository) *Service {
 			id, err := uuid.NewV7()
 			return id.String(), err
 		},
-		paymentTTL: defaultPaymentTTL,
+		newRefundNo: defaultRefundNo,
+		paymentTTL:  defaultPaymentTTL,
 	}
 }
+
+// SetRefundRepository 由装配方注入售后仓储（与 video/feed 的 SetProductCardReader 同一风格）。
+// 未注入时售后命令返回明确错误，而不是 nil 解引用 panic。
+func (s *Service) SetRefundRepository(repo RefundRepository) { s.refunds = repo }
 
 func (s *Service) Create(ctx context.Context, params CreateParams) (*CreateResult, error) {
 	params.IdempotencyKey = strings.TrimSpace(params.IdempotencyKey)

@@ -5,6 +5,7 @@ import { useRouter } from '@tanstack/react-router'
 import { client } from '../../api/client'
 import { useAuthStore } from '../../lib/auth-store'
 import { apiErrorMessage } from '../../lib/api-error'
+import { safeRedirectPath } from '../../lib/safe-redirect'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Card, CardTitle, Field } from '../../components/ui/card'
@@ -37,9 +38,11 @@ export function LoginForm({ redirect }: { redirect?: string }) {
       return
     }
     setAuth(res.data)
-    // 回跳来源页（点赞/关注/受保护页触发登录时）；否则回首页
-    if (redirect?.startsWith('/')) {
-      router.history.push(redirect)
+    // 回跳来源页（点赞/关注/受保护页触发登录时）；否则回首页。
+    // redirect 来自 URL query，必须过同源校验（`//evil.com` 这类协议相对 URL 会跳去外站）
+    const target = safeRedirectPath(redirect)
+    if (target) {
+      router.history.push(target)
     } else {
       router.navigate({ to: '/' })
     }

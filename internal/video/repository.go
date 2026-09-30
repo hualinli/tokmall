@@ -188,8 +188,23 @@ func translatePlayEventError(err error) error {
 // ConsumeTicket 原子核销 ticket：未被使用、未过期、属于该用户时标记 used，
 // 并返回视频需要的元信息（如上传文件大小由 storage 提供，这里只核销）。
 func (r *GormRepository) ConsumeTicket(ctx context.Context, userID int64, objectKey string) error {
-	res := r.db.WithContext(ctx).
-		Model(&UploadTicket{}).
+	return consumeTicket(r.db.WithContext(ctx), userID, objectKey)
+}
+
+// ConsumeTicketAndCreateVideo 把凭证核销与视频落库放进同一事务。
+// 分开写的话，"核销成功 + 建行失败"会把用户刚上传成功的对象变成孤儿：
+// 凭证已烧掉、视频不存在，用户只能重新申请上传 URL 再传一次。
+func (r *GormRepository) ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := consumeTicket(tx, userID, objectKey); err != nil {
+			return err
+		}
+		return tx.Select("author_id", "title", "object_key", "cover_key", "duration_seconds", "status").Create(v).Error
+	})
+}
+
+func consumeTicket(db *gorm.DB, userID int64, objectKey string) error {
+	res := db.Model(&UploadTicket{}).
 		Where("user_id = ? AND object_key = ? AND used = false AND expires_at > now()", userID, objectKey).
 		Update("used", true)
 	if res.Error != nil {

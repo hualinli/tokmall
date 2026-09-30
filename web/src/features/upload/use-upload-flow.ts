@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { client } from '../../api/client'
-import { apiErrorMessage } from '../../lib/api-error'
+import { apiRequestError } from '../../lib/api-error'
 import type { components } from '../../api/types'
 
 export const VIDEO_MAX_SIZE = 536_870_912 // 512MB（契约上限）
@@ -115,7 +115,7 @@ async function uploadImage(
   const ticket = await client.POST('/api/v1/videos/upload-url', {
     body: { filename: file.name, file_size: file.size, content_type: contentType },
   })
-  if (ticket.error) throw new Error(apiErrorMessage(ticket.error))
+  if (ticket.error) throw apiRequestError(ticket)
   if (!ticket.data) throw new Error('未获取到封面上传地址')
   await putWithProgress(ticket.data.upload_url, file, contentType, () => {})
   return ticket.data.object_key
@@ -183,7 +183,7 @@ export function useUploadFlow() {
       const ticket = await client.POST('/api/v1/videos/upload-url', {
         body: { filename: file.name, file_size: file.size, content_type: contentType },
       })
-      if (ticket.error) throw new Error(apiErrorMessage(ticket.error))
+      if (ticket.error) throw apiRequestError(ticket)
       if (!ticket.data) throw new Error('未获取到上传地址')
 
       // 5. PUT（带进度）
@@ -203,7 +203,7 @@ export function useUploadFlow() {
       })
       if (created.error) {
         // 400：票证过期/伪造/文件与票证不符
-        throw new Error(apiErrorMessage(created.error, '上传凭证校验失败，请重新上传'))
+        throw apiRequestError(created, '上传凭证校验失败，请重新上传')
       }
       if (!created.data) throw new Error('创建视频记录失败')
 

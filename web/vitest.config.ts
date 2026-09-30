@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
-    // 目前单测为零（前端靠 Playwright e2e），无文件时保持绿
+    // 纯函数单测（formatCount / 缓存更新器 / safe-redirect / 重试策略），无文件时也保持绿
     passWithNoTests: true,
   },
 })

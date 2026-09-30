@@ -23,10 +23,12 @@ services:
       - minio-data:/data
 
   redis:
-    image: redis:7
+    # 本机 6379 已被其他项目占用，映射到 6380；镜像固定小版本避免隐式升级。
+    image: redis:7.4-alpine
     container_name: tokmall-redis
     ports:
       - "6380:6379"
+    command: ["redis-server", "--appendonly", "yes"]
 
 volumes:
   minio-data:

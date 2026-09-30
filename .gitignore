@@ -1,6 +1,9 @@
 # 构建产物 / 本地工具
 bin/
 .pnpm-store/
+# 受限沙箱内 Go 工具链的本地缓存（默认缓存在 workspace 外不可写）
+.gopath/
+.gocache/
 .reasonix/
 reasonix.toml
 
@@ -11,3 +14,6 @@ logs/
 # 系统文件
 .DS_Store
 .alma-snapshots
+
+# 沙箱内 docker CLI 的匿名配置（绕过失效的凭证助手）
+.docker-anon/

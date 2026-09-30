@@ -138,3 +138,36 @@ func TestAccountKeyExtractor_NoIdentifierFallsBack(t *testing.T) {
 		&ut.Body{Body: bytes.NewBufferString(`{"refresh_token":"x"}`), Len: 21},
 		ut.Header{Key: "Content-Type", Value: "application/json"})
 }
+
+// TestAccountKeyExtractor_NormalizesIdentifier 锁住审计结论：
+// 限流 key 必须与业务查询用同一套规范化，否则给登录名加个空格就能换一个
+// 限流桶，10/min/账号的防爆破形同虚设。
+func TestAccountKeyExtractor_NormalizesIdentifier(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "trim and lowercase", body: `{"identifier":"  Alice@Example.COM "}`, want: "alice@example.com"},
+		{name: "username lowercase", body: `{"username":"Bob123"}`, want: "bob123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
+			r.POST("/login", func(ctx context.Context, c *app.RequestContext) {
+				_, id, ok := AccountKeyExtractor(c)
+				require.True(t, ok)
+				require.Equal(t, tc.want, id)
+				c.String(http.StatusOK, "ok")
+			})
+			ut.PerformRequest(r, http.MethodPost, "/login",
+				&ut.Body{Body: bytes.NewBufferString(tc.body), Len: len(tc.body)},
+				ut.Header{Key: "Content-Type", Value: "application/json"})
+		})
+	}
+}
+
+func TestNormalizeAccountKey(t *testing.T) {
+	require.Equal(t, "alice", NormalizeAccountKey("  ALICE "))
+	require.Empty(t, NormalizeAccountKey("   "))
+}

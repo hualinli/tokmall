@@ -19,6 +19,13 @@ var (
 const (
 	defaultListLimit = 20
 	maxListLimit     = 50
+	// 文本字段上限：这些列是 TEXT，没有数据库级长度约束。不设上限时
+	// 单行可达数 MB，列表响应、Feed 商品卡与 Redis 缓存都会被放大，
+	// 属于"用合法请求做资源放大"的滥用面。
+	maxProductTitleLength       = 200
+	maxProductDescriptionLength = 2000
+	maxSKUSpecLength            = 200
+	maxKeywordLength            = 64
 )
 
 // Repository 由 service 定义，GormRepository 隐式满足。
@@ -117,10 +124,13 @@ func (s *Service) CreateProduct(ctx context.Context, p CreateProductParams) (*Pr
 		return nil, ErrInvalidParam
 	}
 	title := strings.TrimSpace(p.Title)
-	if title == "" {
+	if title == "" || len(title) > maxProductTitleLength {
 		return nil, ErrInvalidParam
 	}
 	description := strings.TrimSpace(p.Description)
+	if len(description) > maxProductDescriptionLength {
+		return nil, ErrInvalidParam
+	}
 	coverKey := strings.TrimSpace(p.CoverKey)
 	if coverKey != "" {
 		// 防伪造：封面必须来自 /videos/upload-url 发放的图片凭证（与头像同一防伪哲学），
@@ -144,7 +154,13 @@ func (s *Service) CreateProduct(ctx context.Context, p CreateProductParams) (*Pr
 	return s.toProductItem(ctx, &product)
 }
 
-// GetProduct 查询详情。DELETED 对外 404；只返回在售（ACTIVE）的 SKU——
+// GetProduct 查询详情。可见性规则（与 feed 商品卡一致）：
+//   - DELETED：对外 404，不留任何痕迹；
+//   - OFF_SALE：详情仍可见（历史订单、Feed 卡片、分享链接都会引用它），
+//     但**不返回 SKU**——下架商品不能给出可购买的外观，否则用户点了下单
+//     才在服务端拿到 404，属于"界面承诺了做不到的事"；
+//   - ON_SALE：返回 ACTIVE 的 SKU。
+//
 // 可见性决策收敛在 service，详情面向所有调用方（含匿名用户）。
 func (s *Service) GetProduct(ctx context.Context, id int64) (*ProductDetail, error) {
 	if id <= 0 {
@@ -160,6 +176,9 @@ func (s *Service) GetProduct(ctx context.Context, id int64) (*ProductDetail, err
 	item, err := s.toProductItem(ctx, product)
 	if err != nil {
 		return nil, err
+	}
+	if product.Status != ProductStatusOnSale {
+		return &ProductDetail{ProductItem: *item, SKUs: []SKUItem{}}, nil
 	}
 	skus, err := s.repo.ListSKUsByProduct(ctx, id)
 	if err != nil {
@@ -187,9 +206,13 @@ func (s *Service) AddSKU(ctx context.Context, p AddSKUParams) (*SKUItem, error) 
 	if product.MerchantID != p.MerchantID || product.Status == ProductStatusDeleted {
 		return nil, ErrNotFound
 	}
+	spec := strings.TrimSpace(p.Spec)
+	if len(spec) > maxSKUSpecLength {
+		return nil, ErrInvalidParam
+	}
 	sku := &SKU{
 		ProductID: p.ProductID,
-		Spec:      strings.TrimSpace(p.Spec),
+		Spec:      spec,
 		Price:     p.PriceCents,
 		Status:    SKUStatusActive,
 	}
@@ -299,10 +322,15 @@ func (s *Service) ListProducts(ctx context.Context, p ProductListParams) (*Produ
 
 // SearchProducts 用户侧搜索：只暴露 ON_SALE 商品，不区分商家。
 // OFF_SALE/DELETED 对用户不可见——可见性判断收敛在 service，repo 只管过滤。
+// 关键字长度设上限：LIKE '%kw%' 无法走索引，超长关键字只会放大扫描成本。
 func (s *Service) SearchProducts(ctx context.Context, keyword string, beforeID int64, limit int) (*ProductListResult, error) {
+	keyword = strings.TrimSpace(keyword)
+	if len(keyword) > maxKeywordLength {
+		return nil, ErrInvalidParam
+	}
 	filter := ProductFilter{
 		Status:  ProductStatusOnSale,
-		Keyword: strings.TrimSpace(keyword),
+		Keyword: keyword,
 	}
 	return s.listByFilter(ctx, filter, beforeID, limit)
 }

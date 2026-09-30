@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { Heart } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { client } from '../../api/client'
-import { apiErrorMessage } from '../../lib/api-error'
+import { apiRequestError } from '../../lib/api-error'
 import { useAuthStore } from '../../lib/auth-store'
 import { useLikedStore } from '../../lib/liked-store'
 import { formatCount } from '../feed/format'
@@ -48,12 +48,13 @@ export function LikeButton({ videoId, count, liked = false, size = 'sm', classNa
       const res = like
         ? await client.POST('/api/v1/videos/{id}/like', { params: { path: { id: videoId } } })
         : await client.DELETE('/api/v1/videos/{id}/like', { params: { path: { id: videoId } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     onMutate: (like) => {
       const delta = like ? 1 : -1
       setUi((p) => ({ count: Math.max(0, p.count + delta), liked: like }))
+      // 前缀匹配：feed 与 ['user-videos', userId] 两类无限列表都会更新（见 like-cache）
       updateFeedResultCount(queryClient, ['feed'], videoId, delta)
       updateFeedResultCount(queryClient, ['user-videos'], videoId, delta)
       updateDetailLike(queryClient, videoId, delta, like)
@@ -90,10 +91,12 @@ export function LikeButton({ videoId, count, liked = false, size = 'sm', classNa
     mutation.mutate(!ui.liked)
   }
 
+  // aria-pressed：点赞数展示是 formatCount 缩写（1.0k），状态判定不能依赖文本
   return (
     <button
       type="button"
       data-testid="like-button"
+      data-video-id={videoId}
       onClick={handleClick}
       disabled={mutation.isPending}
       className={cn(
@@ -101,6 +104,7 @@ export function LikeButton({ videoId, count, liked = false, size = 'sm', classNa
         className,
       )}
       aria-label={ui.liked ? '取消点赞' : '点赞'}
+      aria-pressed={ui.liked}
     >
       <Heart
         className={cn(

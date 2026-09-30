@@ -23,9 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 
-# generated from internal/api/openapi.yaml + routes/
-src/api/types.ts
-src/routeTree.gen.ts
+# 生成物：src/api/types.ts（openapi-typescript）与 src/routeTree.gen.ts（tsr generate）。
+# 二者都随仓库提交：tsconfig.app.json 的 include=["src"] 会编译 routeTree.gen.ts，
+# 各个路由/组件也都 import api/types.ts —— 不入库的话，新克隆的仓库 tsc 必挂。
+# 它们由 `pnpm gen`（typecheck/build 前置）重新生成，改了契约/路由要一起提交。
 
 # playwright artifacts
 playwright-report/

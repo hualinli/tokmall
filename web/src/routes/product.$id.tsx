@@ -1,12 +1,13 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { z } from 'zod'
 import { client } from '../api/client'
 import { Button } from '../components/ui/button'
-import { apiErrorMessage } from '../lib/api-error'
+import { apiRequestError } from '../lib/api-error'
 import { useAuthStore } from '../lib/auth-store'
+import { randomUUID } from '../lib/uuid'
 
 const searchSchema = z.object({
   video_id: z.number().int().positive().optional(),
@@ -23,17 +24,20 @@ function ProductPage() {
   const { video_id, author_id } = Route.useSearch()
   const productId = Number(id)
   const accessToken = useAuthStore((s) => s.accessToken)
+  const queryClient = useQueryClient()
   const [skuId, setSkuId] = useState(0)
   const [quantity, setQuantity] = useState(1)
   const [paidOrder, setPaidOrder] = useState<number | null>(null)
-  const orderKey = useRef({ key: crypto.randomUUID(), fingerprint: '' })
+  // 幂等键懒初始化：渲染期不能调用 crypto（非安全上下文的 http 页面没有 randomUUID，
+  // 会把整页渲染打断），等到真正下单时再生成
+  const orderKey = useRef<{ key: string; fingerprint: string } | null>(null)
   const paymentIdentity = useRef<{ orderId: number; paymentNo: string; tradeNo: string } | null>(null)
 
   const product = useQuery({
     queryKey: ['product', id],
     queryFn: async () => {
       const res = await client.GET('/api/v1/products/{id}', { params: { path: { id: productId } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
   })
@@ -42,23 +46,26 @@ function ProductPage() {
     mutationFn: async () => {
       const effectiveSKU = skuId || product.data?.skus[0]?.sku_id || 0
       const fingerprint = `${productId}:${effectiveSKU}:${quantity}:${video_id ?? 0}:${author_id ?? 0}`
-      if (orderKey.current.fingerprint !== fingerprint) {
-        orderKey.current = { key: crypto.randomUUID(), fingerprint }
+      // 懒初始化 + 幂等键只在「下单参数变了」时重生成（重试同一单不产生第二笔订单）
+      let current = orderKey.current
+      if (!current) current = orderKey.current = { key: randomUUID(), fingerprint: '' }
+      if (current.fingerprint !== fingerprint) {
+        current = orderKey.current = { key: randomUUID(), fingerprint }
         paymentIdentity.current = null
       }
       const source = video_id && author_id
         ? { video_id, author_id, product_id: productId }
         : undefined
       const created = await client.POST('/api/v1/orders', {
-        body: { sku_id: effectiveSKU, quantity, idempotency_key: orderKey.current.key, source },
+        body: { sku_id: effectiveSKU, quantity, idempotency_key: current.key, source },
       })
-      if (created.error) throw new Error(apiErrorMessage(created.error))
+      if (created.error) throw apiRequestError(created)
       const order = created.data
       if (!paymentIdentity.current || paymentIdentity.current.orderId !== order.order_id) {
         paymentIdentity.current = {
           orderId: order.order_id,
-          paymentNo: crypto.randomUUID(),
-          tradeNo: crypto.randomUUID(),
+          paymentNo: randomUUID(),
+          tradeNo: randomUUID(),
         }
       }
       const payment = await client.POST('/api/v1/orders/{id}/pay', {
@@ -69,12 +76,15 @@ function ProductPage() {
           amount: order.total_amount,
         },
       })
-      if (payment.error) throw new Error(apiErrorMessage(payment.error))
+      if (payment.error) throw apiRequestError(payment)
       return order.order_id
     },
     onSuccess: (orderId) => {
       setPaidOrder(orderId)
       toast.success('模拟支付成功')
+      // 新订单/新支付事实：订单列表与作者成交统计都过期了
+      queryClient.invalidateQueries({ queryKey: ['orders'] })
+      queryClient.invalidateQueries({ queryKey: ['author-sales'] })
     },
     onError: (error) => toast.error(error.message),
   })

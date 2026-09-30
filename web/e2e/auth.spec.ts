@@ -39,4 +39,30 @@ test.describe('认证', () => {
     await page.goto('/me')
     await expect(page).toHaveURL(/\/login/)
   })
+
+  /**
+   * 多标签页登录态同步（auth-sync 的 BroadcastChannel 通道）：
+   * 第一个标签页全程不刷新，只有跨标签广播能让它掉登录态——
+   * 否则 refresh token 轮换会让后刷新的标签页被踢下线。
+   */
+  test('另一标签页登出后本页同步掉线', async ({ page, context }) => {
+    const { username, password } = await registerUser(page)
+    await loginViaUi(page, username, password)
+
+    const other = await context.newPage()
+    await other.goto('/')
+    await expect(other.locator('header')).toContainText(username)
+
+    await other.getByRole('button', { name: '退出' }).click()
+    await expect(other.locator('header')).toContainText('登录')
+    // page 没有重新加载、也没有重新 hydrate：状态只能来自广播
+    await expect(page.locator('header')).toContainText('登录')
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => JSON.parse(localStorage.getItem('tokmall-auth') ?? '{}').state?.accessToken,
+        ),
+      )
+      .toBeNull()
+  })
 })

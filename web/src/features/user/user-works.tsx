@@ -2,7 +2,7 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Play } from 'lucide-react'
 import { client } from '../../api/client'
-import { apiErrorMessage } from '../../lib/api-error'
+import { apiRequestError } from '../../lib/api-error'
 import { useSentinel } from '../feed/use-sentinel'
 import { formatCount, formatDuration } from '../feed/format'
 
@@ -22,7 +22,7 @@ export function UserWorks({ userId }: { userId: number }) {
           query: { limit: WORKS_PAGE_SIZE, cursor: pageParam },
         },
       })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     getNextPageParam: (last) => last.next_cursor || undefined,

@@ -33,6 +33,9 @@ type Repository interface {
 	UpdateVideoStatus(ctx context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error
 	CreateTicket(ctx context.Context, t *UploadTicket) error
 	ConsumeTicket(ctx context.Context, userID int64, objectKey string) error
+	// ConsumeTicketAndCreateVideo 让"凭证核销 + 视频落库"成为一个事务，
+	// 避免核销成功但建行失败把用户已上传的对象变成孤儿。
+	ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video) error
 	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 	IsLiked(ctx context.Context, userID, videoID int64) (bool, error)
@@ -233,15 +236,8 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 	if size == 0 {
 		return nil, ErrUploadURLExpired
 	}
-	err = s.repo.ConsumeTicket(ctx, userID, p.ObjectKey)
-	if err != nil {
-		if errors.Is(err, ErrTicketInvalid) {
-			return nil, ErrUploadURLExpired
-		}
-		slog.Error("consume ticket failed", "user_id", userID, "err", err)
-		return nil, fmt.Errorf("consume ticket: %w", err)
-	}
-	// 封面同样必须"真上传 + 有票证"（防伪造引用他人文件）
+	// 封面同样必须"真上传 + 有票证"（防伪造引用他人文件）。它在视频事务之前
+	// 核销：封面核销失败时视频还没落库，不需要回滚，也不会烧掉视频凭证。
 	if p.CoverKey != nil {
 		if err := s.ValidateImage(ctx, userID, *p.CoverKey); err != nil {
 			if errors.Is(err, ErrUploadURLExpired) {
@@ -258,7 +254,10 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 		DurationSeconds: p.DurationSeconds,
 		Status:          StatusPendingReview,
 	}
-	if err := s.repo.CreateVideo(ctx, v); err != nil {
+	if err := s.repo.ConsumeTicketAndCreateVideo(ctx, userID, p.ObjectKey, v); err != nil {
+		if errors.Is(err, ErrTicketInvalid) {
+			return nil, ErrUploadURLExpired
+		}
 		slog.Error("create video failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("create video: %w", err)
 	}
@@ -312,8 +311,11 @@ func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
 	if err != nil {
 		return err
 	}
+	// 非作者与不存在的视频返回同一错误：视频 ID 是自增序列，403 会变成
+	// "这个 ID 存在但不是你的"的存在性预言机，与本项目"不可见一律 404"的
+	// 约定冲突（发布、详情、点赞都已经是 404）。
 	if v.AuthorID != userID {
-		return ErrForbidden
+		return ErrNotFound
 	}
 	if !canTransition(v.Status, StatusDeleted) {
 		return ErrStatusConflict
@@ -455,7 +457,7 @@ func (s *Service) Play(ctx context.Context, userID, videoID int64, eventID strin
 		SessionID:        normalizePlayEventSessionID(sessionID),
 		PlayedAt:         played,
 		PlayedAtProvided: playedAtProvided,
-		TraceID:          traceID,
+		TraceID:          normalizeTraceID(traceID),
 	}
 	result, err := s.repo.CreatePlayEvent(ctx, event)
 	if err != nil {
@@ -508,11 +510,40 @@ func normalizePlayEventTime(t time.Time) time.Time {
 	return t.UTC().Truncate(time.Microsecond)
 }
 
+// maxSessionIDLength / maxTraceIDLength 与 play_events 的列宽一致。
+// 超长值必须在入口挡住：否则 PostgreSQL 会报 22001（value too long），
+// 被兜底成 500——任意登录用户都能用一次超长 session_id 触发服务端错误。
+const (
+	maxSessionIDLength = 128
+	maxTraceIDLength   = 64
+)
+
 func normalizePlayEventSessionID(sessionID *string) *string {
 	if sessionID == nil || *sessionID == "" {
 		return nil
 	}
-	return sessionID
+	trimmed := strings.TrimSpace(*sessionID)
+	if trimmed == "" || len(trimmed) > maxSessionIDLength {
+		return nil
+	}
+	return &trimmed
+}
+
+// normalizeTraceID 只接受服务端 requestid 中间件生成的值（UUID v7，36 字符）。
+// 客户端自带的 X-Request-ID 会被 requestid 原样回显，如果直接写库，
+// 既能让观测字段被伪造，也能用超长值把请求打成 500。
+func normalizeTraceID(traceID *string) *string {
+	if traceID == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*traceID)
+	if trimmed == "" || len(trimmed) > maxTraceIDLength {
+		return nil
+	}
+	if _, err := uuid.Parse(trimmed); err != nil {
+		return nil
+	}
+	return &trimmed
 }
 
 // samePlayEventBusinessFact 比较会影响播放统计语义的字段。trace_id 是每次

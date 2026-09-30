@@ -38,6 +38,7 @@ paths:
     get:
       tags: [health]
       summary: 存活探针
+      security: []
       responses:
         "200":
           description: 进程存活
@@ -49,6 +50,7 @@ paths:
     get:
       tags: [health]
       summary: 就绪探针（检查 DB 连通）
+      security: []
       responses:
         "200":
           description: 依赖就绪
@@ -73,6 +75,7 @@ paths:
     post:
       tags: [auth]
       summary: 注册（注册即签发 token 对）
+      security: []
       requestBody:
         required: true
         content:
@@ -90,10 +93,13 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "409":
           $ref: "#/components/responses/DuplicateAction"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/auth/login:
     post:
       tags: [auth]
       summary: 登录（identifier 接受 email 或 username）
+      security: []
       requestBody:
         required: true
         content:
@@ -109,10 +115,13 @@ paths:
                 $ref: "#/components/schemas/AuthResult"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/auth/refresh:
     post:
       tags: [auth]
       summary: 刷新 token（rotation：旧 refresh token 被拉黑）
+      security: []
       requestBody:
         required: true
         content:
@@ -130,10 +139,13 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/auth/logout:
     post:
       tags: [auth]
       summary: 登出（幂等：无效/过期 token 视为已登出）
+      security: []
       requestBody:
         required: true
         content:
@@ -145,6 +157,8 @@ paths:
           description: 登出成功
         "400":
           $ref: "#/components/responses/InvalidArgument"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/feed:
     get:
@@ -163,6 +177,8 @@ paths:
                 $ref: "#/components/schemas/FeedResult"
         "400":
           $ref: "#/components/responses/InvalidArgument"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/feed/following:
     get:
@@ -391,9 +407,14 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/VideoNotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
     delete:
       tags: [videos]
       summary: 删除视频（软删 + 删除 MinIO 对象，旧 URL 立即失效）
+      description: >-
+        非作者与视频不存在统一返回 404：视频 ID 是自增序列，403 会变成
+        "该 ID 存在但不属于你"的存在性预言机，与不可见资源一律 404 的约定冲突。
       parameters:
         - $ref: "#/components/parameters/VideoID"
       responses:
@@ -403,8 +424,6 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/VideoNotFound"
         "409":
@@ -553,7 +572,7 @@ paths:
       tags: [products]
       summary: 我的商品列表（商家管理视图，不含已删除；id 倒序 + before_id 游标）
       parameters:
-        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/ProductLimit"
         - $ref: "#/components/parameters/BeforeID"
         - name: status
           in: query
@@ -584,7 +603,7 @@ paths:
       summary: 商品搜索（用户侧，仅 ON_SALE；匿名可用）
       security: []
       parameters:
-        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/ProductLimit"
         - $ref: "#/components/parameters/BeforeID"
         - name: keyword
           in: query
@@ -600,6 +619,8 @@ paths:
                 $ref: "#/components/schemas/ProductListResult"
         "400":
           $ref: "#/components/responses/InvalidArgument"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api/v1/products/{id}:
     get:
@@ -1033,6 +1054,8 @@ paths:
       description: >-
         仅用于学习环境的受保护用户命令，不是支付渠道回调。订单必须属于当前 Bearer Token 用户；
         不存在与非本人订单统一返回 404。真实渠道回调必须使用独立入口，并先校验渠道签名、时间窗和防重放。
+        超过 expires_at 的订单会被拒绝（409 ORDER_EXPIRED），支付事务同时完成关单与库存回补
+        （lazy expiry），不依赖超时关单 Worker 的调度窗口。
       parameters:
         - $ref: "#/components/parameters/OrderID"
       requestBody:
@@ -1055,7 +1078,9 @@ paths:
         "404":
           $ref: "#/components/responses/OrderNotFound"
         "409":
-          description: 金额不一致、订单状态冲突，或支付标识被不同事实占用
+          description: >-
+            金额不一致（PAYMENT_AMOUNT_MISMATCH）、订单状态冲突（ORDER_STATE_CONFLICT）、
+            订单已超时（ORDER_EXPIRED），或支付标识被不同事实占用（IDEMPOTENCY_CONFLICT）
           content:
             application/json:
               schema:
@@ -1085,6 +1110,148 @@ paths:
           $ref: "#/components/responses/OrderNotFound"
         "409":
           description: 订单已支付、已过期或处于其他不可取消状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/orders/{id}/refund:
+    post:
+      tags: [orders]
+      summary: 买家对已支付订单申请全额退款
+      description: >-
+        仅订单本人可申请。可申请状态为 PAID（已付款未发货）与 FULFILLING（已发货待收货）；
+        PENDING_PAYMENT/COMPLETED/CANCELED/EXPIRED 返回 409。同一订单同时最多存在一笔
+        未决或已成功的退款：重复申请返回原退款单（replayed=true），不产生第二笔售后事实。
+        退款金额由订单事实决定，不接受客户端提交。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestRefundRequest"
+      responses:
+        "201":
+          description: 申请成功或相同售后事实的幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 当前订单状态不允许退款
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [orders]
+      summary: 买家查看订单最新一笔退款
+      description: 订单不存在或不属于当前用户统一返回 404；该订单没有退款单时同样返回 404。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 退款单详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/RefundNotFound"
+
+  /api/v1/merchant/orders/{id}/refund:
+    get:
+      tags: [orders]
+      summary: 商家查看订单最新一笔退款
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 退款单详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/RefundNotFound"
+
+  /api/v1/merchant/orders/{id}/refund/approve:
+    post:
+      tags: [orders]
+      summary: 商家同意退款
+      description: >-
+        仅订单所属商家可裁决。同意后订单进入终态 REFUNDED：未发货（PAID）退款回补库存并写
+        ORDER_REFUNDED 流水；已发货（FULFILLING）退款不回补库存。重复同意返回原结果（replayed=true）。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRefundRequest"
+      responses:
+        "200":
+          description: 退款成功或幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 没有待裁决的退款，或退款已完成无法再次裁决
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/merchant/orders/{id}/refund/reject:
+    post:
+      tags: [orders]
+      summary: 商家拒绝退款
+      description: >-
+        拒绝后订单退回申请前状态（PAID 可继续发货，FULFILLING 可继续确认收货），
+        退款单进入终态 REJECTED，买家可以再次申请。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRefundRequest"
+      responses:
+        "200":
+          description: 拒绝成功或幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 没有待裁决的退款，或退款已完成无法再次裁决
           content:
             application/json:
               schema:
@@ -1128,11 +1295,21 @@ components:
     Limit:
       name: limit
       in: query
-      description: 每页条数，默认 20，合法范围 1-100
+      description: 每页条数，默认 20，合法范围 1-100（feed 与视频列表；超出返回 400）
       schema:
         type: integer
         minimum: 1
         maximum: 100
+    ProductLimit:
+      name: limit
+      in: query
+      description: >-
+        每页条数，默认 20，合法范围 1-50。商品列表在 service 层按 50 截断且不报错，
+        因此契约上限必须写 50（写 100 会让客户端以为能拿到 100 条）。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
     Cursor:
       name: cursor
       in: query
@@ -1214,6 +1391,14 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: >-
+        触发限流（默认开启）：auth 档 10 次/分钟/IP、read 档 200 次/10 秒/IP、
+        write 档 100 次/10 秒/用户。Redis 故障时 fail-open 放行，不会返回 429。
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Unauthenticated:
       description: 未认证或凭证无效（token 缺失/过期/黑名单）
       content:
@@ -1256,6 +1441,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    RefundNotFound:
+      description: 订单没有退款单，或订单不属于当前买家/商家（统一 404，不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     OrderStateConflict:
       description: 订单不处于允许的状态
       content:
@@ -1289,7 +1480,8 @@ components:
               type: string
               enum: [INVALID_ARGUMENT, INVALID_CURSOR, VIDEO_NOT_FOUND, VIDEO_NOT_PUBLISHED,
                 USER_NOT_FOUND, PRODUCT_NOT_FOUND, INSUFFICIENT_STOCK, ORDER_NOT_FOUND,
-                ORDER_STATE_CONFLICT, PAYMENT_AMOUNT_MISMATCH, UNAUTHENTICATED,
+                ORDER_STATE_CONFLICT, ORDER_EXPIRED, REFUND_NOT_FOUND, REFUND_NOT_ALLOWED,
+                REFUND_ALREADY_DECIDED, PAYMENT_AMOUNT_MISMATCH, UNAUTHENTICATED,
                 FORBIDDEN, RATE_LIMITED, DUPLICATE_ACTION, IDEMPOTENCY_CONFLICT,
                 VIDEO_PRODUCT_LIMIT, VIDEO_PRODUCT_NOT_FOUND,
                 UPLOAD_URL_EXPIRED, INTERNAL,
@@ -1976,7 +2168,7 @@ components:
           format: int64
         status:
           type: string
-          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED]
+          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED, REFUND_REQUESTED, REFUNDED]
         total_amount:
           type: integer
           format: int64
@@ -2089,6 +2281,62 @@ components:
         canceled_at:
           type: string
           format: date-time
+        replayed:
+          type: boolean
+    RequestRefundRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          maxLength: 200
+          description: 买家填写的退款原因；金额与身份由订单事实和认证上下文决定
+    DecideRefundRequest:
+      type: object
+      properties:
+        remark:
+          type: string
+          maxLength: 200
+          description: 商家裁决备注，可选
+    RefundDetail:
+      type: object
+      required: [refund_id, refund_no, order_id, order_no, amount, reason, status, restore_stock, requested_at, order_status, replayed]
+      properties:
+        refund_id:
+          type: integer
+          format: int64
+        refund_no:
+          type: string
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [REQUESTED, REJECTED, SUCCEEDED]
+        restore_stock:
+          type: boolean
+          description: 退款成功时是否回补库存；申请时订单为 PAID 才为 true
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: string
+          format: date-time
+        decision_remark:
+          type: string
+        refunded_at:
+          type: string
+          format: date-time
+        order_status:
+          type: string
+          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED, REFUND_REQUESTED, REFUNDED]
         replayed:
           type: boolean
     OrderItem:

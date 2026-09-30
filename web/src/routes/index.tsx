@@ -27,6 +27,8 @@ type FeedTab = 'recommend' | 'following'
 function FeedPage() {
   const [tab, setTab] = useState<FeedTab>('recommend')
   const accessToken = useAuthStore((s) => s.accessToken)
+  // 路由内跳转必须走 router：window.location.assign 会整页刷新，丢掉 SPA 状态与 React Query 缓存
+  const navigate = useNavigate()
 
   return (
     <div className="relative h-[calc(100dvh-3.5rem)]">
@@ -59,7 +61,7 @@ function FeedPage() {
       ) : (
         <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-500">
           <p className="text-lg">登录后查看关注动态</p>
-          <Button variant="outline" onClick={() => window.location.assign('/login')}>
+          <Button variant="outline" onClick={() => navigate({ to: '/login' })}>
             去登录
           </Button>
         </div>

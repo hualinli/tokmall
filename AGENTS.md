@@ -16,9 +16,11 @@ TokMall：基于 CloudWeGo 技术栈（Hertz）的短视频 Feed + 商城一体�
 - 对象存储：MinIO（预签名 PUT 直传 + 预签名 GET 播放 URL）
 - 认证：JWT（access 15min / refresh 7d，HS256）+ Redis 黑名单（refresh 可撤销，ADR-011）
 - 缓存：Redis（6380），cache-aside + singleflight + double-check（ADR-012）
-- 观测：slog 结构化日志（stdout + lumberjack 轮转文件）、Prometheus /metrics（独立 9091 端口）
-- 契约：OpenAPI 3（internal/api/openapi.yaml，route-sync 测试防路由漂移）
-- 测试：后端 testify（require）+ hertz ut 内存链路 + 显式开启的真实 PG 集成测试；前端以 Playwright e2e 为主（Vitest 已配置，当前无单测文件）
+- 观测：slog 结构化日志（stdout + lumberjack 轮转文件）、Prometheus /metrics（默认只监听 127.0.0.1:9091）
+- 事件：Transactional Outbox + Redis Streams（消费组/XACK/XAUTOCLAIM）+ DLQ 与人工重放（ADR-014）
+- 对账：六项可执行检查 + 对账驱动重放 + 读模型重建（cmd/reconcile）
+- 契约：OpenAPI 3（internal/api/openapi.yaml）：route-sync（路由级）+ spec_test（schema ↔ DTO 字段/类型/必填）
+- 测试：后端 testify（require）+ hertz ut 内存链路 + 显式开启的真实 PG/Redis 集成测试（internal/testsupport 提供隔离 schema）；前端 Playwright e2e + Vitest 单测
 - 前端：React + TanStack Router + React Query + Vite + Tailwind（web/，openapi-typescript 生成类型）
 
 ## 目录结构
@@ -41,13 +43,24 @@ internal/
   feed/                  Feed 游标分页（HMAC 签名游标）+ 首页缓存 + 关注 Feed（拉模式）+ Ranker 排序 + read model
   product/               商品/SKU、上下架与商品列表/详情
   inventory/             库存与幂等流水
-  order/                 单 SKU 订单、模拟支付、取消/超时关单、买卖双方查询与履约状态机
+  order/                 单 SKU 订单、模拟支付、取消/超时关单(lazy expiry)、买卖双方查询与履约、
+                         售后全额退款（申请/裁决/库存回补策略，状态机含 REFUND_REQUESTED/REFUNDED）
   promotion/             已发布视频挂本人在售商品
-  attribution/           作者已支付订单数、购买人数与 GMV
-  observability/         db_pool / feed_cache 指标 collector
-migrations/             版本化 SQL 迁移（000001～000014；商域从 000007 起，履约时间戳在 000014）
+  attribution/           作者成交统计（实时聚合）+ 事件驱动的作者日销投影（projector.go）
+  outbox/                Transactional Outbox：仓储(SKIP LOCKED+租约)、中继(退避/DLQ)、
+                         传输抽象(Redis Streams)、消费组消费者(回执+投影同事务)、重放
+  reconcile/             六项对账检查 + 对账驱动重放 + 读模型重建
+  testsupport/           跨模块集成测试脚手架（隔离 schema + 迁移 + Redis 开关）
+  observability/         db_pool / feed_cache / outbox / reconcile 指标 collector
+migrations/             版本化 SQL 迁移（000001～000018；商域从 000007 起，退款在 000015，
+                         不变量加固在 000016，Outbox 与投影在 000017，users.status 在 000018）
+cmd/outboxctl/          Outbox 运维命令：status / dlq list / dlq requeue / drain
+cmd/reconcile/          对账命令：--json / --replay / --rebuild，退出码 0=一致 1=有差异 2=失败
+cmd/loadgen/            压测客户端：commerce（注册→建品→补库存→下单→支付）与 feed 两个场景
 web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
-scripts/                seed_perf.sql 百万数据造数（压测用）
+scripts/                seed_perf.sql 造数、drill_commerce_loop.sh 端到端演练、
+                        drill_failure_modes.sh 故障演练
+.github/workflows/      CI：后端/契约/前端/e2e 四个 job
 docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR + 性能基线（git 跟踪）
 ```
 
@@ -70,12 +83,18 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
 | Commerce 阶段 1～3 | ✅ | 商品/SKU/库存、下单/支付/关单、视频挂商品与卡片、作者成交统计；`ab9d062` |
 | Commerce v1 订单收尾 | ✅ | 买家/商家订单查询、模拟发货与确认完成、前端订单页；`b5349ea` |
+| 安全与正确性收口 | ✅ | 审计 P0/P1 共 10 项：限流绕过(XFF)、超时订单可支付(lazy expiry)、并发 refresh 双签发(Claim)、singleflight 故障放大、输入校验与错误语义；`ab8c92a` |
+| 售后（退款）闭环 | ✅ | 全额退款申请/裁决、未发货回补/已发货不回补、部分唯一索引、履约与退款状态图分离；`6e1dd1e` |
+| Transactional Outbox | ✅ | 事件同事务、至少一次投递、幂等消费、DLQ 重放、作者日销投影、`outboxctl`；`ff288ac` |
+| 对账与可证明性 | ✅ | 六项检查、对账驱动重放、读模型重建、契约 schema 校验、CI 四 job、压测与故障演练；`1436fd5` `68192ea` |
 | M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
-| Outbox + Kafka | 未开始 | 准生产级实施计划的阶段 4；与已搁置的播放事件异步化是不同决策 |
+| Outbox + Kafka | 部分 | Outbox 与可靠投递已完成（默认 Redis Streams，见 ADR-014）；Kafka 仅保留为可替换的 Publisher 实现，未接入（与已搁置的播放事件异步化是不同决策） |
 
 > 注：M4+ 三行不在原里程碑规划内（按"出现可测量问题再引入技术"的原则，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
-> M5/M6/M8/M7 为方向 1 + 治理交付。Commerce v1 的当前范围与实现见
+> M5/M6/M8/M7 为方向 1 + 治理交付。本轮（2026-10）新增的四行来自一次完整审计 +
+> 售后/Outbox/对账演进，面试讲解入口是 `docs/interview-walkthrough.md`。
+> Commerce v1 的当前范围与实现见
 > `docs/commerce-business.md`、`docs/commerce-v1-technical-design.md`；后续工程化方向见
 > `docs/interview-production-readiness-plan.md`。文档入口和历史设计说明见 `docs/README.md`。
 
@@ -89,6 +108,15 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 - **分层数据流**：handler(HTTP DTO) → service(领域 Params) → repo(model)，model 永不出 service（PasswordHash json:"-" 级别防护）。
 - **列名/状态类型化**：`column`/`Status` 自定义类型防拼错；到 GORM 边界必须显式转 string。
 - **连接池**：max_open=25, max_idle=5, lifetime=1h（M3 基线接近饱和；M4 缓存命中后 db_pool_wait_count 归零，瓶颈已移到 Redis 读，见 performance-baseline.md）
+- **售后状态**：订单主状态含 REFUND_REQUESTED/REFUNDED，`refund_from_status` 记录申请前状态；
+  履约命令走独立的 `fulfillmentTransitions`（**不得**复用完整状态图，否则能绕过退款裁决发货）
+- **退款库存策略**：未发货退款回补（`ORDER_REFUNDED` 流水，(sku_id,reason,order_no) 唯一）；已发货退款不回补
+- **事件**：业务事实与 outbox_events 必须同一事务写入（`outbox.Enqueue*` 只接受 tx 句柄）；
+  投递至少一次；消费侧"回执 + 投影"同事务，**没有回执 ⟺ 投影没生效**（对账重放依据）
+- **对账口径**：毛额（order_count/units/gmv）记曾支付过的全部订单，退款按发生日单独归集；
+  改投影口径必须同步改 reconcile 检查，否则对账本身成为噪音源
+- **签名密钥**：JWT_SECRET / FEED_CURSOR_SECRET 在所有环境必填（无内置默认值）；
+  TRUSTED_PROXIES 默认空 = 不信任任何转发头（不要配 0.0.0.0/0）
 
 ## 常用命令
 
@@ -100,10 +128,21 @@ tail -f logs/api.log logs/web.log           # 看日志
 go test ./...                               # 后端全量测试
 cd web && pnpm test:e2e                     # Playwright e2e（需后端 + 依赖容器在跑）
 curl localhost:9091/metrics                 # 指标
-wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # 压测（基线见 docs/performance-baseline.md）
+make drill                                  # 端到端业务闭环演练（curl+psql 全程可见）
+make drill-failure                          # 故障演练（Redis 停机 / 事件丢失 / 对账重放）
+make reconcile [REPLAY=1] [REBUILD=1]       # 对账 / 重放 / 重建读模型
+make outbox-status                          # Outbox 积压与死信
+make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关闭）
+wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # Feed 压测（基线见 docs/performance-baseline.md）
 ```
 
 ## 环境陷阱
+
+- **docker compose 报 `error getting credentials`**：本机 Docker 凭证助手异常。
+  用匿名配置绕过：`DOCKER_CONFIG=$PWD/.docker-anon docker compose up -d`，
+  且 `.docker-anon/config.json` 需要 `{"cliPluginsExtraDirs": ["/Users/<you>/.docker/cli-plugins"]}`
+  才能找到 compose 插件（该目录已 gitignore）。Redis 镜像固定为 `redis:7.4-alpine`
+  （本地已有该 tag，避免触发拉取）。
 
 - PostgreSQL 标准端口 5432（docker-compose 已映射）；本机 6379 被 go-oj 占用，Redis 走 6380（compose 已映射）。
   **不要额外创建 5433 之类的 PG 实例**：早前文档里的 5433 e2e 实例是 5432 被临时占用时手动 `docker run` 的权宜之物，非标准配置，已清理。
@@ -113,6 +152,12 @@ wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # 压测（基线见 docs
 - macOS 无 `setsid`，后台起服务用 `nohup ... & disown`，且 E2E 尽量在同一命令内完成。
 - `docs/`、`AGENTS.md` 由 git 跟踪（早前误写为 gitignore，已修正）：AGENTS.md 是项目记忆、
   docs/ 收录当前实现、演进计划、ADR 和压测基线；入口见 `docs/README.md`。
+- **受限沙箱（如 AI 代理）里跑 Go**：默认 GOCACHE/GOMODCACHE 在 workspace 外不可写，
+  需要 `GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache GOSUMDB=off`
+  （`.gopath/`、`.gocache/` 已 gitignore）。
+- 重启后端后如果 `/metrics` 无响应：端口可能仍在 TIME_WAIT。服务启动后会主动探测
+  `/metrics` 并在不可达时打 ERROR（`metrics endpoint is not reachable`），
+  看到这条日志说明观测性已降级，重启即可。
 
 ## 工作方式（Mentor 模式）
 

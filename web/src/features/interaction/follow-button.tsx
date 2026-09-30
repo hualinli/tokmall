@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { cn } from '../../lib/cn'
 import { client } from '../../api/client'
-import { apiErrorMessage } from '../../lib/api-error'
+import { apiRequestError } from '../../lib/api-error'
 import { useAuthStore } from '../../lib/auth-store'
-import type { components } from '../../api/types'
 import { Button } from '../../components/ui/button'
-
-type PublicProfile = components['schemas']['PublicProfile']
+import { updateFollowCache } from './follow-cache'
 
 interface FollowButtonProps {
   userId: number
@@ -36,21 +34,24 @@ export function FollowButton({ userId, following, isMe, size = 'md', className }
       const res = follow
         ? await client.POST('/api/v1/users/{id}/follow', { params: { path: { id: userId } } })
         : await client.DELETE('/api/v1/users/{id}/follow', { params: { path: { id: userId } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     onMutate: (follow) => {
       setUi(follow)
-      updateProfileCache(queryClient, userId, follow)
+      updateFollowCache(queryClient, userId, follow)
       return { prev: following }
     },
     onError: (_err, _follow, context) => {
       setUi(context?.prev ?? following)
-      updateProfileCache(queryClient, userId, context?.prev ?? following)
+      updateFollowCache(queryClient, userId, context?.prev ?? following)
       toast.error('操作失败，请重试')
     },
-    onSuccess: (data) => {
-      if (data) updateProfileCache(queryClient, userId, data.following === true)
+    onSuccess: (data, follow) => {
+      // 以服务端返回为准做纠偏；更新器按值幂等，与 onMutate 重复应用也不会重复计数
+      updateFollowCache(queryClient, userId, data?.following ?? follow)
+      // 关注关系变了 → 关注 Feed 内容失效（下次进入重新拉）
+      queryClient.invalidateQueries({ queryKey: ['following-feed'] })
     },
   })
 
@@ -82,16 +83,4 @@ export function FollowButton({ userId, following, isMe, size = 'md', className }
       {ui ? '已关注' : '+ 关注'}
     </Button>
   )
-}
-
-/** 同步用户资料缓存（is_following + 关注数 ±1） */
-function updateProfileCache(qc: QueryClient, userId: number, following: boolean) {
-  qc.setQueryData<PublicProfile>(['user', String(userId)], (old) => {
-    if (!old) return old
-    return {
-      ...old,
-      is_following: following,
-      following_count: Math.max(0, old.following_count + (following ? 1 : -1)),
-    }
-  })
 }

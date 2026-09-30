@@ -3,8 +3,11 @@ package product
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type fakeProductRepository struct {
@@ -16,6 +19,7 @@ type fakeProductRepository struct {
 	findSKUByIDFn         func(context.Context, int64) (*SKU, error)
 	updateSKUStatusFn     func(context.Context, int64, SKUStatus, SKUStatus) error
 	listSKUsByProductFn   func(context.Context, int64) ([]SKU, error)
+	listSKUsCalls         int
 	createProductCalls    int
 	findProductByIDCalls  int
 	updateStatusCalls     int
@@ -124,6 +128,7 @@ func (f *fakeProductRepository) UpdateSKUStatus(ctx context.Context, id int64, f
 }
 
 func (f *fakeProductRepository) ListSKUsByProduct(ctx context.Context, productID int64) ([]SKU, error) {
+	f.listSKUsCalls++
 	if f.listSKUsByProductFn == nil {
 		return nil, nil
 	}
@@ -728,4 +733,55 @@ func TestServiceSearchProducts(t *testing.T) {
 			t.Fatalf("error = %v, want ErrInvalidParam", err)
 		}
 	})
+}
+
+// TestEscapeLikePattern 锁住"参数化只防注入、不防通配符"这一点：
+// keyword=% 必须变成字面量，而不是命中全部商品。
+func TestEscapeLikePattern(t *testing.T) {
+	cases := map[string]string{
+		"keyboard":   `keyboard`,
+		"%":          `\%`,
+		"_":          `\_`,
+		"a%b_c":      `a\%b\_c`,
+		`back\slash`: `back\\slash`,
+	}
+	for input, want := range cases {
+		require.Equal(t, want, escapeLikePattern(input), "input=%q", input)
+	}
+}
+
+// TestAddSKURejectsOverlongSpec 与 CreateProduct 的长度上限同源：
+// TEXT 列没有数据库级约束，必须在服务端挡住资源放大。
+func TestAddSKURejectsOverlongSpec(t *testing.T) {
+	repo := &fakeProductRepository{findProductByIDFn: func(context.Context, int64) (*Product, error) {
+		return &Product{ID: 1, MerchantID: 5, Title: "t", Status: ProductStatusOnSale}, nil
+	}}
+	svc := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+	_, err := svc.AddSKU(context.Background(), AddSKUParams{
+		ProductID: 1, MerchantID: 5, PriceCents: 100, Spec: strings.Repeat("s", maxSKUSpecLength+1),
+	})
+	require.ErrorIs(t, err, ErrInvalidParam)
+}
+
+// TestGetProductHidesSKUsWhenOffSale：下架商品详情仍可见（历史引用/分享链接），
+// 但不能给出"可购买"的外观——SKU 列表必须为空，否则用户点了下单才在服务端拿到 404。
+func TestGetProductHidesSKUsWhenOffSale(t *testing.T) {
+	for _, status := range []ProductStatus{ProductStatusOffSale} {
+		repo := &fakeProductRepository{
+			findProductByIDFn: func(context.Context, int64) (*Product, error) {
+				return &Product{ID: 7, MerchantID: 5, Title: "t", Status: status}, nil
+			},
+			listSKUsByProductFn: func(context.Context, int64) ([]SKU, error) {
+				return []SKU{{ID: 1, ProductID: 7, Price: 100, Status: SKUStatusActive}}, nil
+			},
+		}
+		svc := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
+
+		detail, err := svc.GetProduct(context.Background(), 7)
+		require.NoError(t, err)
+		require.Equal(t, status, detail.Status)
+		require.Empty(t, detail.SKUs, "下架商品不得返回可售 SKU")
+		require.Zero(t, repo.listSKUsCalls, "下架商品不应查询 SKU")
+	}
 }

@@ -3,7 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { toast } from 'sonner'
 import { Play, Send, Trash2 } from 'lucide-react'
 import { client } from '../api/client'
-import { apiErrorMessage } from '../lib/api-error'
+import { apiRequestError } from '../lib/api-error'
 import { StatusBadge } from '../features/video/status-badge'
 import { formatRelativeTime } from '../features/feed/format'
 import { Button } from '../components/ui/button'
@@ -31,7 +31,7 @@ function MePage() {
       const res = await client.GET('/api/v1/authors/{id}/sales', {
         params: { path: { id: me!.user_id } },
       })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
   })
@@ -40,7 +40,7 @@ function MePage() {
     queryKey: ['me'],
     queryFn: async () => {
       const res = await client.GET('/api/v1/me')
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
   })
@@ -52,7 +52,7 @@ function MePage() {
       const res = await client.GET('/api/v1/videos/me', {
         params: { query: { limit: 20, cursor: pageParam } },
       })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     getNextPageParam: (last) => last.next_cursor || undefined,
@@ -63,7 +63,7 @@ function MePage() {
       const res = await client.POST('/api/v1/videos/{id}/publish', {
         params: { path: { id: videoId } },
       })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     onSuccess: () => {
@@ -77,7 +77,7 @@ function MePage() {
   const remove = useMutation({
     mutationFn: async (videoId: number) => {
       const res = await client.DELETE('/api/v1/videos/{id}', { params: { path: { id: videoId } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.response
     },
     onSuccess: () => {

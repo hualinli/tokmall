@@ -204,7 +204,9 @@ func (r *GormRepository) Transition(ctx context.Context, actorID, orderID int64,
 			result = &transitionRecord{Order: order, Replayed: true}
 			return nil
 		}
-		if !canOrderTransition(order.Status, to) {
+		// 履约命令走独立的迁移表：退款中/已退款的订单在这里没有出口，
+		// 不能借用"拒绝退款退回原状态"那条边绕过售后裁决。
+		if !canFulfillTransition(order.Status, to) {
 			return ErrOrderStateConflict
 		}
 		at = at.UTC()

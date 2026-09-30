@@ -6,6 +6,14 @@ import { defineConfig, devices } from '@playwright/test'
  *
  * 串行执行：上传测试会发布视频进公共 Feed，共享时间线状态。
  */
+
+/**
+ * 移动端视口（Feed 是整屏短视频 UI，用例里的坐标/滚动都按 390 宽写）。
+ * 必须放在 project 级 use：顶层 use.viewport 会被 project 的
+ * devices['Desktop Chrome']（viewport 1280x720）整体覆盖，等于没生效。
+ */
+const MOBILE_VIEWPORT = { width: 390, height: 844 }
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
@@ -15,10 +23,11 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://localhost:5173',
-    viewport: { width: 390, height: 844 },
     trace: 'retain-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: MOBILE_VIEWPORT } },
+  ],
   webServer: {
     command: 'pnpm dev',
     url: 'http://localhost:5173',

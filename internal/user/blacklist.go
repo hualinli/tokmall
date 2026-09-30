@@ -9,8 +9,13 @@ import (
 )
 
 // RefreshTokenBlacklist 消费侧接口：service 只依赖它，不感知 Redis。
+//
+// Claim 是旋转的原子原语：它同时承担"检查是否已用过"和"标记已用过"，
+// 返回 false 表示该 jti 已被别人抢占（重放或并发刷新）。
+// Block 只用于登出，不需要抢占语义。
 type RefreshTokenBlacklist interface {
 	Block(ctx context.Context, jti string, ttl time.Duration) error
+	Claim(ctx context.Context, jti string, ttl time.Duration) (bool, error)
 	IsBlocked(ctx context.Context, jti string) (bool, error)
 }
 
@@ -33,6 +38,16 @@ func (b *RedisRefreshTokenBlacklist) Block(ctx context.Context, jti string, ttl 
 		return fmt.Errorf("set refresh blacklist: %w", err)
 	}
 	return nil
+}
+
+// Claim 用 SETNX 抢占 refresh token 的一次性使用权。
+// 抢占失败（key 已存在）说明该 token 已被使用或已登出，调用方必须拒绝。
+func (b *RedisRefreshTokenBlacklist) Claim(ctx context.Context, jti string, ttl time.Duration) (bool, error) {
+	ok, err := b.client.SetNX(ctx, refreshBlacklistKey(jti), "1", ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("claim refresh token: %w", err)
+	}
+	return ok, nil
 }
 
 func (b *RedisRefreshTokenBlacklist) IsBlocked(ctx context.Context, jti string) (bool, error) {

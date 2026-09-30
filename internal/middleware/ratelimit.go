@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -37,6 +38,10 @@ type KeyExtractor func(c *app.RequestContext) (dimension, id string, ok bool)
 // AccountKeyExtractor 解析 auth 请求体中的账号标识（login: identifier；
 // register: email/username），作为限流 key。refresh/logout 无标识 → 回退 IP。
 // 注意：hertz 的 Body() 是 lazy 缓存，中间件读取后 handler 的 BindAndValidate 仍可读。
+//
+// 账号必须与业务层用同一套规范化（TrimSpace + 小写）：否则攻击者给登录名加一个
+// 前导空格就能拿到新的限流桶（业务查询会 TrimSpace 后照常命中同一账号），
+// 10/min/账号的防爆破形同虚设。
 func AccountKeyExtractor(c *app.RequestContext) (string, string, bool) {
 	var payload struct {
 		Identifier string `json:"identifier"`
@@ -48,11 +53,17 @@ func AccountKeyExtractor(c *app.RequestContext) (string, string, bool) {
 		return "", "", false
 	}
 	for _, account := range []string{payload.Identifier, payload.Email, payload.Username} {
-		if account != "" {
-			return "account", account, true
+		if normalized := NormalizeAccountKey(account); normalized != "" {
+			return "account", normalized, true
 		}
 	}
 	return "", "", false
+}
+
+// NormalizeAccountKey 是账号维度的唯一规范化实现：登录名/邮箱大小写不敏感、
+// 前后空白忽略。限流 key 与后续业务查询必须使用同一规则。
+func NormalizeAccountKey(account string) string {
+	return strings.ToLower(strings.TrimSpace(account))
 }
 
 // RateLimit 限流中间件。维度选择：

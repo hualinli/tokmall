@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +97,9 @@ func (f *fakeRepo) Create(ctx context.Context, u *User) error {
 	}
 	u.UserID = f.nextID
 	f.nextID++
+	// 真实数据库有 status 默认值 ACTIVE；fake 必须补上，否则新建用户
+	// 会被"停用账号"规则挡在登录之外（这正是该规则生效的证明）。
+	u.Status = UserStatusActive
 	f.usersByID[u.UserID] = u
 	f.usersByEmail[u.Email] = u
 	f.usersByUsername[u.Username] = u
@@ -156,9 +161,17 @@ func (f *fakeTokenManager) Verify(tokenString string) (*token.Claims, error) {
 
 // fakeBlacklist 内存版黑名单：记录 jti，两个方法可独立注入故障。
 type fakeBlacklist struct {
+	mu        sync.Mutex
 	blocked   map[string]bool
 	blockErr  error
+	claimErr  error
 	existsErr error
+}
+
+func (f *fakeBlacklist) isBlocked(jti string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.blocked[jti]
 }
 
 func newFakeBlacklist() *fakeBlacklist {
@@ -169,15 +182,32 @@ func (f *fakeBlacklist) Block(_ context.Context, jti string, _ time.Duration) er
 	if f.blockErr != nil {
 		return f.blockErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.blocked[jti] = true
 	return nil
+}
+
+// Claim 复刻 Redis SETNX 语义：第一次抢占成功，之后失败。
+func (f *fakeBlacklist) Claim(_ context.Context, jti string, _ time.Duration) (bool, error) {
+	if f.claimErr != nil {
+		return false, f.claimErr
+	}
+	// 复刻 Redis SETNX 的原子性：并发抢占只能有一个成功。
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blocked[jti] {
+		return false, nil
+	}
+	f.blocked[jti] = true
+	return true, nil
 }
 
 func (f *fakeBlacklist) IsBlocked(_ context.Context, jti string) (bool, error) {
 	if f.existsErr != nil {
 		return false, f.existsErr
 	}
-	return f.blocked[jti], nil
+	return f.isBlocked(jti), nil
 }
 
 func newTestService(repo *fakeRepo, tokens *fakeTokenManager) *Service {
@@ -219,7 +249,7 @@ func refreshClaims(jti string) *token.Claims {
 
 // seedUser 给 fakeRepo 预置 id=1 的用户（Refresh 会做存在性检查）。
 func seedUser(repo *fakeRepo) {
-	repo.usersByID[1] = &User{UserID: 1, Email: "a@b.com", Username: "alice12", Bio: ""}
+	repo.usersByID[1] = &User{UserID: 1, Email: "a@b.com", Username: "alice12", Bio: "", Status: UserStatusActive}
 }
 
 // TestRegisterLoginFullFlow 全流程模板：注册 -> 用户名登录 -> 邮箱登录
@@ -505,10 +535,10 @@ func TestLogout(t *testing.T) {
 	})
 }
 
-func TestRefreshBlacklistFailure(t *testing.T) {
+func TestRefreshClaimFailure(t *testing.T) {
 	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
 	bl := newFakeBlacklist()
-	bl.existsErr = errors.New("redis down")
+	bl.claimErr = errors.New("redis down")
 	repo := newFakeRepo()
 	seedUser(repo)
 	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
@@ -518,20 +548,55 @@ func TestRefreshBlacklistFailure(t *testing.T) {
 	require.NotErrorIs(t, err, ErrInvalidCredentials)
 }
 
-// TestRefreshBlockFailure 缺口1：IsBlocked 通过但 Block 失败——错误必须
-// 上抛（不是 401），且旧 token 不得被标记为已拉黑。
-func TestRefreshBlockFailure(t *testing.T) {
+// TestRefreshRotationConsumesOldToken：旋转是"抢占"而不是"先查后写"。
+// 抢占成功后同一个 refresh token 再也不能换出新 token 对——这正是并发重放
+// 无法双签发的原因（旧实现先 IsBlocked 再 Block，两次并发都能通过检查）。
+func TestRefreshRotationConsumesOldToken(t *testing.T) {
 	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
 	bl := newFakeBlacklist()
-	bl.blockErr = errors.New("redis down")
 	repo := newFakeRepo()
 	seedUser(repo)
 	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
 
 	_, err := svc.Refresh(context.Background(), "refresh-token")
-	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrInvalidCredentials)
-	require.False(t, bl.blocked["jti-1"])
+	require.NoError(t, err)
+	require.True(t, bl.isBlocked("jti-1"), "旧 jti 必须被抢占")
+
+	_, err = svc.Refresh(context.Background(), "refresh-token")
+	require.ErrorIs(t, err, ErrInvalidCredentials, "已消费的 refresh token 不能再次使用")
+}
+
+// TestRefreshConcurrentReplayIssuesOneTokenPair 模拟同一 refresh token 的并发重放：
+// 只有一次抢占成功，其余全部 401。
+func TestRefreshConcurrentReplayIssuesOneTokenPair(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	bl := newFakeBlacklist()
+	repo := newFakeRepo()
+	seedUser(repo)
+	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
+
+	const workers = 16
+	var success, rejected atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := svc.Refresh(context.Background(), "refresh-token")
+			switch {
+			case err == nil:
+				success.Add(1)
+			case errors.Is(err, ErrInvalidCredentials):
+				rejected.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	require.Equal(t, int64(1), success.Load(), "并发刷新只能有一个成功")
+	require.Equal(t, int64(workers-1), rejected.Load())
 }
 
 // TestRefreshSignFailureAfterRotation 缺口2：旧 jti 拉黑后签发失败——
@@ -582,7 +647,7 @@ func TestRefreshRepoFailure(t *testing.T) {
 func TestGetProfile(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		repo := newFakeRepo()
-		repo.usersByID[7] = &User{UserID: 7, Email: "p@b.com", Username: "prof7", Bio: "hi"}
+		repo.usersByID[7] = &User{UserID: 7, Email: "p@b.com", Username: "prof7", Bio: "hi", Status: UserStatusActive}
 		svc := NewService(repo, &fakeTokenManager{}, newFakeBlacklist(), &fakeAvatar{}, &fakeImageValidator{})
 
 		p, err := svc.GetProfile(context.Background(), 7)
@@ -670,8 +735,8 @@ func TestGetPublicProfile(t *testing.T) {
 func TestGetPublicProfileFollowCountsExcludeDeletedUsers(t *testing.T) {
 	repo := newFakeRepo()
 	seedUser(repo)
-	repo.usersByID[2] = &User{UserID: 2, Username: "bob123"}
-	repo.usersByID[3] = &User{UserID: 3, Username: "carol1"}
+	repo.usersByID[2] = &User{UserID: 2, Username: "bob123", Status: UserStatusActive}
+	repo.usersByID[3] = &User{UserID: 3, Username: "carol1", Status: UserStatusActive}
 	repo.usersByID[3].DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
 	repo.follows["1-2"] = true // active followee，计入 following
 	repo.follows["1-3"] = true // deleted followee，不计入 following
@@ -718,4 +783,85 @@ func TestUpdateMe(t *testing.T) {
 
 func ptr(s string) *string {
 	return &s
+}
+
+// TestNormalizeEmail 锁住审计结论：邮箱必须"能写进列宽"且大小写归一，
+// 否则要么 400 变 500，要么同一邮箱注册出两个账号。
+func TestNormalizeEmail(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   string
+		want  string
+		valid bool
+	}{
+		{name: "lowercases", raw: "Alice@Example.COM", want: "alice@example.com", valid: true},
+		{name: "trims", raw: "  bob@example.com  ", want: "bob@example.com", valid: true},
+		{name: "display name", raw: "Carol <carol@example.com>", want: "carol@example.com", valid: true},
+		{name: "no at", raw: "not-an-email", valid: false},
+		{name: "empty", raw: "", valid: false},
+		{name: "too long", raw: strings.Repeat("a", 300) + "@example.com", valid: false},
+		{name: "two at", raw: "a@b@example.com", valid: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NormalizeEmail(tc.raw)
+			if !tc.valid {
+				require.ErrorIs(t, err, ErrInvalidParam)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+			require.LessOrEqual(t, len(got), maxEmailLength)
+		})
+	}
+}
+
+// TestRegisterNormalizesEmailAndLoginIsCaseInsensitive：注册用大写、登录用小写
+// 必须命中同一账号（旧实现会 401）。
+func TestRegisterNormalizesEmailAndLoginIsCaseInsensitive(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(repo, &fakeTokenManager{})
+
+	registered, err := svc.Register(context.Background(), RegisterParams{
+		Email: "Alice@Example.COM", Username: "alice12", Password: "password123",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "alice@example.com", registered.User.Email)
+
+	_, err = svc.Login(context.Background(), LoginParams{
+		EmailOrUsername: "  ALICE@example.com ", Password: "password123",
+	})
+	require.NoError(t, err)
+}
+
+// TestLoginRejectsDisabledAccount：运维停用必须立刻生效，且对外语义与
+// "口令错误"完全一致（不泄露账号状态）。
+func TestLoginRejectsDisabledAccount(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(repo, &fakeTokenManager{})
+	_, err := svc.Register(context.Background(), RegisterParams{
+		Email: "d@example.com", Username: "disabled1", Password: "password123",
+	})
+	require.NoError(t, err)
+	repo.usersByID[1].Status = UserStatusDisabled
+
+	_, err = svc.Login(context.Background(), LoginParams{EmailOrUsername: "d@example.com", Password: "password123"})
+	require.ErrorIs(t, err, ErrInvalidCredentials)
+
+	_, err = svc.GetProfile(context.Background(), 1)
+	require.ErrorIs(t, err, ErrNotFound, "停用账号的公开资料按不存在处理")
+}
+
+// TestRefreshRejectsDisabledAccount：停用后旧 refresh token 不能再续签。
+func TestRefreshRejectsDisabledAccount(t *testing.T) {
+	tm := &fakeTokenManager{verifyRes: refreshClaims("jti-1")}
+	bl := newFakeBlacklist()
+	repo := newFakeRepo()
+	seedUser(repo)
+	repo.usersByID[1].Status = UserStatusDisabled
+	svc := NewService(repo, tm, bl, &fakeAvatar{}, &fakeImageValidator{})
+
+	_, err := svc.Refresh(context.Background(), "refresh-token")
+	require.ErrorIs(t, err, ErrInvalidCredentials)
+	require.False(t, bl.isBlocked("jti-1"), "被拒绝的刷新不应消费 token，重新启用后仍可用")
 }

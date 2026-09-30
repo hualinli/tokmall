@@ -1,4 +1,11 @@
 import { test, expect } from '@playwright/test'
+import { seedPublishedVideos } from './utils'
+
+// 造 12 条可播放视频（页大小 10 → 必然有第二页），
+// 让分页与"滚动切换播放"用例不再依赖开发库里的历史数据。
+test.beforeAll(async ({ request }) => {
+  await seedPublishedVideos(request, 12)
+})
 
 test.describe('Feed', () => {
   test('首屏静音自动播放', async ({ page }) => {
@@ -28,17 +35,21 @@ test.describe('Feed', () => {
     const scrollBox = page.locator('div.snap-y') // feed 滚动容器（窗口化后 scrollHeight 仍随翻页增长）
     const initialScrollHeight = await scrollBox.evaluate((el) => el.scrollHeight)
     await page.mouse.move(195, 500)
-    for (let i = 0; i < 14; i++) {
-      await page.mouse.wheel(0, 860)
-      await page.waitForTimeout(150)
-    }
-    // 翻页生效：内容总高度增长（占位撑住，scrollHeight = 屏数 × 屏高）
+    // 边滚边等「高度增长」这一条件，而不是固定滚 14 次 + sleep：
+    // 固定等待在后端慢/快时都会假失败（判据应该是翻页真的发生了）。
     await expect
-      .poll(() => scrollBox.evaluate((el) => el.scrollHeight))
+      .poll(
+        async () => {
+          await page.mouse.wheel(0, 860)
+          return scrollBox.evaluate((el) => el.scrollHeight)
+        },
+        { timeout: 20_000, intervals: [250] },
+      )
       .toBeGreaterThan(initialScrollHeight)
     // 窗口化生效：DOM 内 video 恒为窗口大小（当前屏 ± 1 屏 = 最多 3 张真卡片），不随翻页膨胀
     expect(await page.locator('video').count()).toBeLessThanOrEqual(3)
-    expect(new URL(page.url()).searchParams.get('cursor')).toBeTruthy()
+    // cursor 由 effect 在数据到达后写入 URL，同样用 poll 等
+    await expect.poll(() => new URL(page.url()).searchParams.get('cursor')).toBeTruthy()
   })
 
   test('feed 卡片展示作者与点赞数', async ({ page }) => {

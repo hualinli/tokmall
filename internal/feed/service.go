@@ -13,6 +13,10 @@ import (
 const (
 	defaultLimit = 20
 	maxLimit     = 100
+	// singleflightTimeout 是 singleflight 执行体的独立超时：它不继承首个
+	// 请求的取消信号（避免 leader 断连把等待者一起拖垮），但也不能无限期
+	// 占用——Redis/PG 挂住时必须有上界。
+	singleflightTimeout = 3 * time.Second
 )
 
 var (
@@ -261,17 +265,22 @@ func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*Feed
 	} else if cached != nil {
 		return cached, nil
 	}
+	// 执行体绑定到独立上下文：singleflight 会把同一个结果（含错误）广播给
+	// 所有等待者，如果闭包直接用"首个请求"的 ctx，leader 断连/超时就会把
+	// 失败扩散成整批请求 500——缓存击穿保护反而变成故障放大器。
+	loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), singleflightTimeout)
+	defer cancel()
 	v, err, _ := s.group.Do(followingCacheKey(viewerID, version), func() (any, error) {
 		// double-check：singleflight 只合并时间上重叠的调用，等待期间可能已回填。
-		cached, err := s.followingCache.Get(ctx, viewerID, version)
+		cached, err := s.followingCache.Get(loadCtx, viewerID, version)
 		if err == nil && cached != nil {
 			return cached, nil
 		}
-		result, err := s.loadFollowingPage(ctx, viewerID, nil, defaultLimit)
+		result, err := s.loadFollowingPage(loadCtx, viewerID, nil, defaultLimit)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.followingCache.Set(ctx, viewerID, version, result); err != nil {
+		if err := s.followingCache.Set(loadCtx, viewerID, version, result); err != nil {
 			slog.Warn("following feed cache set failed", "user_id", viewerID, "err", err)
 		}
 		return result, nil
@@ -397,19 +406,23 @@ func (s *Service) firstPage(ctx context.Context) (*FeedResult, error) {
 		return cached, nil
 	}
 	s.stats.Miss()
+	// 同 followingFirstPage：执行体不继承首个请求的取消信号，
+	// 否则 leader 断连会把同批等待者一起拖成 500。
+	loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), singleflightTimeout)
+	defer cancel()
 	v, err, _ := s.group.Do(firstPageKey, func() (any, error) {
 		// 二次检查（double-checked locking）：singleflight 只合并时间上
 		// 重叠的调用——等待期间若已有执行者回填缓存，直接命中，不再查库。
-		cached, err := s.cache.Get(ctx)
+		cached, err := s.cache.Get(loadCtx)
 		if err == nil && cached != nil {
 			return cached, nil
 		}
-		result, err := s.loadPage(ctx, nil, defaultLimit)
+		result, err := s.loadPage(loadCtx, nil, defaultLimit)
 		if err != nil {
 			return nil, err
 		}
 		// Set 失败只影响后续命中率，不能因此让本次请求失败。
-		if err := s.cache.Set(ctx, result); err != nil {
+		if err := s.cache.Set(loadCtx, result); err != nil {
 			slog.Warn("feed cache set failed", "err", err)
 		}
 		return result, nil
@@ -488,6 +501,13 @@ func (s *Service) assemble(ctx context.Context, videos []Video, limit int, rankV
 	}
 	if hasMore {
 		last := videos[len(videos)-1]
+		// 已发布视频必须有 published_at（000016 的 CHECK 约束兜底）。
+		// 这里仍然显式判断：约束只保护未来的写入，历史脏数据不应该
+		// 变成翻页时的空指针 panic（recovery 会把它变成 500）。
+		if last.PublishedAt == nil {
+			slog.Error("published video missing published_at", "video_id", last.ID)
+			return nil, fmt.Errorf("feed invariant violated: video %d is published without published_at", last.ID)
+		}
 		next, err := s.cursor.Encode(Cursor{
 			PublishedAt: *last.PublishedAt,
 			VideoID:     last.ID,

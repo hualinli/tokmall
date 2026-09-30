@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -140,6 +141,10 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 
 func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecord, error) {
 	var result *paymentRecord
+	// 支付事务顺带关单时，不能直接 return ErrOrderExpired——事务闭包返回
+	// 错误会回滚，刚刚写下的关单与库存回补会被一起撤销。因此这里先在
+	// 事务内提交副作用并置位标记，提交后再把"业务失败"返回给调用方。
+	expiredDuringPay := false
 	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		var order Order
 		err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -165,6 +170,18 @@ func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecor
 		if !canOrderTransition(order.Status, StatusPaid) {
 			return ErrOrderStateConflict
 		}
+		// 过期判定必须在支付事务里自己做，不能只依赖超时关单 Worker：
+		// Worker 有吞吐上限、可能被关闭，而且它用 SKIP LOCKED 扫描——
+		// 正在被本事务锁住的行会被跳过，于是"支付被拒 + Worker 也跳过"
+		// 会让订单停在 PENDING_PAYMENT。这里顺手把订单关掉（lazy expiry），
+		// 支付路径自己给出确定终态，Worker 只作为兜底扫描。
+		if !cmd.PaidAt.UTC().Before(order.ExpiresAt) {
+			if err := expireLockedOrder(db, order, cmd.PaidAt.UTC()); err != nil {
+				return err
+			}
+			expiredDuringPay = true
+			return nil
+		}
 		if order.TotalAmount != cmd.Amount {
 			return ErrPaymentAmountMismatch
 		}
@@ -179,7 +196,7 @@ func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecor
 			return translatePaymentWriteError(err)
 		}
 		updated := db.Model(&Order{}).
-			Where("id = ? AND status = ?", order.ID, string(StatusPendingPayment)).
+			Where("id = ? AND status = ? AND expires_at > ?", order.ID, string(StatusPendingPayment), paidAt).
 			Updates(map[string]any{
 				"status": string(StatusPaid), "paid_at": paidAt, "updated_at": paidAt,
 			})
@@ -189,6 +206,23 @@ func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecor
 		if updated.RowsAffected != 1 {
 			return ErrOrderStateConflict
 		}
+		// Transactional Outbox：事件与订单状态在同一事务提交。
+		// 提交成功但进程随后崩溃时，事件仍在表里，中继会补投；
+		// 反过来，事务回滚时事件也一起消失——不会出现"订单没支付成功但下游已收到通知"。
+		item, err := findOrderItem(db, order.ID)
+		if err != nil {
+			return err
+		}
+		if err := outbox.EnqueueOrderPaid(db, outbox.OrderPaidPayload{
+			OrderID: order.ID, OrderNo: order.OrderNo, UserID: order.UserID,
+			MerchantID: order.MerchantID, TotalAmount: int64(order.TotalAmount),
+			Units: item.Quantity, PaidAt: paidAt,
+			SourceAuthorID: order.SourceAuthorID, SourceVideoID: order.SourceVideoID,
+			SourceProductID: order.SourceProductID,
+		}); err != nil {
+			return err
+		}
+
 		order.Status = StatusPaid
 		order.PaidAt = &paidAt
 		order.UpdatedAt = paidAt
@@ -197,6 +231,10 @@ func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecor
 	})
 	if err != nil {
 		return nil, err
+	}
+	if expiredDuringPay {
+		// 关单副作用已提交，这里只负责把业务失败告诉调用方。
+		return nil, ErrOrderExpired
 	}
 	return result, nil
 }
@@ -280,40 +318,52 @@ func (r *GormRepository) ExpireNext(ctx context.Context, now time.Time) (bool, e
 		if err != nil {
 			return err
 		}
-
-		item, err := findOrderItem(db, order.ID)
-		if err != nil {
+		if err := expireLockedOrder(db, order, now.UTC()); err != nil {
 			return err
-		}
-		at := now.UTC()
-		updated := db.Model(&Order{}).
-			Where("id = ? AND status = ?", order.ID, string(StatusPendingPayment)).
-			Updates(map[string]any{"status": string(StatusExpired), "expired_at": at, "updated_at": at})
-		if updated.Error != nil {
-			return updated.Error
-		}
-		if updated.RowsAffected != 1 {
-			return ErrOrderStateConflict
-		}
-		stock := db.Model(&inventoryRow{}).Where("sku_id = ?", item.SKUID).
-			Updates(map[string]any{
-				"quantity": gorm.Expr("quantity + ?", item.Quantity),
-				"version":  gorm.Expr("version + 1"), "updated_at": at,
-			})
-		if stock.Error != nil {
-			return stock.Error
-		}
-		if stock.RowsAffected != 1 {
-			return errors.New("inventory invariant violated: order sku has no inventory row")
-		}
-		ledger := inventoryLedger{SKUID: item.SKUID, OrderID: order.ID, Change: int64(item.Quantity), Reason: "ORDER_EXPIRED", BizID: order.OrderNo}
-		if err := db.Create(&ledger).Error; err != nil {
-			return translateError(err)
 		}
 		expired = true
 		return nil
 	})
 	return expired, err
+}
+
+// expireLockedOrder 把已锁定的待支付订单关单：状态条件更新 + 库存回补 + 流水，
+// 三者在调用方的事务里一起提交或一起回滚。
+//
+// 它同时被两条路径复用：
+//   - 超时关单 Worker（批量兜底扫描）；
+//   - 支付路径发现订单已过期时的"顺手关单"（lazy expiry）。
+//
+// 两条路径都以 `WHERE status = 'PENDING_PAYMENT'` 为条件更新依据，
+// 因此谁先提交谁生效，另一方拿到 RowsAffected=0 并返回状态冲突，
+// 库存回补永远不会发生两次。
+func expireLockedOrder(db *gorm.DB, order Order, at time.Time) error {
+	item, err := findOrderItem(db, order.ID)
+	if err != nil {
+		return err
+	}
+	updated := db.Model(&Order{}).
+		Where("id = ? AND status = ?", order.ID, string(StatusPendingPayment)).
+		Updates(map[string]any{"status": string(StatusExpired), "expired_at": at, "updated_at": at})
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected != 1 {
+		return ErrOrderStateConflict
+	}
+	stock := db.Model(&inventoryRow{}).Where("sku_id = ?", item.SKUID).
+		Updates(map[string]any{
+			"quantity": gorm.Expr("quantity + ?", item.Quantity),
+			"version":  gorm.Expr("version + 1"), "updated_at": at,
+		})
+	if stock.Error != nil {
+		return stock.Error
+	}
+	if stock.RowsAffected != 1 {
+		return errors.New("inventory invariant violated: order sku has no inventory row")
+	}
+	ledger := inventoryLedger{SKUID: item.SKUID, OrderID: order.ID, Change: int64(item.Quantity), Reason: "ORDER_EXPIRED", BizID: order.OrderNo}
+	return translateError(db.Create(&ledger).Error)
 }
 
 func findPaymentByIdentity(db *gorm.DB, paymentNo, providerTradeNo string) (*Payment, error) {
