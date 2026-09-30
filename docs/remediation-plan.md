@@ -36,12 +36,17 @@
 | 阶段 | 状态 | 提交 | 验收证据 |
 |---|---|---|---|
 | A 安全与正确性收口 | ✅ 已完成 | `ab8c92a` | BE-P0-1、BE-P1-1..8 全部修复并回归；`go test ./...` 16 包全绿，6 个包 `-race` 通过；真实 PG 集成测试（含新增"晚到支付"用例）连续 3 次通过 |
-| B 前端与契约收口 | 🚧 进行中 | — | FE-*、CT-1/3/5 与 e2e 补强（见后续提交） |
+| B 前端与契约收口 | ✅ 已完成 | `241c6bf` | FE-P0-1、FE-P1-1..6 与 P2 批量修复；退款 UI；契约 6 个公开端点 `security: []`、429 文档化、`ProductLimit`(≤50)、错误码枚举补齐；**Playwright 16/16 全绿**（含新增退款主链路与多标签登出同步）、vitest 30/30、tsc/oxlint 0 error、生成物入库 + 漂移检查 |
 | C 售后/退款闭环 | ✅ 已完成 | `6e1dd1e` | `internal/order/refund_postgres_integration_test.go`：并发同意只执行一次、已发货不回补、拒绝后可再申请、两组竞争只有一个终态、越权无副作用；顺带修复"履约命令复用完整状态图"的缺陷 |
 | D Outbox + MQ | ✅ 已完成（Kafka 为可替换实现，未接入） | `ff288ac` | `internal/outbox/integration_test.go` 六场景全绿（恰好一次、重复不累加、退款冲减、回滚不留事件、DLQ 重放、崩溃认领）；`scripts/drill_commerce_loop.sh` 端到端跑通 |
 | E 对账与可证明性 | ✅ 已完成 | `1436fd5`、`68192ea` | 六项检查 + 对账驱动重放 + 读模型重建；契约 schema 级校验（变异验证）；CI 四 job；压测基线写入 `performance-baseline.md`；故障演练脚本可复现 |
 | F 文档与面试交付 | ✅ 已完成 | `73bfb45` | `docs/interview-walkthrough.md`（十个故事 + 问答速查 + 边界清单）、审核报告与修复计划、ADR-014～020、README 与 AGENTS 同步 |
 
+> 未关闭项：BE-P1-9（预签名 PUT 不绑定实际大小、无上传配额）**没有在代码里修**——
+> 它需要改用 `PresignedPostPolicy` 的 `content-length-range` 并引入用户配额，
+> 属于产品策略决定，已作为已知边界记录在 `docs/interview-walkthrough.md` §15，
+> 不以"看起来补了个校验"冒充修复。
+>
 > 阶段 A/E 的执行过程中额外发现并修复了两个**计划外**的真实缺陷：
 > 1. 履约命令复用完整状态图，导致"退款中订单可被发货"（被数据库 CHECK 约束拦下，
 >    集成测试暴露）——见 `6e1dd1e` 与 `docs/interview-notes/refund-state-machine-and-stock.md`；
