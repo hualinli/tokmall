@@ -12,10 +12,14 @@ WEB_LOG := logs/web.log
 # macOS 无 setsid，后台起服务依赖 bash 的 disown
 SHELL := /bin/bash
 
-.PHONY: build run fmt vet test tidy check clean dev dev-backend dev-web stop logs
+.PHONY: build run fmt vet test tidy check clean dev dev-backend dev-web stop logs \
+	drill drill-failure reconcile outbox-status loadgen
 
 build:
 	$(GO) build -o $(BIN) ./cmd/api
+	$(GO) build -o bin/outboxctl ./cmd/outboxctl
+	$(GO) build -o bin/reconcile ./cmd/reconcile
+	$(GO) build -o bin/loadgen ./cmd/loadgen
 
 run:
 	$(GO) run ./cmd/api
@@ -67,3 +71,23 @@ stop:
 
 logs:
 	tail -f $(API_LOG) $(WEB_LOG)
+
+# 端到端业务闭环演练（内容 → 商品 → 下单 → 支付 → 事件 → 投影 → 退款）
+drill: build
+	@bash scripts/drill_commerce_loop.sh
+
+# 故障演练（Redis 停机、中继停摆、事件丢失与对账重放）
+drill-failure: build
+	@bash scripts/drill_failure_modes.sh
+
+# 对账（有差异时退出码 1）；make reconcile REBUILD=1 可先从事实重建投影
+reconcile: build
+	@env APP_ENV=development JWT_SECRET=$(JWT_SECRET) FEED_CURSOR_SECRET=$(FEED_CURSOR_SECRET) \
+		./bin/reconcile $(if $(REBUILD),--rebuild,) $(if $(REPLAY),--replay,)
+
+outbox-status: build
+	@env APP_ENV=development JWT_SECRET=$(JWT_SECRET) FEED_CURSOR_SECRET=$(FEED_CURSOR_SECRET) ./bin/outboxctl status
+
+# 下单链路压测（限流需自行关闭：make dev-backend RATE_LIMIT_ENABLED=false 不支持，请用 env 起服务）
+loadgen: build
+	@./bin/loadgen -scenario $(or $(SCENARIO),commerce) -concurrency $(or $(CONCURRENCY),50) -duration $(or $(DURATION),20s)

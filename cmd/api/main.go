@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -217,6 +218,10 @@ func run() error {
 	go func() {
 		errCh <- h.Run()
 	}()
+	// 指标端口由 hertz 的 tracer 内部起监听，绑定失败不会让主进程退出。
+	// 那样会得到一个"服务在跑、观测性却静默消失"的状态——比启动失败更危险，
+	// 因此这里主动探一次并大声报错（快速重启时端口可能还在 TIME_WAIT）。
+	go verifyMetricsEndpoint(ctx, cfg.MetricsAddr)
 	select {
 	case err := <-errCh:
 		workers.stopAll(30 * time.Second)
@@ -336,6 +341,30 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 		}()
 	}
 	return workers
+}
+
+// verifyMetricsEndpoint 在启动后确认 /metrics 真的可访问。
+// 观测性缺失必须是显式故障，而不是"看起来一切正常"。
+func verifyMetricsEndpoint(ctx context.Context, addr string) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		response, err := client.Get("http://" + addr + "/metrics")
+		if err != nil {
+			continue
+		}
+		_ = response.Body.Close()
+		if response.StatusCode == http.StatusOK {
+			slog.Info("metrics endpoint ready", "addr", addr)
+			return
+		}
+	}
+	slog.Error("metrics endpoint is not reachable; observability is degraded", "addr", addr)
 }
 
 // consumerName 让同一个消费组里的多个实例可区分（Redis 用它记录 PEL 归属）。

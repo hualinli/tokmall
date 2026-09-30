@@ -61,11 +61,8 @@ func run() int {
 		}
 		fmt.Printf("rebuilt_projection_rows=%d\n", rows)
 	}
-	report, err := runner.Run(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reconcile: run: %v\n", err)
-		return 2
-	}
+	// 先补偿再对账：报告要反映"修完之后"的状态，否则运维看到的是已经处理过的
+	// 差异，无法判断这次运行到底有没有把问题收敛掉。
 	if *replay {
 		replayed, err := runner.ReplayMissingReceipts(ctx)
 		if err != nil {
@@ -73,6 +70,11 @@ func run() int {
 			return 2
 		}
 		fmt.Printf("replayed=%d\n", replayed)
+	}
+	report, err := runner.Run(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reconcile: run: %v\n", err)
+		return 2
 	}
 	if *asJSON {
 		encoder := json.NewEncoder(os.Stdout)
