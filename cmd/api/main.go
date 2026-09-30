@@ -175,7 +175,11 @@ func run() error {
 		inventory.NewRepository(db),
 	))
 	orderRepository := order.NewRepository(db)
-	orderHandler := order.NewHandler(order.NewService(orderRepository))
+	orderService := order.NewService(orderRepository)
+	// 同一 GormRepository 同时实现订单命令与退款命令；注入分开是为了让
+	// service 只依赖它真正使用的消费侧接口。
+	orderService.SetRefundRepository(orderRepository)
+	orderHandler := order.NewHandler(orderService)
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
 	var expiryWorkerCancel context.CancelFunc

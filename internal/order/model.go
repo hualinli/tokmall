@@ -15,6 +15,21 @@ const (
 	StatusCompleted      Status = "COMPLETED"
 	StatusCanceled       Status = "CANCELED"
 	StatusExpired        Status = "EXPIRED"
+	// StatusRefundRequested / StatusRefunded 是售后维度投影到订单主状态的结果。
+	// 让订单状态机本身承担"退款中不可发货"的互斥，避免每条履约命令都要先查退款表。
+	StatusRefundRequested Status = "REFUND_REQUESTED"
+	StatusRefunded        Status = "REFUNDED"
+)
+
+type RefundStatus string
+
+const (
+	// RefundStatusRequested：买家已申请，等待商家裁决。
+	RefundStatusRequested RefundStatus = "REQUESTED"
+	// RefundStatusRejected：商家拒绝，订单退回申请前状态，之后可再次申请。
+	RefundStatusRejected RefundStatus = "REJECTED"
+	// RefundStatusSucceeded：退款成功，订单终态 REFUNDED。
+	RefundStatusSucceeded RefundStatus = "SUCCEEDED"
 )
 
 type PaymentStatus string
@@ -31,6 +46,28 @@ const (
 	VideoProductStatusActive   VideoProductStatus = "ACTIVE"
 	VideoProductStatusDisabled VideoProductStatus = "DISABLED"
 )
+
+// Refund 是售后单据。金额恒等于订单实付金额（本项目只支持全额退款），
+// 因此不需要独立的金额快照字段；拆分退款是后续演进，不在当前范围。
+type Refund struct {
+	ID             int64        `gorm:"column:id;primaryKey"`
+	RefundNo       string       `gorm:"column:refund_no"`
+	OrderID        int64        `gorm:"column:order_id"`
+	UserID         int64        `gorm:"column:user_id"`
+	MerchantID     int64        `gorm:"column:merchant_id"`
+	Amount         Amount       `gorm:"column:amount"`
+	Reason         string       `gorm:"column:reason"`
+	Status         RefundStatus `gorm:"column:status"`
+	RequestedAt    time.Time    `gorm:"column:requested_at"`
+	DecidedAt      *time.Time   `gorm:"column:decided_at"`
+	DecidedBy      *int64       `gorm:"column:decided_by"`
+	DecisionRemark *string      `gorm:"column:decision_remark"`
+	RefundedAt     *time.Time   `gorm:"column:refunded_at"`
+	CreatedAt      time.Time    `gorm:"column:created_at"`
+	UpdatedAt      time.Time    `gorm:"column:updated_at"`
+}
+
+func (Refund) TableName() string { return "refunds" }
 
 // Order 对应 orders 表。Source* 是下单时归因快照 ID，不声明 GORM 关联，
 // 避免内容域对象后续变化影响订单事实。
@@ -52,8 +89,12 @@ type Order struct {
 	CompletedAt        *time.Time `gorm:"column:completed_at"`
 	CanceledAt         *time.Time `gorm:"column:canceled_at"`
 	ExpiredAt          *time.Time `gorm:"column:expired_at"`
-	CreatedAt          time.Time  `gorm:"column:created_at"`
-	UpdatedAt          time.Time  `gorm:"column:updated_at"`
+	// RefundFromStatus 记录进入 REFUND_REQUESTED 前的状态（PAID / FULFILLING），
+	// 商家拒绝退款时订单退回该状态，而不是靠猜测或重新推导。
+	RefundFromStatus *Status    `gorm:"column:refund_from_status"`
+	RefundedAt       *time.Time `gorm:"column:refunded_at"`
+	CreatedAt        time.Time  `gorm:"column:created_at"`
+	UpdatedAt        time.Time  `gorm:"column:updated_at"`
 }
 
 func (Order) TableName() string { return "orders" }

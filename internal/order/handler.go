@@ -26,9 +26,14 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 	g.POST("/orders/:id/pay", h.pay)
 	g.POST("/orders/:id/cancel", h.cancel)
 	g.POST("/orders/:id/complete", h.complete)
+	g.POST("/orders/:id/refund", h.requestRefund)
+	g.GET("/orders/:id/refund", h.getBuyerRefund)
 	g.GET("/merchant/orders", h.listMerchant)
 	g.GET("/merchant/orders/:id", h.getMerchant)
 	g.POST("/merchant/orders/:id/fulfill", h.fulfill)
+	g.GET("/merchant/orders/:id/refund", h.getMerchantRefund)
+	g.POST("/merchant/orders/:id/refund/approve", h.approveRefund)
+	g.POST("/merchant/orders/:id/refund/reject", h.rejectRefund)
 }
 
 func (h *Handler) getBuyer(ctx context.Context, c *app.RequestContext)    { h.get(ctx, c, false) }
@@ -262,6 +267,13 @@ func (h *Handler) mapError(c *app.RequestContext, err error) {
 		response.Error(c, response.ErrOrderNotFound)
 	case errors.Is(err, ErrOrderStateConflict):
 		response.Error(c, response.ErrOrderStateConflict)
+	case errors.Is(err, ErrRefundNotFound):
+		// 与订单同一语义：没有退款、或订单不属于当前调用者，对外都是"找不到"。
+		response.Error(c, response.ErrRefundNotFound)
+	case errors.Is(err, ErrRefundNotAllowed):
+		response.Error(c, response.ErrRefundNotAllowed)
+	case errors.Is(err, ErrRefundAlreadyDecided):
+		response.Error(c, response.ErrRefundAlreadyDecided)
 	case errors.Is(err, ErrPaymentAmountMismatch):
 		response.Error(c, response.ErrPaymentAmountMismatch)
 	default:

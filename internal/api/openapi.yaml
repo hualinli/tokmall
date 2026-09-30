@@ -1090,6 +1090,148 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/orders/{id}/refund:
+    post:
+      tags: [orders]
+      summary: 买家对已支付订单申请全额退款
+      description: >-
+        仅订单本人可申请。可申请状态为 PAID（已付款未发货）与 FULFILLING（已发货待收货）；
+        PENDING_PAYMENT/COMPLETED/CANCELED/EXPIRED 返回 409。同一订单同时最多存在一笔
+        未决或已成功的退款：重复申请返回原退款单（replayed=true），不产生第二笔售后事实。
+        退款金额由订单事实决定，不接受客户端提交。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestRefundRequest"
+      responses:
+        "201":
+          description: 申请成功或相同售后事实的幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 当前订单状态不允许退款
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [orders]
+      summary: 买家查看订单最新一笔退款
+      description: 订单不存在或不属于当前用户统一返回 404；该订单没有退款单时同样返回 404。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 退款单详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/RefundNotFound"
+
+  /api/v1/merchant/orders/{id}/refund:
+    get:
+      tags: [orders]
+      summary: 商家查看订单最新一笔退款
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      responses:
+        "200":
+          description: 退款单详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/RefundNotFound"
+
+  /api/v1/merchant/orders/{id}/refund/approve:
+    post:
+      tags: [orders]
+      summary: 商家同意退款
+      description: >-
+        仅订单所属商家可裁决。同意后订单进入终态 REFUNDED：未发货（PAID）退款回补库存并写
+        ORDER_REFUNDED 流水；已发货（FULFILLING）退款不回补库存。重复同意返回原结果（replayed=true）。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRefundRequest"
+      responses:
+        "200":
+          description: 退款成功或幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 没有待裁决的退款，或退款已完成无法再次裁决
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/merchant/orders/{id}/refund/reject:
+    post:
+      tags: [orders]
+      summary: 商家拒绝退款
+      description: >-
+        拒绝后订单退回申请前状态（PAID 可继续发货，FULFILLING 可继续确认收货），
+        退款单进入终态 REJECTED，买家可以再次申请。
+      parameters:
+        - $ref: "#/components/parameters/OrderID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRefundRequest"
+      responses:
+        "200":
+          description: 拒绝成功或幂等重放
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/OrderNotFound"
+        "409":
+          description: 没有待裁决的退款，或退款已完成无法再次裁决
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/authors/{id}/sales:
     get:
       tags: [attribution]
@@ -1252,6 +1394,12 @@ components:
             $ref: "#/components/schemas/Error"
     OrderNotFound:
       description: 订单不存在或不属于当前买家/商家（统一 404，不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RefundNotFound:
+      description: 订单没有退款单，或订单不属于当前买家/商家（统一 404，不泄露存在性）
       content:
         application/json:
           schema:
@@ -1976,7 +2124,7 @@ components:
           format: int64
         status:
           type: string
-          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED]
+          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED, REFUND_REQUESTED, REFUNDED]
         total_amount:
           type: integer
           format: int64
@@ -2089,6 +2237,62 @@ components:
         canceled_at:
           type: string
           format: date-time
+        replayed:
+          type: boolean
+    RequestRefundRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          maxLength: 200
+          description: 买家填写的退款原因；金额与身份由订单事实和认证上下文决定
+    DecideRefundRequest:
+      type: object
+      properties:
+        remark:
+          type: string
+          maxLength: 200
+          description: 商家裁决备注，可选
+    RefundDetail:
+      type: object
+      required: [refund_id, refund_no, order_id, order_no, amount, reason, status, restore_stock, requested_at, order_status, replayed]
+      properties:
+        refund_id:
+          type: integer
+          format: int64
+        refund_no:
+          type: string
+        order_id:
+          type: integer
+          format: int64
+        order_no:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [REQUESTED, REJECTED, SUCCEEDED]
+        restore_stock:
+          type: boolean
+          description: 退款成功时是否回补库存；申请时订单为 PAID 才为 true
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: string
+          format: date-time
+        decision_remark:
+          type: string
+        refunded_at:
+          type: string
+          format: date-time
+        order_status:
+          type: string
+          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED, REFUND_REQUESTED, REFUNDED]
         replayed:
           type: boolean
     OrderItem:
