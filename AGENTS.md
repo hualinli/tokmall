@@ -48,7 +48,7 @@ internal/
 migrations/             版本化 SQL 迁移（000001～000014；商域从 000007 起，履约时间戳在 000014）
 web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
 scripts/                seed_perf.sql 百万数据造数（压测用）
-docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部使用）
+docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR + 性能基线（git 跟踪）
 ```
 
 ## 里程碑状态
@@ -73,7 +73,7 @@ docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部
 | M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
 | Outbox + Kafka | 未开始 | 准生产级实施计划的阶段 4；与已搁置的播放事件异步化是不同决策 |
 
-> 注：M4+ 三行不在原里程碑规划内（按 mentor 手册"出现可测量问题再引入技术"，这些是 M4 的
+> 注：M4+ 三行不在原里程碑规划内（按"出现可测量问题再引入技术"的原则，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
 > M5/M6/M8/M7 为方向 1 + 治理交付。Commerce v1 的当前范围与实现见
 > `docs/commerce-business.md`、`docs/commerce-v1-technical-design.md`；后续工程化方向见
@@ -112,7 +112,7 @@ wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # 压测（基线见 docs
   go run 子进程名会变，压测一律用 `make build` 的 `./bin/api` 起服务。
 - macOS 无 `setsid`，后台起服务用 `nohup ... & disown`，且 E2E 尽量在同一命令内完成。
 - `docs/`、`AGENTS.md` 由 git 跟踪（早前误写为 gitignore，已修正）：AGENTS.md 是项目记忆、
-  docs/ 是 mentor 手册 + 压测基线等内部文档，内容偏本项目使用，不面向外部读者。
+  docs/ 收录当前实现、演进计划、ADR 和压测基线；入口见 `docs/README.md`。
 
 ## 工作方式（Mentor 模式）
 

@@ -50,4 +50,4 @@ HTTP 请求
 2. **作者与商家**：`video_products.author_id` 是推广作者，`products.merchant_id` 是商品所有者。当前推广授权简化为只能挂本人商品；订单同时保留商家与来源作者，成交统计按来源作者聚合。
 3. **缓存与事实**：Feed 主体可缓存，商品卡在响应装配时按页动态读取，因此下架状态不会被旧 Feed 缓存固定住。Redis 缓存失效或限流故障不能改变 PostgreSQL 交易事实。
 
-订单状态、幂等和数据库不变量见 [Commerce v1 当前技术实现](commerce-v1-technical-design.md)；历史 Feed 方案见 [Feed Mentor 手册](feed-system-mentor-guide.md)，其早期目录与“下一步”描述不作为当前架构依据。
+订单状态、幂等和数据库不变量见 [Commerce v1 当前技术实现](commerce-v1-technical-design.md)；Feed 后续取舍见 [Feed 演进计划](feed-evolution-plan.md)，早期决策见 [ADR](architecture-decisions.md)。
