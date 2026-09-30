@@ -40,6 +40,19 @@ const (
 	defaultOrderExpiryWorkerOn  = true
 	defaultOrderExpiryInterval  = 5 * time.Second
 	defaultOrderExpiryBatchSize = 100
+	defaultOutboxRelayOn        = true
+	defaultOutboxRelayTick      = time.Second
+	defaultOutboxRelayBatch     = 50
+	defaultOutboxRelayLease     = 30 * time.Second
+	defaultOutboxMaxAttempts    = 5
+	defaultOutboxStream         = "tokmall:events:commerce.v1"
+	defaultOutboxDLQSuffix      = ":dlq"
+	defaultOutboxStreamMaxLen   = 10000
+	defaultOutboxConsumerOn     = true
+	defaultOutboxGroup          = "attribution-projection"
+	defaultOutboxMaxDeliver     = 5
+	defaultOutboxClaimIdle      = 30 * time.Second
+
 	// defaultMetricsAddr 默认只监听回环地址：/metrics 会暴露路由级 QPS/延迟、
 	// 连接池与运行时指标，属于容量指纹。生产如需 Prometheus 抓取，
 	// 应显式配置 METRICS_ADDR 到内网地址，并由网络策略限制访问。
@@ -77,10 +90,23 @@ type Config struct {
 	// WriteRateLimit 写接口按用户配额。
 	WriteRateLimit int
 	// ReadRateLimit 读接口按 IP 配额（高阈值：只挡爬虫/异常洪峰，不误伤真实用户）。
-	ReadRateLimit              int
-	OrderExpiryWorkerEnabled   bool
-	OrderExpiryWorkerInterval  time.Duration
-	OrderExpiryWorkerBatchSize int
+	ReadRateLimit            int
+	OrderExpiryWorkerEnabled bool
+	// Outbox 相关配置：中继把 outbox_events 投递到事件流，消费者做幂等投影。
+	OutboxRelayEnabled          bool
+	OutboxRelayInterval         time.Duration
+	OutboxRelayBatchSize        int
+	OutboxRelayLease            time.Duration
+	OutboxMaxAttempts           int
+	OutboxStream                string
+	OutboxDLQStream             string
+	OutboxStreamMaxLen          int64
+	OutboxConsumerEnabled       bool
+	OutboxConsumerGroup         string
+	OutboxConsumerMaxDeliveries int
+	OutboxClaimIdle             time.Duration
+	OrderExpiryWorkerInterval   time.Duration
+	OrderExpiryWorkerBatchSize  int
 }
 
 type RedisConfig struct {
@@ -201,6 +227,43 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	outboxRelayEnabled, err := envBool("OUTBOX_RELAY_ENABLED", defaultOutboxRelayOn)
+	if err != nil {
+		return nil, err
+	}
+	outboxRelayInterval, err := envDuration("OUTBOX_RELAY_INTERVAL", defaultOutboxRelayTick)
+	if err != nil {
+		return nil, err
+	}
+	outboxRelayBatch, err := envInt("OUTBOX_RELAY_BATCH_SIZE", defaultOutboxRelayBatch)
+	if err != nil {
+		return nil, err
+	}
+	outboxRelayLease, err := envDuration("OUTBOX_RELAY_LEASE", defaultOutboxRelayLease)
+	if err != nil {
+		return nil, err
+	}
+	outboxMaxAttempts, err := envInt("OUTBOX_MAX_ATTEMPTS", defaultOutboxMaxAttempts)
+	if err != nil {
+		return nil, err
+	}
+	outboxStreamMaxLen, err := envInt64("OUTBOX_STREAM_MAX_LEN", defaultOutboxStreamMaxLen)
+	if err != nil {
+		return nil, err
+	}
+	outboxConsumerEnabled, err := envBool("OUTBOX_CONSUMER_ENABLED", defaultOutboxConsumerOn)
+	if err != nil {
+		return nil, err
+	}
+	outboxMaxDeliveries, err := envInt("OUTBOX_CONSUMER_MAX_DELIVERIES", defaultOutboxMaxDeliver)
+	if err != nil {
+		return nil, err
+	}
+	outboxClaimIdle, err := envDuration("OUTBOX_CONSUMER_CLAIM_IDLE", defaultOutboxClaimIdle)
+	if err != nil {
+		return nil, err
+	}
+	outboxStream := envString("OUTBOX_STREAM", defaultOutboxStream)
 	trustedProxies, err := parseTrustedProxies(envString("TRUSTED_PROXIES", ""))
 	if err != nil {
 		return nil, err
@@ -259,6 +322,19 @@ func Load() (*Config, error) {
 		OrderExpiryWorkerEnabled:   orderExpiryWorkerEnabled,
 		OrderExpiryWorkerInterval:  orderExpiryWorkerInterval,
 		OrderExpiryWorkerBatchSize: orderExpiryWorkerBatchSize,
+
+		OutboxRelayEnabled:          outboxRelayEnabled,
+		OutboxRelayInterval:         outboxRelayInterval,
+		OutboxRelayBatchSize:        outboxRelayBatch,
+		OutboxRelayLease:            outboxRelayLease,
+		OutboxMaxAttempts:           outboxMaxAttempts,
+		OutboxStream:                outboxStream,
+		OutboxDLQStream:             outboxStream + defaultOutboxDLQSuffix,
+		OutboxStreamMaxLen:          outboxStreamMaxLen,
+		OutboxConsumerEnabled:       outboxConsumerEnabled,
+		OutboxConsumerGroup:         envString("OUTBOX_CONSUMER_GROUP", defaultOutboxGroup),
+		OutboxConsumerMaxDeliveries: outboxMaxDeliveries,
+		OutboxClaimIdle:             outboxClaimIdle,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -287,6 +363,18 @@ func (c *Config) validate() error {
 	}
 	if c.OrderExpiryWorkerBatchSize <= 0 {
 		return errors.New("ORDER_EXPIRY_WORKER_BATCH_SIZE must be positive")
+	}
+	if c.OutboxRelayInterval <= 0 || c.OutboxRelayBatchSize <= 0 || c.OutboxRelayLease <= 0 || c.OutboxMaxAttempts <= 0 {
+		return errors.New("outbox relay interval, batch size, lease and max attempts must be positive")
+	}
+	if c.OutboxStreamMaxLen <= 0 {
+		return errors.New("OUTBOX_STREAM_MAX_LEN must be positive")
+	}
+	if strings.TrimSpace(c.OutboxStream) == "" || strings.TrimSpace(c.OutboxConsumerGroup) == "" {
+		return errors.New("OUTBOX_STREAM and OUTBOX_CONSUMER_GROUP must be non-empty")
+	}
+	if c.OutboxConsumerMaxDeliveries <= 0 || c.OutboxClaimIdle <= 0 {
+		return errors.New("outbox consumer max deliveries and claim idle must be positive")
 	}
 	if host, port, err := net.SplitHostPort(c.MetricsAddr); err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
 		return errors.New("METRICS_ADDR must use host:port format")
@@ -424,6 +512,18 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("environment variable %s must be a valid duration", key)
 	}
 	return duration, nil
+}
+
+func envInt64(key string, fallback int64) (int64, error) {
+	value := envString(key, "")
+	if value == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("environment variable %s must be an integer", key)
+	}
+	return n, nil
 }
 
 func envBool(key string, fallback bool) (bool, error) {

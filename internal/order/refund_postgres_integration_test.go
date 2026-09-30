@@ -248,6 +248,50 @@ func TestPostgresRefundProof(t *testing.T) {
 		require.Equal(t, int64(1), requestedRows)
 	})
 
+	t.Run("payment and refund emit outbox events in the same transaction", func(t *testing.T) {
+		// Transactional Outbox 的验收点：事件与业务状态同事务写入。
+		// 这里断言"支付/退款各留下一条事件"，并用一次失败的支付证明
+		// 事务回滚时事件也不会残留（否则下游会收到不存在的事实）。
+		buyers, merchantID, skuID := seedRefundFixture(t, db, "outbox-events", 1, 2)
+		svc := refundService(NewRepository(db))
+		created := mustCreatePaidOrder(t, svc, buyers[0], skuID, "outbox-events", 1)
+
+		var paidEvents int64
+		require.NoError(t, db.Raw(`SELECT count(*) FROM outbox_events
+			WHERE aggregate_id = ? AND event_type = 'commerce.order.paid.v1'`, created.OrderID).Scan(&paidEvents).Error)
+		require.Equal(t, int64(1), paidEvents, "支付成功必须留下一条 OrderPaid 事件")
+
+		// 金额不一致的支付会回滚：另一个未支付订单上不得留下事件。
+		pending, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "outbox-events-pending",
+		})
+		require.NoError(t, err)
+		_, err = svc.Pay(context.Background(), PayParams{
+			UserID: buyers[0], OrderID: pending.OrderID,
+			PaymentNo: "bad-pay-" + uuid.NewString(), ProviderTradeNo: "bad-trade-" + uuid.NewString(),
+			Amount: pending.TotalAmount + 1,
+		})
+		require.ErrorIs(t, err, ErrPaymentAmountMismatch)
+		var pendingEvents int64
+		require.NoError(t, db.Raw(`SELECT count(*) FROM outbox_events
+			WHERE aggregate_id = ?`, pending.OrderID).Scan(&pendingEvents).Error)
+		require.Zero(t, pendingEvents, "回滚的支付不得留下事件")
+
+		_, err = svc.RequestRefund(context.Background(), RequestRefundParams{UserID: buyers[0], OrderID: created.OrderID, Reason: "退款"})
+		require.NoError(t, err)
+		_, err = svc.DecideRefund(context.Background(), DecideRefundParams{MerchantID: merchantID, OrderID: created.OrderID, Approve: true})
+		require.NoError(t, err)
+
+		var refundedEvents int64
+		var restoreStock bool
+		require.NoError(t, db.Raw(`SELECT count(*) FROM outbox_events
+			WHERE aggregate_id = ? AND event_type = 'commerce.order.refunded.v1'`, created.OrderID).Scan(&refundedEvents).Error)
+		require.Equal(t, int64(1), refundedEvents, "退款成功必须留下一条 OrderRefunded 事件")
+		require.NoError(t, db.Raw(`SELECT (payload->>'restore_stock')::boolean FROM outbox_events
+			WHERE aggregate_id = ? AND event_type = 'commerce.order.refunded.v1'`, created.OrderID).Scan(&restoreStock).Error)
+		require.True(t, restoreStock, "未发货退款的载荷必须标明已回补库存")
+	})
+
 	t.Run("only buyer requests and only merchant decides", func(t *testing.T) {
 		buyers, merchantID, skuID := seedRefundFixture(t, db, "refund-authz", 2, 2)
 		svc := refundService(NewRepository(db))

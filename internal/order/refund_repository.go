@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -173,6 +174,23 @@ func approveRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundCom
 		if err := restoreStock(db, order, at); err != nil {
 			return err
 		}
+	}
+
+	// 退款成功同样走 Outbox：投影、通知、对账都靠这条事件驱动。
+	// 与支付一样，事件与状态变更在同一事务里提交或回滚。
+	item, err := findOrderItem(db, order.ID)
+	if err != nil {
+		return err
+	}
+	if err := outbox.EnqueueOrderRefunded(db, outbox.OrderRefundedPayload{
+		OrderID: order.ID, OrderNo: order.OrderNo, RefundNo: pending.RefundNo,
+		UserID: order.UserID, MerchantID: order.MerchantID,
+		Amount: int64(pending.Amount), Units: item.Quantity,
+		RestoreStock:   order.RefundFromStatus != nil && *order.RefundFromStatus == StatusPaid,
+		RefundedAt:     at,
+		SourceAuthorID: order.SourceAuthorID, SourceVideoID: order.SourceVideoID,
+	}); err != nil {
+		return err
 	}
 
 	order.Status = StatusRefunded

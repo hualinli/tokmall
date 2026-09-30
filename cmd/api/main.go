@@ -30,6 +30,7 @@ import (
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/observability"
 	"github.com/lihualin/tokmall/internal/order"
+	"github.com/lihualin/tokmall/internal/outbox"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/promotion"
 	"github.com/lihualin/tokmall/internal/storage"
@@ -190,18 +191,7 @@ func run() error {
 	orderHandler := order.NewHandler(orderService)
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
-	var expiryWorkerCancel context.CancelFunc
-	var expiryWorkerDone chan struct{}
-	if cfg.OrderExpiryWorkerEnabled {
-		expiryWorker := order.NewExpiryWorker(orderRepository, cfg.OrderExpiryWorkerInterval, cfg.OrderExpiryWorkerBatchSize)
-		workerCtx, cancel := context.WithCancel(ctx)
-		expiryWorkerCancel = cancel
-		expiryWorkerDone = make(chan struct{})
-		go func() {
-			defer close(expiryWorkerDone)
-			expiryWorker.Run(workerCtx)
-		}()
-	}
+	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -228,15 +218,13 @@ func run() error {
 	}()
 	select {
 	case err := <-errCh:
-		if stopErr := stopExpiryWorker(expiryWorkerCancel, expiryWorkerDone, 30*time.Second); stopErr != nil {
-			slog.Error("expiry worker did not stop after server exit", "err", stopErr)
-		}
+		workers.stopAll(30 * time.Second)
 		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		shutdownErr := h.Shutdown(shutdownCtx)
-		workerStopErr := stopExpiryWorker(expiryWorkerCancel, expiryWorkerDone, 30*time.Second)
+		workerStopErr := workers.stopAll(30 * time.Second)
 		if shutdownErr != nil {
 			return fmt.Errorf("shutdown: %w", shutdownErr)
 		}
@@ -251,7 +239,31 @@ func run() error {
 	}
 }
 
-func stopExpiryWorker(cancel context.CancelFunc, done <-chan struct{}, timeout time.Duration) error {
+// backgroundWorkers 汇总所有后台任务（超时关单、Outbox 中继、事件消费者），
+// 让"启动/优雅停机"集中在一处，而不是散落在 run() 的各个分支里。
+type backgroundWorkers struct {
+	stops []func(timeout time.Duration) error
+}
+
+func (w *backgroundWorkers) add(cancel context.CancelFunc, done <-chan struct{}, name string) {
+	w.stops = append(w.stops, func(timeout time.Duration) error {
+		return stopWorker(name, cancel, done, timeout)
+	})
+}
+
+// stopAll 逆序停机：先停消费者（停止写入读模型），再停中继（停止投递），
+// 最后停关单 Worker。任一超时都要报出来，而不是静默返回。
+func (w *backgroundWorkers) stopAll(timeout time.Duration) error {
+	var firstErr error
+	for i := len(w.stops) - 1; i >= 0; i-- {
+		if err := w.stops[i](timeout); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func stopWorker(name string, cancel context.CancelFunc, done <-chan struct{}, timeout time.Duration) error {
 	if cancel == nil {
 		return nil
 	}
@@ -262,8 +274,63 @@ func stopExpiryWorker(cancel context.CancelFunc, done <-chan struct{}, timeout t
 	case <-done:
 		return nil
 	case <-timer.C:
-		return errors.New("order expiry worker shutdown timed out")
+		return fmt.Errorf("%s shutdown timed out", name)
 	}
+}
+
+// startWorkers 装配并启动后台任务。顺序刻意是"中继先于消费者"：
+// 消费组可以先建立，事件随后到达，不会出现"事件已在流里但没有消费者"。
+func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, orderRepo *order.GormRepository, registry *prometheus.Registry) *backgroundWorkers {
+	workers := &backgroundWorkers{}
+	if cfg.OrderExpiryWorkerEnabled {
+		expiryWorker := order.NewExpiryWorker(orderRepo, cfg.OrderExpiryWorkerInterval, cfg.OrderExpiryWorkerBatchSize)
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "order expiry worker")
+		go func() {
+			defer close(done)
+			expiryWorker.Run(workerCtx)
+		}()
+	}
+	if redisClient == nil {
+		return workers
+	}
+	outboxRepo := outbox.NewRepository(db)
+	if cfg.OutboxRelayEnabled {
+		publisher := outbox.Publisher(outbox.NewRedisStreamPublisher(redisClient, cfg.OutboxStream, cfg.OutboxStreamMaxLen))
+		relay := outbox.NewRelay(outboxRepo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
+			cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts),
+			outbox.WithRelayStats(observability.NewOutboxRelayMetrics(registry)))
+		relayCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "outbox relay")
+		go func() {
+			defer close(done)
+			relay.Run(relayCtx)
+		}()
+	}
+	if cfg.OutboxConsumerEnabled {
+		consumer := outbox.NewConsumer(db, redisClient, cfg.OutboxStream, cfg.OutboxConsumerGroup,
+			cfg.OutboxDLQStream, consumerName(), []outbox.Handler{attribution.NewProjector(db)},
+			outbox.WithConsumerStats(observability.NewOutboxConsumerMetrics(registry)))
+		consumerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "outbox consumer")
+		go func() {
+			defer close(done)
+			consumer.Run(consumerCtx)
+		}()
+	}
+	return workers
+}
+
+// consumerName 让同一个消费组里的多个实例可区分（Redis 用它记录 PEL 归属）。
+func consumerName() string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
 // assembleFollowingFeedCache 在 main 统一装配 feed 的缓存实现，并把同一个实例

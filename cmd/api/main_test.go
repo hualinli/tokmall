@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -25,9 +26,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestStopExpiryWorkerIsBounded(t *testing.T) {
+func TestStopWorkerIsBounded(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
-		require.NoError(t, stopExpiryWorker(nil, nil, time.Millisecond))
+		require.NoError(t, stopWorker("test", nil, nil, time.Millisecond))
 	})
 	t.Run("stops", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -36,11 +37,48 @@ func TestStopExpiryWorkerIsBounded(t *testing.T) {
 			<-ctx.Done()
 			close(done)
 		}()
-		require.NoError(t, stopExpiryWorker(cancel, done, time.Second))
+		require.NoError(t, stopWorker("test", cancel, done, time.Second))
 	})
 	t.Run("timeout", func(t *testing.T) {
-		require.Error(t, stopExpiryWorker(func() {}, make(chan struct{}), time.Millisecond))
+		err := stopWorker("outbox relay", func() {}, make(chan struct{}), time.Millisecond)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "outbox relay")
 	})
+}
+
+// TestBackgroundWorkersStopInReverseOrder：停机顺序是"消费者 → 中继 → 关单"，
+// 先停止读模型写入再停止投递，避免停机瞬间产生没人消费的事件。
+func TestBackgroundWorkersStopInReverseOrder(t *testing.T) {
+	var stopped []string
+	workers := &backgroundWorkers{}
+	for _, name := range []string{"expiry", "relay", "consumer"} {
+		n := name
+		workers.stops = append(workers.stops, func(time.Duration) error {
+			stopped = append(stopped, n)
+			return nil
+		})
+	}
+	require.NoError(t, workers.stopAll(time.Second))
+	require.Equal(t, []string{"consumer", "relay", "expiry"}, stopped)
+}
+
+// TestBackgroundWorkersReportFirstError：任一 worker 停机超时都要报出来，
+// 但不能因为第一个错误就跳过其余的停机尝试。
+func TestBackgroundWorkersReportFirstError(t *testing.T) {
+	var stopped int
+	workers := &backgroundWorkers{}
+	for i := range 3 {
+		workers.stops = append(workers.stops, func(time.Duration) error {
+			stopped++
+			if i == 0 {
+				return errors.New("first worker timed out")
+			}
+			return nil
+		})
+	}
+	err := workers.stopAll(time.Second)
+	require.ErrorContains(t, err, "first worker timed out")
+	require.Equal(t, 3, stopped, "其余 worker 仍必须被停止")
 }
 
 type openAPIDoc struct {

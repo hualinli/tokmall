@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -205,6 +206,23 @@ func (r *GormRepository) Pay(ctx context.Context, cmd PayCommand) (*paymentRecor
 		if updated.RowsAffected != 1 {
 			return ErrOrderStateConflict
 		}
+		// Transactional Outbox：事件与订单状态在同一事务提交。
+		// 提交成功但进程随后崩溃时，事件仍在表里，中继会补投；
+		// 反过来，事务回滚时事件也一起消失——不会出现"订单没支付成功但下游已收到通知"。
+		item, err := findOrderItem(db, order.ID)
+		if err != nil {
+			return err
+		}
+		if err := outbox.EnqueueOrderPaid(db, outbox.OrderPaidPayload{
+			OrderID: order.ID, OrderNo: order.OrderNo, UserID: order.UserID,
+			MerchantID: order.MerchantID, TotalAmount: int64(order.TotalAmount),
+			Units: item.Quantity, PaidAt: paidAt,
+			SourceAuthorID: order.SourceAuthorID, SourceVideoID: order.SourceVideoID,
+			SourceProductID: order.SourceProductID,
+		}); err != nil {
+			return err
+		}
+
 		order.Status = StatusPaid
 		order.PaidAt = &paidAt
 		order.UpdatedAt = paidAt
