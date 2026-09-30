@@ -419,8 +419,9 @@ h.SetClientIPFunc(app.ClientIPWithOption(app.ClientIPOptions{
    空状态既不是 ACTIVE 也不是 DISABLED，登录一律被判为"账号不可用"。
 
 ### 修复
-- model 上加 `default:ACTIVE`，让 GORM 在零值时省略该列；
-- `Register` 显式写入 `ACTIVE`，不给空状态任何机会；
+- `Register` 显式写入 `ACTIVE`（主要防线，不依赖数据库默认值）；
+- model 上加 `default:ACTIVE`，让 GORM 在零值时省略该列（第二道防线，
+  防止将来新增的写入路径再踩同一个坑）；
 - 迁移 000018 修复历史空值，并**恢复 `users_status_check` 约束**：
   000002 曾把状态枚举约束整体移到应用层，但 `status` 与 `role` 不同——
   写错的后果是认证失效，必须由数据库兜底；

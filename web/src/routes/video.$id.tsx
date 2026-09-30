@@ -1,9 +1,9 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowLeft, Trash2 } from 'lucide-react'
 import { client } from '../api/client'
-import { apiErrorMessage } from '../lib/api-error'
+import { apiRequestError } from '../lib/api-error'
 import { useAuthStore } from '../lib/auth-store'
 import { VideoPlayer } from '../features/video/video-player'
 import { StatusBadge } from '../features/video/status-badge'
@@ -22,12 +22,13 @@ function VideoPage() {
   const videoId = Number(id)
   const me = useAuthStore((s) => s.user)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   const { data, isPending, error } = useQuery({
     queryKey: ['video', id],
     queryFn: async () => {
       const res = await client.GET('/api/v1/videos/{id}', { params: { path: { id: videoId } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
   })
@@ -37,7 +38,7 @@ function VideoPage() {
       const res = await client.POST('/api/v1/videos/{id}/publish', {
         params: { path: { id: videoId } },
       })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     onSuccess: () => {
@@ -52,14 +53,18 @@ function VideoPage() {
   const remove = useMutation({
     mutationFn: async () => {
       const res = await client.DELETE('/api/v1/videos/{id}', { params: { path: { id: videoId } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.response
     },
     onSuccess: () => {
       toast.success('已删除')
+      // 详情缓存必须失效：否则后退回到本页仍会看到已删除视频的旧数据
+      queryClient.invalidateQueries({ queryKey: ['video', id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       queryClient.invalidateQueries({ queryKey: ['my-videos'] })
       queryClient.invalidateQueries({ queryKey: ['user-videos'] })
+      // 视频已不可见：留在详情页只会看到 404，直接回 Feed
+      navigate({ to: '/' })
     },
     onError: (e) => toast.error(e.message),
   })
@@ -118,7 +123,7 @@ function VideoPage() {
         <div className="flex flex-col items-center gap-2">
           <LikeButton videoId={videoId} count={data.like_count} liked={data.is_liked} size="lg" />
           {isMine && data.status !== 'DELETED' && (
-            <Button variant="destructive" size="sm" onClick={() => remove.mutate()}>
+            <Button variant="destructive" size="sm" disabled={remove.isPending} onClick={() => remove.mutate()}>
               <Trash2 className="h-4 w-4" />
             </Button>
           )}

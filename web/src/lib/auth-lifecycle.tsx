@@ -17,11 +17,15 @@ export function AuthLifecycle() {
 
   useEffect(() => {
     if (!accessToken || !refreshToken) return
+    // 抖动 13~14min：多标签页同时在线时，别让各自的定时器在同一毫秒轮换
+    // （rotation 是单次消费，撞车会互相把 token 拉黑；auth-refresh 有兜底重试，
+    // 这里只是把撞车概率再压低）。定时器在 token 变化时会重建（跨标签同步也会触发）。
+    const delay = 13 * 60_000 + Math.floor(Math.random() * 60_000)
     const timer = setInterval(() => {
       refreshAccessToken().catch(() => {
         /* 已由 doRefresh 清空登录态 */
       })
-    }, 14 * 60_000)
+    }, delay)
     return () => clearInterval(timer)
   }, [accessToken, refreshToken])
 

@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { client } from '../api/client'
-import { apiErrorMessage } from '../lib/api-error'
+import { apiRequestError } from '../lib/api-error'
 import { useAuthStore } from '../lib/auth-store'
 import { FollowButton } from '../features/interaction/follow-button'
 import { UserWorks } from '../features/user/user-works'
@@ -21,7 +21,7 @@ function UserPage() {
     queryKey: ['user', id],
     queryFn: async () => {
       const res = await client.GET('/api/v1/users/{id}', { params: { path: { id: Number(id) } } })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
   })

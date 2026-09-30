@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { registerUser, loginViaUi } from './utils'
 
 test.describe('互动', () => {
@@ -19,31 +19,27 @@ test.describe('互动', () => {
     await loginViaUi(page, username, password)
 
     const like = page.locator('[data-testid="like-button"]').first()
-    const before = Number((await like.textContent())?.trim())
+    // 按钮文案里的点赞数是 formatCount 缩写（1.0k / 3.4万），Number() 解析得到 NaN：
+    // 状态断言走 aria-pressed，计数断言走服务端原值（详情接口的 like_count）
+    const videoId = Number(await like.getAttribute('data-video-id'))
+    expect(videoId).toBeGreaterThan(0)
+    const before = await serverLikeCount(page, videoId)
+
     await like.click()
+    await expect(like).toHaveAttribute('aria-pressed', 'true')
     await expect
       .poll(() => like.locator('svg').evaluate((s) => getComputedStyle(s).fill))
       .not.toBe('none') // 红心
-    const after = Number((await like.textContent())?.trim())
-    expect(after).toBe(before + 1)
-
-    // 服务端确认（带 token 从页面内请求）
-    const serverLiked = await page.evaluate(async () => {
-      const stored = JSON.parse(localStorage.getItem('tokmall-auth')!)
-      const res = await fetch('/api/v1/feed?limit=1')
-      const feed = await res.json()
-      const detail = await fetch(`/api/v1/videos/${feed.items[0].video_id}`, {
-        headers: { Authorization: `Bearer ${stored.state.accessToken}` },
-      })
-      return (await detail.json()).is_liked
-    })
-    expect(serverLiked).toBe(true)
+    await expect.poll(() => serverLikeCount(page, videoId)).toBe(before + 1)
+    expect(await serverLiked(page, videoId)).toBe(true)
 
     // 取消
     await like.click()
+    await expect(like).toHaveAttribute('aria-pressed', 'false')
     await expect
       .poll(() => like.locator('svg').evaluate((s) => getComputedStyle(s).fill))
       .toBe('none')
+    await expect.poll(() => serverLikeCount(page, videoId)).toBe(before)
   })
 
   test('关注 → 服务端确认 → 取关', async ({ page }) => {
@@ -86,3 +82,22 @@ test.describe('互动', () => {
     await expect(page.locator('text=（我）')).toBeVisible()
   })
 })
+
+/** 服务端点赞数（视频详情是公开接口，不需要 token） */
+function serverLikeCount(page: Page, videoId: number): Promise<number> {
+  return page.evaluate(async (id) => {
+    const res = await fetch(`/api/v1/videos/${id}`)
+    return (await res.json()).like_count as number
+  }, videoId)
+}
+
+/** 服务端「我是否已赞」（is_liked 是个性化字段，必须带 token） */
+function serverLiked(page: Page, videoId: number): Promise<boolean> {
+  return page.evaluate(async (id) => {
+    const stored = JSON.parse(localStorage.getItem('tokmall-auth')!)
+    const res = await fetch(`/api/v1/videos/${id}`, {
+      headers: { Authorization: `Bearer ${stored.state.accessToken}` },
+    })
+    return (await res.json()).is_liked as boolean
+  }, videoId)
+}

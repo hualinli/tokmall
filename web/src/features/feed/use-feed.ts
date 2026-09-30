@@ -1,6 +1,6 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { client } from '../../api/client'
-import { apiErrorMessage } from '../../lib/api-error'
+import { apiRequestError } from '../../lib/api-error'
 
 export const FEED_PAGE_SIZE = 10
 
@@ -23,7 +23,7 @@ export function useFeedQuery(initialCursor: string | undefined) {
           query: { limit: FEED_PAGE_SIZE, cursor: pageParam ?? undefined },
         },
       })
-      if (res.error) throw new Error(apiErrorMessage(res.error))
+      if (res.error) throw apiRequestError(res)
       return res.data
     },
     getNextPageParam: (last) => last.next_cursor || undefined,

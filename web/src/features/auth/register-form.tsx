@@ -5,6 +5,7 @@ import { useRouter } from '@tanstack/react-router'
 import { client } from '../../api/client'
 import { useAuthStore } from '../../lib/auth-store'
 import { apiErrorMessage } from '../../lib/api-error'
+import { safeRedirectPath } from '../../lib/safe-redirect'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Card, CardTitle, Field } from '../../components/ui/card'
@@ -40,8 +41,10 @@ export function RegisterForm({ redirect }: { redirect?: string }) {
     }
     // 注册即签发 token 对：直接进入登录态
     setAuth(res.data)
-    if (redirect?.startsWith('/')) {
-      router.history.push(redirect)
+    // 同 LoginForm：redirect 是外部输入，必须过同源校验后才跳转
+    const target = safeRedirectPath(redirect)
+    if (target) {
+      router.history.push(target)
     } else {
       router.navigate({ to: '/' })
     }
