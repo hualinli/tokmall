@@ -3,6 +3,7 @@ package interaction
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -156,7 +157,18 @@ func (h *Handler) unfollow(ctx context.Context, c *app.RequestContext) {
 	}
 	result, err := h.service.Unfollow(ctx, h.userID(c), followeeID)
 	if err != nil {
-		response.Error(c, response.ErrInternal)
+		// 与 follow 对称的错误映射：非法参数 400、目标不存在 404，
+		// 其余才记日志并按 500 返回。把业务错误一律兜成 500 会让客户端和
+		// 监控把正常的"取关一个不存在的用户"误判为服务端故障。
+		switch {
+		case errors.Is(err, ErrInvalidParam):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrUserNotFound):
+			response.Error(c, response.ErrUserNotFound)
+		default:
+			slog.Error("unfollow failed", "follower_id", h.userID(c), "followee_id", followeeID, "err", err)
+			response.Error(c, response.ErrInternal)
+		}
 		return
 	}
 	response.OK(c, result)

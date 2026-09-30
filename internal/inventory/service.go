@@ -16,7 +16,12 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different payload")
 )
 
-const maxIdempotencyKeyLength = 128
+const (
+	maxIdempotencyKeyLength = 128
+	// maxStockChange 是单次调整的业务上界。没有上界时 quantity + change
+	// 会在 BIGINT 上溢出（PostgreSQL 22003），把"参数非法"暴露成 500。
+	maxStockChange = 1_000_000_000
+)
 
 // Repository 由 service 定义，GormRepository 隐式满足。
 type Repository interface {
@@ -65,7 +70,8 @@ func (s *Service) GetStock(ctx context.Context, merchantID, productID, skuID int
 // merchant_id 冗余写进库存流水也不会造成跨商家假成功。
 func (s *Service) AdjustStock(ctx context.Context, merchantID, productID, skuID int64, change int64, idempotencyKey string) (*StockView, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	if merchantID <= 0 || productID <= 0 || skuID <= 0 || change == 0 || idempotencyKey == "" || len(idempotencyKey) > maxIdempotencyKeyLength {
+	if merchantID <= 0 || productID <= 0 || skuID <= 0 || change == 0 || idempotencyKey == "" ||
+		len(idempotencyKey) > maxIdempotencyKeyLength || change > maxStockChange || change < -maxStockChange {
 		return nil, ErrInvalidParam
 	}
 	if err := s.checkOwnership(ctx, merchantID, productID, skuID); err != nil {

@@ -86,6 +86,14 @@ func (f *fakeRepo) ConsumeTicket(ctx context.Context, userID int64, objectKey st
 	return nil
 }
 
+// ConsumeTicketAndCreateVideo 复刻事务语义：核销失败则视频不落库。
+func (f *fakeRepo) ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video) error {
+	if err := f.ConsumeTicket(ctx, userID, objectKey); err != nil {
+		return err
+	}
+	return f.CreateVideo(ctx, v)
+}
+
 func (f *fakeRepo) ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error) {
 	rows := make([]Video, 0, limit+1)
 	for _, v := range f.videos {
@@ -473,8 +481,9 @@ func TestDelete_ForbiddenAndSuccess(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// 非作者与不存在统一 404：403 会成为"这个视频 ID 存在"的预言机。
 	err = svc.Delete(context.Background(), 99, res.VideoID)
-	require.ErrorIs(t, err, ErrForbidden)
+	require.ErrorIs(t, err, ErrNotFound)
 
 	err = svc.Delete(context.Background(), 42, res.VideoID)
 	require.NoError(t, err)
@@ -531,7 +540,7 @@ func TestDeleteInvalidatesCache(t *testing.T) {
 	require.Equal(t, 1, invalidator.calls, "删除成功必须失效缓存")
 
 	// 越权删除（未成功）不能失效
-	require.ErrorIs(t, svc.Delete(context.Background(), 99, res.VideoID), ErrForbidden)
+	require.ErrorIs(t, svc.Delete(context.Background(), 99, res.VideoID), ErrNotFound)
 	require.Equal(t, 1, invalidator.calls, "失败的删除不得触发失效")
 }
 
@@ -915,4 +924,23 @@ func cursorOrEmpty(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// TestPlayEventInputNormalization：session_id / trace_id 必须在入口归一。
+// 超长值会被 PostgreSQL 以 22001 拒绝（列宽 128/64），最终表现为 500；
+// trace_id 还只接受服务端生成的 UUID，避免观测字段被客户端伪造。
+func TestPlayEventInputNormalization(t *testing.T) {
+	long := strings.Repeat("s", maxSessionIDLength+1)
+	require.Nil(t, normalizePlayEventSessionID(&long), "超长 session_id 必须丢弃而不是透传")
+	blank := "   "
+	require.Nil(t, normalizePlayEventSessionID(&blank))
+	ok := "session-1"
+	require.Equal(t, &ok, normalizePlayEventSessionID(&ok))
+
+	overlongTrace := strings.Repeat("t", maxTraceIDLength+1)
+	require.Nil(t, normalizeTraceID(&overlongTrace))
+	forged := "not-a-uuid"
+	require.Nil(t, normalizeTraceID(&forged), "客户端伪造的 trace_id 不得入库")
+	valid := "0192f0aa-1111-7abc-8def-0123456789ab"
+	require.Equal(t, &valid, normalizeTraceID(&valid))
 }

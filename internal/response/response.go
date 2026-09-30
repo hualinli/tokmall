@@ -21,6 +21,7 @@ var (
 	ErrInsufficientStock     = &BizError{Code: "INSUFFICIENT_STOCK", Message: "insufficient stock"}
 	ErrOrderNotFound         = &BizError{Code: "ORDER_NOT_FOUND", Message: "order not found"}
 	ErrOrderStateConflict    = &BizError{Code: "ORDER_STATE_CONFLICT", Message: "order state conflict"}
+	ErrOrderExpired          = &BizError{Code: "ORDER_EXPIRED", Message: "order expired before payment"}
 	ErrRefundNotFound        = &BizError{Code: "REFUND_NOT_FOUND", Message: "refund not found"}
 	ErrRefundNotAllowed      = &BizError{Code: "REFUND_NOT_ALLOWED", Message: "order status does not allow refund"}
 	ErrRefundAlreadyDecided  = &BizError{Code: "REFUND_ALREADY_DECIDED", Message: "refund already decided"}
@@ -50,6 +51,7 @@ var statusByCode = map[string]int{
 	"INSUFFICIENT_STOCK":      consts.StatusConflict,
 	"ORDER_NOT_FOUND":         consts.StatusNotFound,
 	"ORDER_STATE_CONFLICT":    consts.StatusConflict,
+	"ORDER_EXPIRED":           consts.StatusConflict,
 	"REFUND_NOT_FOUND":        consts.StatusNotFound,
 	"REFUND_NOT_ALLOWED":      consts.StatusConflict,
 	"REFUND_ALREADY_DECIDED":  consts.StatusConflict,

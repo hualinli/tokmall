@@ -14,12 +14,15 @@ import (
 )
 
 var (
-	ErrInvalidParam          = errors.New("invalid param")
-	ErrNotFound              = errors.New("sellable sku or source not found")
-	ErrInsufficientStock     = errors.New("insufficient stock")
-	ErrIdempotencyConflict   = errors.New("idempotency key reused with different request")
-	ErrOrderNotFound         = errors.New("order not found")
-	ErrOrderStateConflict    = errors.New("order state conflict")
+	ErrInvalidParam        = errors.New("invalid param")
+	ErrNotFound            = errors.New("sellable sku or source not found")
+	ErrInsufficientStock   = errors.New("insufficient stock")
+	ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+	ErrOrderNotFound       = errors.New("order not found")
+	ErrOrderStateConflict  = errors.New("order state conflict")
+	// ErrOrderExpired：支付到达时订单已超过 expires_at。支付事务会顺手把订单
+	// 关单并回补库存（lazy expiry），因此这是终态而不是可重试的临时冲突。
+	ErrOrderExpired          = errors.New("order expired before payment")
 	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
 )
 

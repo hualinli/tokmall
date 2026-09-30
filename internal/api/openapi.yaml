@@ -394,6 +394,9 @@ paths:
     delete:
       tags: [videos]
       summary: 删除视频（软删 + 删除 MinIO 对象，旧 URL 立即失效）
+      description: >-
+        非作者与视频不存在统一返回 404：视频 ID 是自增序列，403 会变成
+        "该 ID 存在但不属于你"的存在性预言机，与不可见资源一律 404 的约定冲突。
       parameters:
         - $ref: "#/components/parameters/VideoID"
       responses:
@@ -403,8 +406,6 @@ paths:
           $ref: "#/components/responses/InvalidArgument"
         "401":
           $ref: "#/components/responses/Unauthenticated"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/VideoNotFound"
         "409":
@@ -1033,6 +1034,8 @@ paths:
       description: >-
         仅用于学习环境的受保护用户命令，不是支付渠道回调。订单必须属于当前 Bearer Token 用户；
         不存在与非本人订单统一返回 404。真实渠道回调必须使用独立入口，并先校验渠道签名、时间窗和防重放。
+        超过 expires_at 的订单会被拒绝（409 ORDER_EXPIRED），支付事务同时完成关单与库存回补
+        （lazy expiry），不依赖超时关单 Worker 的调度窗口。
       parameters:
         - $ref: "#/components/parameters/OrderID"
       requestBody:
@@ -1055,7 +1058,9 @@ paths:
         "404":
           $ref: "#/components/responses/OrderNotFound"
         "409":
-          description: 金额不一致、订单状态冲突，或支付标识被不同事实占用
+          description: >-
+            金额不一致（PAYMENT_AMOUNT_MISMATCH）、订单状态冲突（ORDER_STATE_CONFLICT）、
+            订单已超时（ORDER_EXPIRED），或支付标识被不同事实占用（IDEMPOTENCY_CONFLICT）
           content:
             application/json:
               schema:

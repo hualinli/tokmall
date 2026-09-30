@@ -313,6 +313,36 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		require.Equal(t, int64(20), restored)
 	})
 
+	t.Run("late payment is rejected without the expiry worker", func(t *testing.T) {
+		// 关单 Worker 可能积压或未启用；expires_at 必须在支付事务里自己判定，
+		// 否则"超时订单仍可支付"就只是被 Worker 的调度延迟掩盖了。
+		buyerIDs, skuID := seedOrderFixture(t, db, "late-pay-window", 1, 1)
+		svc := NewService(NewRepository(db))
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyerIDs[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "late-pay-window",
+		})
+		require.NoError(t, err)
+		require.NoError(t, db.Exec(`UPDATE orders SET created_at = now() - interval '2 minutes', expires_at = now() - interval '1 minute' WHERE id = ?`, created.OrderID).Error)
+
+		_, err = svc.Pay(context.Background(), PayParams{
+			UserID: buyerIDs[0], OrderID: created.OrderID,
+			PaymentNo: "payment-late-window", ProviderTradeNo: "provider-late-window", Amount: created.TotalAmount,
+		})
+		require.ErrorIs(t, err, ErrOrderExpired, "超过 expires_at 的支付必须被拒绝")
+
+		// lazy expiry：支付路径自己把订单关掉并回补库存，不等 Worker 下一轮扫描。
+		var status Status
+		var payments, stock, expiredLedgers int64
+		require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, created.OrderID).Scan(&status).Error)
+		require.NoError(t, db.Raw(`SELECT count(*) FROM payments WHERE order_id = ?`, created.OrderID).Scan(&payments).Error)
+		require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+		require.NoError(t, db.Raw(`SELECT count(*) FROM inventory_transactions WHERE order_id = ? AND reason = 'ORDER_EXPIRED'`, created.OrderID).Scan(&expiredLedgers).Error)
+		require.Equal(t, StatusExpired, status)
+		require.Zero(t, payments, "不得留下支付尝试记录")
+		require.Equal(t, int64(1), stock, "关单必须回补库存")
+		require.Equal(t, int64(1), expiredLedgers)
+	})
+
 	t.Run("payment and expiry choose one terminal state", func(t *testing.T) {
 		buyerIDs, skuID := seedOrderFixture(t, db, "pay-expire", 1, 1)
 		repo := NewRepository(db)
@@ -350,10 +380,12 @@ func TestPostgresOrderConcurrencyProof(t *testing.T) {
 		pay := <-payErr
 		expire := <-expireResult
 		require.NoError(t, expire.err)
-		require.True(t, (pay == nil) != expire.done, "exactly one transition must win: pay=%v expire=%v", pay, expire.done)
-		if pay != nil {
-			require.ErrorIs(t, pay, ErrOrderStateConflict)
-		}
+		// 支付路径带 lazy expiry，于是这条竞争有两种合法收尾：
+		//   - Worker 先拿到锁：订单已是 EXPIRED，支付返回状态冲突；
+		//   - Worker 因 SKIP LOCKED 跳过被锁行：支付事务自己关单，返回已过期。
+		// 两种情况下终态都必须是 EXPIRED，且库存只回补一次。
+		require.True(t, errors.Is(pay, ErrOrderExpired) || errors.Is(pay, ErrOrderStateConflict),
+			"支付必须被拒绝，实际错误：%v", pay)
 		assertPayOrExpiryAccounting(t, db, created.OrderID, skuID)
 	})
 }

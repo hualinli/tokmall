@@ -1,8 +1,11 @@
 GO ?= go
 BIN := bin/api
 
-# 开发环境默认值（可用 make dev JWT_SECRET=xxx 覆盖；生产环境不应使用 Makefile 启动）
-JWT_SECRET ?= test
+# 开发环境默认值（可用 make dev JWT_SECRET=xxx FEED_CURSOR_SECRET=yyy 覆盖）。
+# 这两个密钥在所有环境都必须显式提供：内置默认值一旦随 APP_ENV 误配带到
+# 公网实例，任何人都能伪造 token 或翻页游标。这里只提供**本地开发**的取值。
+JWT_SECRET ?= dev-only-jwt-secret-for-local-run
+FEED_CURSOR_SECRET ?= dev-only-cursor-secret-for-local-run
 API_LOG := logs/api.log
 WEB_LOG := logs/web.log
 
@@ -47,7 +50,7 @@ dev:
 dev-backend:
 	$(MAKE) build
 	@mkdir -p $(dir $(API_LOG))
-	(env APP_ENV=development JWT_SECRET=$(JWT_SECRET) nohup $(BIN) > $(API_LOG) 2>&1 < /dev/null &)
+	(env APP_ENV=development JWT_SECRET=$(JWT_SECRET) FEED_CURSOR_SECRET=$(FEED_CURSOR_SECRET) nohup $(BIN) > $(API_LOG) 2>&1 < /dev/null &)
 	@sleep 2 && echo "✅ 后端已起 (PID $$(pgrep -f 'bin/api'))"
 
 # 仅起前端（Vite dev server，日志落 logs/web.log）

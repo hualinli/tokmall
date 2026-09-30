@@ -26,6 +26,26 @@ func IsValidUsername(name string) bool {
 	return usernameRe.MatchString(name)
 }
 
+// maxEmailLength 是 RFC 5321 对邮件地址的长度上限，也与 users.email 的
+// VARCHAR(255) 列宽对齐：校验层放行的值必须一定能写进数据库，
+// 否则"参数非法"会以 500 的形式暴露给调用者。
+const maxEmailLength = 254
+
+// NormalizeEmail 校验并规范化邮箱：解析出纯地址（丢弃显示名与尖括号）、
+// 去空白、统一小写。注册与登录必须共用它，否则 Alice@x.com 与 alice@x.com
+// 会变成两个账号（绕过唯一约束），或注册后无法登录。
+func NormalizeEmail(raw string) (string, error) {
+	addr, err := mail.ParseAddress(strings.TrimSpace(raw))
+	if err != nil {
+		return "", ErrInvalidParam
+	}
+	email := strings.ToLower(strings.TrimSpace(addr.Address))
+	if email == "" || len(email) > maxEmailLength || strings.Count(email, "@") != 1 {
+		return "", ErrInvalidParam
+	}
+	return email, nil
+}
+
 var ErrInvalidParam = errors.New("invalid param")
 var ErrInvalidCredentials = errors.New("invalid credentials")
 var ErrInvalidImageKey = errors.New("image key invalid")
@@ -196,10 +216,11 @@ func (s *Service) GetPublicProfile(ctx context.Context, viewerID, userID int64) 
 }
 
 func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, error) {
-	_, err := mail.ParseAddress(p.Email)
+	email, err := NormalizeEmail(p.Email)
 	if err != nil {
 		return nil, ErrInvalidParam
 	}
+	p.Email = email
 	username := strings.TrimSpace(p.Username)
 	if !IsValidUsername(username) {
 		return nil, ErrInvalidParam
@@ -215,7 +236,7 @@ func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, 
 		return nil, err
 	}
 	user := User{
-		Email:        p.Email,
+		Email:        email,
 		Username:     username,
 		PasswordHash: string(hash),
 		Bio:          "",
@@ -247,31 +268,42 @@ func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, 
 }
 
 func (s *Service) Login(ctx context.Context, p LoginParams) (*AuthResult, error) {
-	_, err := mail.ParseAddress(p.EmailOrUsername)
-	var u *User
-	if err != nil {
-		u, err = s.repo.FindByUsername(ctx, strings.TrimSpace(p.EmailOrUsername))
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
+	identifier := strings.TrimSpace(p.EmailOrUsername)
+	// 邮箱大小写不敏感：注册时已规范化存储，登录时用同一规则查询，
+	// 否则 Alice@x.com 能注册却登录不上（或反过来绕过唯一约束）。
+	if email, err := NormalizeEmail(identifier); err == nil {
+		u, findErr := s.repo.FindByEmail(ctx, email)
+		if findErr != nil {
+			if errors.Is(findErr, ErrNotFound) {
 				bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
 				return nil, ErrInvalidCredentials
 			}
-			slog.Error("find user failed", "err", err)
-			return nil, err
+			slog.Error("find user failed", "err", findErr)
+			return nil, findErr
 		}
-	} else {
-		u, err = s.repo.FindByEmail(ctx, p.EmailOrUsername)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
-				return nil, ErrInvalidCredentials
-			}
-			slog.Error("find user failed", "err", err)
-			return nil, err
-		}
+		return s.authenticate(ctx, u, p.Password)
 	}
-	err = bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(p.Password))
+	u, err := s.repo.FindByUsername(ctx, identifier)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
+			return nil, ErrInvalidCredentials
+		}
+		slog.Error("find user failed", "err", err)
+		return nil, err
+	}
+	return s.authenticate(ctx, u, p.Password)
+}
+
+// authenticate 校验口令与账号可用性。停用账号走与"口令错误"完全相同的
+// 返回路径（含 dummy hash 的时间对齐），避免通过响应差异探测账号状态。
+func (s *Service) authenticate(ctx context.Context, u *User, password string) (*AuthResult, error) {
+	err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password))
+	if err != nil {
+		return nil, ErrInvalidCredentials
+	}
+	if !u.Usable() {
+		slog.Warn("login rejected for unusable account", "user_id", u.UserID, "status", u.Status)
 		return nil, ErrInvalidCredentials
 	}
 	accessToken, refreshToken, err := s.issueToken(u.UserID)
@@ -302,6 +334,11 @@ func (s *Service) GetProfile(ctx context.Context, userID int64) (*PublicUser, er
 		}
 		slog.Error("get profile failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("get profile: %w", err)
+	}
+	// 停用账号对公开资料按"不存在"处理：interaction 早已按 ACTIVE 过滤，
+	// 两处可见性规则必须一致，否则同一账号在关注列表里消失、在主页却还在。
+	if !u.Usable() {
+		return nil, ErrNotFound
 	}
 	pu := &PublicUser{
 		UserID:    u.UserID,
@@ -334,26 +371,30 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResult
 	if err != nil {
 		return nil, ErrInvalidCredentials
 	}
-	// 用户已删除（软删）时 token 必须作废，否则删号后旧 refresh token
-	// 还能无限续签新 access token。
-	if _, err := s.repo.FindByID(ctx, userID); err != nil {
+	// 用户被软删或运维停用时 token 必须作废，否则停用后旧 refresh token
+	// 还能无限续签新 access token，安全护栏形同虚设。
+	current, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, ErrInvalidCredentials
 		}
 		slog.Error("find user on refresh failed", "err", err)
 		return nil, fmt.Errorf("find user on refresh: %w", err)
 	}
-	blocked, err := s.blacklist.IsBlocked(ctx, claims.ID)
-	if err != nil {
-		slog.Error("check refresh blacklist failed", "err", err)
-		return nil, fmt.Errorf("check refresh blacklist: %w", err)
-	}
-	if blocked {
+	if !current.Usable() {
+		slog.Warn("refresh rejected for unusable account", "user_id", userID, "status", current.Status)
 		return nil, ErrInvalidCredentials
 	}
-	if err := s.blacklist.Block(ctx, claims.ID, remaining); err != nil {
-		slog.Error("block refresh token failed", "err", err)
-		return nil, fmt.Errorf("block refresh token: %w", err)
+	// 旋转是"抢占"而不是"先查后写"：SETNX 的返回值就是仲裁结果。
+	// 并发的两次刷新只有一个能抢到旧 jti，另一个直接失效，
+	// 被窃取的 refresh token 无法与真实用户并行换取自己的 token 对。
+	claimed, err := s.blacklist.Claim(ctx, claims.ID, remaining)
+	if err != nil {
+		slog.Error("claim refresh token failed", "err", err)
+		return nil, fmt.Errorf("claim refresh token: %w", err)
+	}
+	if !claimed {
+		return nil, ErrInvalidCredentials
 	}
 	accessToken, refreshTokenNew, err := s.issueToken(userID)
 	if err != nil {

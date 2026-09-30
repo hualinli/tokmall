@@ -10,16 +10,65 @@ import (
 
 func TestLoadDevelopmentUsesLocalDefaults(t *testing.T) {
 	setDevelopmentEnv(t)
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-for-local-run")
+	t.Setenv("FEED_CURSOR_SECRET", "dev-cursor-secret-for-local-run")
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, EnvironmentDevelopment, cfg.Environment)
-	require.Equal(t, defaultJWTSecret, cfg.JWTSecret)
-	require.Equal(t, defaultCursorSecret, cfg.CursorSecret)
+	require.Equal(t, "dev-jwt-secret-for-local-run", cfg.JWTSecret)
+	require.Equal(t, "dev-cursor-secret-for-local-run", cfg.CursorSecret)
 	require.Equal(t, "localhost", cfg.DBConfig.Host)
 	require.False(t, cfg.MinIOConfig.UseSSL)
 	require.True(t, cfg.OrderExpiryWorkerEnabled)
 	require.Equal(t, 5*time.Second, cfg.OrderExpiryWorkerInterval)
 	require.Equal(t, 100, cfg.OrderExpiryWorkerBatchSize)
+	require.Equal(t, defaultMetricsAddr, cfg.MetricsAddr)
+	require.Empty(t, cfg.TrustedProxies, "默认不信任任何转发头，限流按 TCP 对端地址")
+}
+
+// TestLoadRequiresSigningSecretsInEveryEnvironment 锁住审计结论：
+// 内置开发默认密钥一旦随 APP_ENV 误配带到公网实例，任何人都能伪造 token/游标。
+func TestLoadRequiresSigningSecretsInEveryEnvironment(t *testing.T) {
+	t.Run("missing jwt secret", func(t *testing.T) {
+		setDevelopmentEnv(t)
+		t.Setenv("JWT_SECRET", "")
+		_, err := Load()
+		require.ErrorContains(t, err, "JWT_SECRET")
+	})
+	t.Run("missing cursor secret", func(t *testing.T) {
+		setDevelopmentEnv(t)
+		t.Setenv("FEED_CURSOR_SECRET", "")
+		_, err := Load()
+		require.ErrorContains(t, err, "FEED_CURSOR_SECRET")
+	})
+}
+
+func TestLoadParsesTrustedProxiesAndRejectsTrustEveryone(t *testing.T) {
+	setDevelopmentEnv(t)
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-for-local-run")
+	t.Setenv("FEED_CURSOR_SECRET", "dev-cursor-secret-for-local-run")
+
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8, 127.0.0.1/32")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Len(t, cfg.TrustedProxies, 2)
+
+	t.Setenv("TRUSTED_PROXIES", "0.0.0.0/0")
+	_, err = Load()
+	require.ErrorContains(t, err, "must not trust every address")
+
+	t.Setenv("TRUSTED_PROXIES", "not-a-cidr")
+	_, err = Load()
+	require.ErrorContains(t, err, "must be a CIDR")
+}
+
+func TestLoadValidatesMetricsAddr(t *testing.T) {
+	setDevelopmentEnv(t)
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-for-local-run")
+	t.Setenv("FEED_CURSOR_SECRET", "dev-cursor-secret-for-local-run")
+	t.Setenv("METRICS_ADDR", "9091")
+	_, err := Load()
+	require.ErrorContains(t, err, "METRICS_ADDR")
 }
 
 func TestLoadExplicitDevelopmentConfig(t *testing.T) {
@@ -193,12 +242,15 @@ func setDevelopmentEnv(t *testing.T) {
 	t.Helper()
 	clearConfigEnv(t)
 	t.Setenv("APP_ENV", EnvironmentDevelopment)
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-for-local-run")
+	t.Setenv("FEED_CURSOR_SECRET", "dev-cursor-secret-for-local-run")
 }
 
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"APP_ENV", "SERVER_PORT", "JWT_SECRET", "FEED_CURSOR_SECRET",
+		"METRICS_ADDR", "TRUSTED_PROXIES",
 		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE", "DB_SSL_MODE",
 		"MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET", "MINIO_USE_SSL",
 		"MINIO_UPLOAD_EXPIRY", "MINIO_DOWNLOAD_EXPIRY", "MINIO_AVATAR_EXPIRY",

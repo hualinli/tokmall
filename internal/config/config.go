@@ -15,7 +15,6 @@ const (
 	EnvironmentProduction  = "production"
 
 	defaultServerPort           = "8080"
-	defaultJWTSecret            = "dev-only-jwt-secret"
 	defaultDBHost               = "localhost"
 	defaultDBPort               = "5432"
 	defaultDBUser               = "tokmall"
@@ -27,7 +26,6 @@ const (
 	defaultUploadExpiry         = 15 * time.Minute
 	defaultDownloadExpiry       = 2 * time.Hour
 	defaultAvatarExpiry         = 7 * 24 * time.Hour
-	defaultCursorSecret         = "change-me-cursor-secret"
 	defaultRedisAddr            = "localhost:6380"
 	defaultRedisDB              = 0
 	defaultFeedCacheTTL         = 60 * time.Second
@@ -42,6 +40,10 @@ const (
 	defaultOrderExpiryWorkerOn  = true
 	defaultOrderExpiryInterval  = 5 * time.Second
 	defaultOrderExpiryBatchSize = 100
+	// defaultMetricsAddr 默认只监听回环地址：/metrics 会暴露路由级 QPS/延迟、
+	// 连接池与运行时指标，属于容量指纹。生产如需 Prometheus 抓取，
+	// 应显式配置 METRICS_ADDR 到内网地址，并由网络策略限制访问。
+	defaultMetricsAddr = "127.0.0.1:9091"
 )
 
 // ErrInvalidFeedRankStrategy 表示排序策略不是当前生产配置支持的策略。
@@ -54,6 +56,12 @@ type Config struct {
 	ServerPort   string
 	JWTSecret    string
 	CursorSecret string
+	// MetricsAddr 是 Prometheus 指标端口的监听地址（默认仅回环）。
+	MetricsAddr string
+	// TrustedProxies 是允许提供 X-Forwarded-For 的代理网段（CIDR 列表）。
+	// 默认为空 = 不信任任何转发头，限流按 TCP 对端地址计算。
+	// 配错（过宽）会让客户端伪造 XFF 绕过按 IP 的限流。
+	TrustedProxies []*net.IPNet
 	DBConfig
 	MinIOConfig
 	RedisConfig
@@ -193,12 +201,28 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	trustedProxies, err := parseTrustedProxies(envString("TRUSTED_PROXIES", ""))
+	if err != nil {
+		return nil, err
+	}
+	// 签名密钥在**所有环境**都必须显式提供：内置开发默认值一旦随
+	// APP_ENV 误配带到公网实例，等于任何人都能伪造 token 或游标。
+	jwtSecret, err := requiredEnv("JWT_SECRET")
+	if err != nil {
+		return nil, fmt.Errorf("%w (开发环境可在 make dev 中通过 JWT_SECRET=... 传入)", err)
+	}
+	cursorSecret, err := requiredEnv("FEED_CURSOR_SECRET")
+	if err != nil {
+		return nil, fmt.Errorf("%w (开发环境可在 make dev 中通过 FEED_CURSOR_SECRET=... 传入)", err)
+	}
 
 	cfg := &Config{
-		Environment:  environment,
-		ServerPort:   envString("SERVER_PORT", defaultServerPort),
-		JWTSecret:    envString("JWT_SECRET", defaultJWTSecret),
-		CursorSecret: envString("FEED_CURSOR_SECRET", defaultCursorSecret),
+		Environment:    environment,
+		ServerPort:     envString("SERVER_PORT", defaultServerPort),
+		JWTSecret:      jwtSecret,
+		CursorSecret:   cursorSecret,
+		MetricsAddr:    envString("METRICS_ADDR", defaultMetricsAddr),
+		TrustedProxies: trustedProxies,
 		DBConfig: DBConfig{
 			Host:     envString("DB_HOST", defaultDBHost),
 			Port:     envString("DB_PORT", defaultDBPort),
@@ -264,6 +288,16 @@ func (c *Config) validate() error {
 	if c.OrderExpiryWorkerBatchSize <= 0 {
 		return errors.New("ORDER_EXPIRY_WORKER_BATCH_SIZE must be positive")
 	}
+	if host, port, err := net.SplitHostPort(c.MetricsAddr); err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return errors.New("METRICS_ADDR must use host:port format")
+	}
+	for _, cidr := range c.TrustedProxies {
+		if ones, bits := cidr.Mask.Size(); bits > 0 && ones == 0 {
+			// 信任 0.0.0.0/0 等于信任所有人：任何客户端都能自带 X-Forwarded-For
+			// 伪造来源地址，按 IP 的限流会被逐请求绕过。
+			return fmt.Errorf("TRUSTED_PROXIES must not trust every address (%s)", cidr.String())
+		}
+	}
 	if c.Environment != EnvironmentProduction {
 		return nil
 	}
@@ -315,11 +349,34 @@ func isKnownDevelopmentSecret(value string) bool {
 		return true
 	}
 	switch normalized {
-	case "test", "secret", "changeme", "change-me", defaultJWTSecret, defaultCursorSecret:
+	case "test", "secret", "changeme", "change-me", "dev-only-jwt-secret", "change-me-cursor-secret":
 		return true
 	default:
 		return false
 	}
+}
+
+// parseTrustedProxies 解析逗号分隔的 CIDR 列表。空值表示不信任任何转发头。
+// 这里刻意不接受裸 IP：CIDR 写法能强制配置者想清楚信任范围（/32 也比
+// 隐式的"全部信任"安全）。
+func parseTrustedProxies(raw string) ([]*net.IPNet, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var cidrs []*net.IPNet
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(item)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXIES entry %q must be a CIDR such as 10.0.0.0/8", item)
+		}
+		cidrs = append(cidrs, network)
+	}
+	return cidrs, nil
 }
 
 func validateFeedRankStrategy(strategy string) error {

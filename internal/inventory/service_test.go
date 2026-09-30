@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type fakeRepository struct {
@@ -290,4 +292,16 @@ func TestServiceAdjustStockConcurrentReplayOnlyOneMutation(t *testing.T) {
 	if quantity != 13 {
 		t.Fatalf("quantity = %d, want 13 (one positive adjustment)", quantity)
 	}
+}
+
+// TestAdjustStockRejectsUnboundedChange：quantity + change 在 BIGINT 上溢出会
+// 让 PostgreSQL 报 22003，最终变成 500。业务上界必须挡在服务层。
+func TestAdjustStockRejectsUnboundedChange(t *testing.T) {
+	repo := &fakeRepository{}
+	svc := NewService(repo)
+	for _, change := range []int64{maxStockChange + 1, -maxStockChange - 1} {
+		_, err := svc.AdjustStock(context.Background(), 1, 2, 3, change, "key-1")
+		require.ErrorIs(t, err, ErrInvalidParam, "change=%d 必须被拒绝", change)
+	}
+	require.Zero(t, repo.adjustCalls, "非法参数不应触达仓储层")
 }

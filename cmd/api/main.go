@@ -99,11 +99,19 @@ func run() error {
 	h := server.New(
 		server.WithHostPorts(addr),
 		server.WithTracer(hertzmonitor.NewServerTracer(
-			":9091", "/metrics",
+			cfg.MetricsAddr, "/metrics",
 			hertzmonitor.WithRegistry(metricsRegistry),
 			hertzmonitor.WithEnableGoCollector(true),
 		)),
 	)
+	// Hertz 默认把 0.0.0.0/0 与 ::/0 都当作可信代理，于是客户端自带的
+	// X-Forwarded-For 会被 ClientIP() 原样采信——按 IP 的限流（登录、读接口）
+	// 就能被逐请求伪造绕过。这里只信任配置显式声明的入口网段；
+	// 未配置时不解析任何转发头，直接使用 TCP 对端地址。
+	h.SetClientIPFunc(app.ClientIPWithOption(app.ClientIPOptions{
+		RemoteIPHeaders: []string{"X-Forwarded-For", "X-Real-IP"},
+		TrustedCIDRs:    cfg.TrustedProxies,
+	}))
 	slog.Info("server starting", "port", cfg.ServerPort)
 	h.Use(
 		middleware.Recovery(),

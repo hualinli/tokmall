@@ -3,6 +3,7 @@ package product
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -20,6 +21,13 @@ func NewRepository(db *gorm.DB) *GormRepository {
 
 func (r *GormRepository) CreateProduct(ctx context.Context, p *Product) error {
 	return r.db.WithContext(ctx).Create(p).Error
+}
+
+// escapeLikePattern 转义 LIKE 元字符。反斜杠必须先转义，否则会把
+// 用户输入里的 \ 变成转义前缀，产生新的歧义。
+func escapeLikePattern(keyword string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(keyword)
 }
 
 func (r *GormRepository) FindProductByID(ctx context.Context, id int64) (*Product, error) {
@@ -79,7 +87,10 @@ func (r *GormRepository) ListProducts(
 	}
 
 	if filter.Keyword != "" {
-		q = q.Where("title ILIKE ?", "%"+filter.Keyword+"%")
+		// LIKE 的通配符必须转义：否则 keyword=% 会命中全部商品，
+		// keyword=_ 也会变成"任意单字符"，把搜索变成全表扫描放大器。
+		// 参数化只防注入，不防通配符语义。
+		q = q.Where(`title ILIKE ? ESCAPE '\'`, "%"+escapeLikePattern(filter.Keyword)+"%")
 	}
 
 	if beforeID > 0 {

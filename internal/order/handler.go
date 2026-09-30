@@ -267,6 +267,8 @@ func (h *Handler) mapError(c *app.RequestContext, err error) {
 		response.Error(c, response.ErrOrderNotFound)
 	case errors.Is(err, ErrOrderStateConflict):
 		response.Error(c, response.ErrOrderStateConflict)
+	case errors.Is(err, ErrOrderExpired):
+		response.Error(c, response.ErrOrderExpired)
 	case errors.Is(err, ErrRefundNotFound):
 		// 与订单同一语义：没有退款、或订单不属于当前调用者，对外都是"找不到"。
 		response.Error(c, response.ErrRefundNotFound)
