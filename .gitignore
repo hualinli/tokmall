@@ -1,6 +1,9 @@
 # 构建产物 / 本地工具
 bin/
 .pnpm-store/
+# 受限沙箱内 Go 工具链的本地缓存（默认缓存在 workspace 外不可写）
+.gopath/
+.gocache/
 .reasonix/
 reasonix.toml
 
