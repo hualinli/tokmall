@@ -33,6 +33,7 @@ import (
 	"github.com/lihualin/tokmall/internal/outbox"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/promotion"
+	"github.com/lihualin/tokmall/internal/reconcile"
 	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
@@ -307,6 +308,19 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 		go func() {
 			defer close(done)
 			relay.Run(relayCtx)
+		}()
+	}
+	if cfg.ReconcileEnabled {
+		runner := reconcile.NewRunner(reconcile.NewRepository(db),
+			reconcile.WithGrace(cfg.ReconcileGrace),
+			reconcile.WithStats(observability.NewReconcileMetrics(registry)))
+		worker := reconcile.NewWorker(runner, cfg.ReconcileInterval, true)
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "reconcile worker")
+		go func() {
+			defer close(done)
+			worker.Run(workerCtx)
 		}()
 	}
 	if cfg.OutboxConsumerEnabled {

@@ -52,6 +52,9 @@ const (
 	defaultOutboxGroup          = "attribution-projection"
 	defaultOutboxMaxDeliver     = 5
 	defaultOutboxClaimIdle      = 30 * time.Second
+	defaultReconcileOn          = true
+	defaultReconcileInterval    = 5 * time.Minute
+	defaultReconcileGrace       = time.Minute
 
 	// defaultMetricsAddr 默认只监听回环地址：/metrics 会暴露路由级 QPS/延迟、
 	// 连接池与运行时指标，属于容量指纹。生产如需 Prometheus 抓取，
@@ -105,8 +108,13 @@ type Config struct {
 	OutboxConsumerGroup         string
 	OutboxConsumerMaxDeliveries int
 	OutboxClaimIdle             time.Duration
-	OrderExpiryWorkerInterval   time.Duration
-	OrderExpiryWorkerBatchSize  int
+	// ReconcileEnabled：周期对账 + 对账驱动的事件重放。
+	ReconcileEnabled  bool
+	ReconcileInterval time.Duration
+	// ReconcileGrace：事件发布后等待消费回执的宽限期，超过即视为可能丢失。
+	ReconcileGrace             time.Duration
+	OrderExpiryWorkerInterval  time.Duration
+	OrderExpiryWorkerBatchSize int
 }
 
 type RedisConfig struct {
@@ -264,6 +272,18 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	outboxStream := envString("OUTBOX_STREAM", defaultOutboxStream)
+	reconcileEnabled, err := envBool("RECONCILE_ENABLED", defaultReconcileOn)
+	if err != nil {
+		return nil, err
+	}
+	reconcileInterval, err := envDuration("RECONCILE_INTERVAL", defaultReconcileInterval)
+	if err != nil {
+		return nil, err
+	}
+	reconcileGrace, err := envDuration("RECONCILE_GRACE", defaultReconcileGrace)
+	if err != nil {
+		return nil, err
+	}
 	trustedProxies, err := parseTrustedProxies(envString("TRUSTED_PROXIES", ""))
 	if err != nil {
 		return nil, err
@@ -335,6 +355,10 @@ func Load() (*Config, error) {
 		OutboxConsumerGroup:         envString("OUTBOX_CONSUMER_GROUP", defaultOutboxGroup),
 		OutboxConsumerMaxDeliveries: outboxMaxDeliveries,
 		OutboxClaimIdle:             outboxClaimIdle,
+
+		ReconcileEnabled:  reconcileEnabled,
+		ReconcileInterval: reconcileInterval,
+		ReconcileGrace:    reconcileGrace,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -375,6 +399,9 @@ func (c *Config) validate() error {
 	}
 	if c.OutboxConsumerMaxDeliveries <= 0 || c.OutboxClaimIdle <= 0 {
 		return errors.New("outbox consumer max deliveries and claim idle must be positive")
+	}
+	if c.ReconcileInterval <= 0 || c.ReconcileGrace <= 0 {
+		return errors.New("RECONCILE_INTERVAL and RECONCILE_GRACE must be positive")
 	}
 	if host, port, err := net.SplitHostPort(c.MetricsAddr); err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
 		return errors.New("METRICS_ADDR must use host:port format")
