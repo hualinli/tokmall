@@ -11,6 +11,11 @@ type GormRepository struct {
 	db *gorm.DB
 }
 
+// 小关注集合用每作者有界索引查询，避免“关注作者很少/没有作品”时扫完整个
+// 全局视频索引。超过此值改用全局时间索引过滤，避免大量 LATERAL index seek。
+// 阈值来自 10 万视频合成数据的执行计划对比，后续在 F1 真实负载中复核。
+const followingMergeMaxAuthors = 32
+
 func NewRepository(db *gorm.DB) *GormRepository {
 	return &GormRepository{db: db}
 }
@@ -61,49 +66,53 @@ func (r *GormRepository) findFeed(ctx context.Context, q *gorm.DB, limit int) ([
 	return videos, nil
 }
 
-// ListFollowingIDs 读某人的关注列表（跨模块只读 follows 表，不依赖 interaction 类型）。
-// 走 follows 主键索引 (follower_id, followee_id)。V1 不缓存关注列表：
-// 单次索引查询 + 千行量级，缓存收益小；关注数增长后（M6 演进）再缓存。
-func (r *GormRepository) ListFollowingIDs(ctx context.Context, userID int64) ([]int64, error) {
-	var ids []int64
-	err := r.db.WithContext(ctx).Table("follows").
-		Where("follower_id = ?", userID).
-		Order("created_at DESC").
-		Pluck("followee_id", &ids).Error
-	if err != nil {
+// ListFollowingPublished 在全部关注作者之间按时间游标取 limit+1 条。
+// 先用 follows 主键索引计数：0 关注直接返回；小集合做每作者有界召回并归并，
+// 大集合沿全局时间索引过滤。两种查询都返回相同的时间键顺序和 limit+1 语义。
+func (r *GormRepository) ListFollowingPublished(ctx context.Context, userID int64, before *Cursor, limit int) ([]Video, error) {
+	var followed int64
+	if err := r.db.WithContext(ctx).Table("follows").Where("follower_id = ?", userID).Count(&followed).Error; err != nil {
 		return nil, err
 	}
-	return ids, nil
+	if followed == 0 {
+		return []Video{}, nil
+	}
+	if followed <= followingMergeMaxAuthors {
+		return r.listFollowingByAuthor(ctx, userID, before, limit)
+	}
+	return r.listFollowingByTime(ctx, userID, before, limit)
 }
 
-// ListFollowingCandidates 关注 Feed 的召回：对每个关注作者取最近 perAuthor 条已发布视频。
-// 窗口函数（ROW_NUMBER PARTITION BY author）一次 SQL 完成"每作者 TOP K"，
-// 避免逐作者查询的 N+1。
-// 召回不排序不截断：排序交给 service 的 Ranker（M8：候选召回与排序分离），
-// 分页截断由 assemble 完成。游标下推到窗口内：翻页只看游标之前的视频。
-func (r *GormRepository) ListFollowingCandidates(ctx context.Context, userID int64, before *Cursor, perAuthor int) ([]Video, error) {
-	inner := r.db.WithContext(ctx).Table("videos v").
-		Select("v.id, v.author_id, v.title, v.object_key, v.cover_key, v.duration_seconds, "+
-			"v.published_at, u.username, u.avatar_key, "+
-			"ROW_NUMBER() OVER (PARTITION BY v.author_id "+
-			"ORDER BY v.published_at DESC, v.id DESC) AS rn").
-		Joins("JOIN users u ON u.id = v.author_id").
-		Where("v.author_id IN (?)", r.db.Table("follows").
-			Select("followee_id").Where("follower_id = ?", userID)).
-		Where("v.status = ?", "PUBLISHED")
+// 对每位作者只取游标之后的前 limit+1 条，再按全局时间键截断。
+// 全局前 limit+1 条必包含在每位作者的前 limit+1 条中，因此不会再发生
+// 旧版固定 K=5 的永久截断；候选规模最多为关注数 × (limit+1)。
+func (r *GormRepository) listFollowingByAuthor(ctx context.Context, userID int64, before *Cursor, limit int) ([]Video, error) {
+	inner := r.db.WithContext(ctx).Table("videos v2").
+		Select("v2.id, v2.author_id, v2.title, v2.object_key, v2.cover_key, v2.duration_seconds, v2.published_at").
+		Where("v2.author_id = f.followee_id AND v2.status = ?", "PUBLISHED")
 	if before != nil {
-		inner = inner.Where("(v.published_at, v.id) < (?, ?)", before.PublishedAt, before.VideoID)
+		inner = inner.Where("(v2.published_at, v2.id) < (?, ?)", before.PublishedAt, before.VideoID)
 	}
+	inner = inner.Order("v2.published_at DESC, v2.id DESC").Limit(limit + 1)
 	var videos []Video
-	err := r.db.WithContext(ctx).Table("(?) AS t", inner).
-		Select("t.id, t.author_id, t.title, t.object_key, t.cover_key, t.duration_seconds, "+
-			"t.published_at, t.username, t.avatar_key").
-		Where("t.rn <= ?", perAuthor).
+	err := r.db.WithContext(ctx).Table("follows f").
+		Select("v.id, v.author_id, v.title, v.object_key, v.cover_key, v.duration_seconds, v.published_at, u.username, u.avatar_key").
+		Joins("JOIN LATERAL (?) AS v ON true", inner).
+		Joins("LEFT JOIN users u ON u.id = v.author_id").
+		Where("f.follower_id = ?", userID).
+		Order("v.published_at DESC, v.id DESC").
+		Limit(limit + 1).
 		Scan(&videos).Error
-	if err != nil {
-		return nil, err
+	return videos, err
+}
+
+func (r *GormRepository) listFollowingByTime(ctx context.Context, userID int64, before *Cursor, limit int) ([]Video, error) {
+	q := r.feedQuery(ctx).
+		Where("EXISTS (SELECT 1 FROM follows WHERE follows.follower_id = ? AND follows.followee_id = videos.author_id)", userID)
+	if before != nil {
+		q = q.Where("(videos.published_at, videos.id) < (?, ?)", before.PublishedAt, before.VideoID)
 	}
-	return videos, nil
+	return r.findFeed(ctx, q, limit)
 }
 
 // PlayCounts 批量查播放数（跨模块只读 play_events 表，走 idx_play_events_video_time 索引）。

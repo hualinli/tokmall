@@ -5,7 +5,7 @@
 --   rn 101..150  → 关注 10 人（seed000101..000150）
 --   rn 151..200  → 关注 0 人（空短路场景，seed000151..000200）
 -- followee 取 rn 偏移段，天然避开自关注（CHECK 约束），且每个 follower 关注
--- 的都是有视频的 seed 作者（前 1000 个作者各 ~33 条 PUBLISHED 视频，> K=5）。
+-- 的都是有视频的 seed 作者（前 1000 个作者各 ~33 条 PUBLISHED 视频）。
 -- 用法: docker exec -i tokmall-postgres-e2e psql -U tokmall -d tokmall < scripts/seed_follows.sql
 
 -- 关注 1000 档：follower rn 1..50，关注 rn+1 .. rn+1000（5 万条）

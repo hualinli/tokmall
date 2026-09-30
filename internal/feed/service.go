@@ -13,9 +13,6 @@ import (
 const (
 	defaultLimit = 20
 	maxLimit     = 100
-	// followingPerAuthorK 关注 Feed 每位作者最多取 K 条（M6 拉模式核心参数）：
-	// 1000 关注上限下窗口内最多 5000 行，内存排序开销可忽略。
-	followingPerAuthorK = 5
 )
 
 var (
@@ -27,8 +24,7 @@ var (
 type Repository interface {
 	ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error)
 	ListPublishedByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
-	ListFollowingIDs(ctx context.Context, userID int64) ([]int64, error)
-	ListFollowingCandidates(ctx context.Context, userID int64, before *Cursor, perAuthor int) ([]Video, error)
+	ListFollowingPublished(ctx context.Context, userID int64, before *Cursor, limit int) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 	PlayCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 }
@@ -168,11 +164,10 @@ func (s *Service) ListByAuthor(ctx context.Context, authorID int64, limit int, c
 }
 
 // ListFollowing 关注 Feed（拉模式，生产仅使用 TimeRanker）：
-// 召回（每作者 TOP K，窗口函数一次 SQL）-> 填充排序计数（ranker 需要时）->
+// 查询全部关注作者中游标之后的 limit+1 条 -> 填充排序计数（ranker 需要时）->
 // Ranker 排序 -> 分页截断。排序与召回分离（M8）：
 // 当前只有 TimeRanker 的排序键与游标一致；HotRanker 在语义闭合前由 Service 拒绝。
-// 不缓存：个性化内容（每个用户一份），且关注列表查询本身是主键索引；
-// 关注数增长后的缓存策略留给 M6 演进（缓存关注列表 / inbox 推模式）。
+// 仅默认 limit 的无游标第一页使用按用户隔离的 Redis 缓存；深层翻页实时查询。
 func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, cursorRaw string) (*FeedResult, error) {
 	if limit == 0 {
 		limit = defaultLimit
@@ -290,19 +285,10 @@ func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*Feed
 
 // loadFollowingPage 关注 Feed 的查询 + 排序 + 拼 URL（无缓存路径，时间游标翻页共用）。
 func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before *Cursor, limit int) (*FeedResult, error) {
-	// 空关注列表短路：避免无谓的子查询（IN (SELECT ...) 返回空集仍有一次开销）。
-	followeeIDs, err := s.repo.ListFollowingIDs(ctx, viewerID)
+	videos, err := s.repo.ListFollowingPublished(ctx, viewerID, before, limit)
 	if err != nil {
-		slog.Error("list following ids failed", "user_id", viewerID, "err", err)
-		return nil, fmt.Errorf("list following ids: %w", err)
-	}
-	if len(followeeIDs) == 0 {
-		return &FeedResult{Items: []FeedItem{}, NextCursor: nil, HasMore: false}, nil
-	}
-	videos, err := s.repo.ListFollowingCandidates(ctx, viewerID, before, followingPerAuthorK)
-	if err != nil {
-		slog.Error("list following candidates failed", "user_id", viewerID, "err", err)
-		return nil, fmt.Errorf("list following candidates: %w", err)
+		slog.Error("list following published failed", "user_id", viewerID, "err", err)
+		return nil, fmt.Errorf("list following published: %w", err)
 	}
 	candidates := make([]Candidate, len(videos))
 	for i, v := range videos {
@@ -342,7 +328,7 @@ func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before 
 
 // decodeCursor 解码游标并校验排序版本与调用方的排序语义一致。
 // 每个端点传自己的期望版本：全局/作者 Feed 固定 time-v1（SQL 排序，不随 ranker 变）；
-// 关注 Feed 当前也只允许 time-v1；未来引入稳定热度排序时再增加独立版本。
+// 关注 Feed 仍使用 time-v1，候选范围扩大但时间排序键不变。
 func (s *Service) decodeCursor(cursorRaw, expectedVersion string) (*Cursor, error) {
 	if cursorRaw == "" {
 		return nil, nil

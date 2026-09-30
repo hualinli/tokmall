@@ -65,7 +65,7 @@ docs/                   mentor 手册 + ADR + 性能基线（git 跟踪，内部
 | M4+ 内容域扩展 | ✅ | 预签名 GET 播放 URL（route A）、作者视频列表 + 硬删 MinIO、公共主页 + 社交列表 + 点赞数 |
 | M4+ 契约与前端 | ✅ | OpenAPI 契约 + route-sync 测试 + React 前端（TanStack Router）+ Playwright e2e |
 | M5 播放事件（同步版） | ✅ | play_events 表 + POST /videos/{id}/play：event_id 幂等（UUID v7）、仅 PUBLISHED、未来时间拒绝；Kafka 异步化待做 |
-| M6 关注 Feed | ✅ | 拉模式：窗口函数每作者 TOP 5（无 N+1）+ 时间游标下推 + 空关注短路；HotRanker 仅保留为包内排序实验 |
+| M6 关注 Feed | ✅ | 当前为拉模式完整时间线：先查关注数，少量关注作者用有界归并，多关注作者用全局时间索引；原每作者 TOP 5 为历史实现；HotRanker 仅保留为包内排序实验 |
 | M8 排序演进 | ✅（边界已收口） | Ranker 接口 + TimeRanker 生产游标分页；HotRanker 仅单元实验（排序键未与游标闭合，配置 fail-fast 禁止启用）；HybridRanker 待做 |
 | M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
 | Commerce 阶段 1～3 | ✅ | 商品/SKU/库存、下单/支付/关单、视频挂商品与卡片、作者成交统计；`ab9d062` |

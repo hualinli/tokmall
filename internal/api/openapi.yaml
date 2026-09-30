@@ -167,8 +167,8 @@ paths:
   /api/v1/feed/following:
     get:
       tags: [feed]
-      summary: 关注 Feed（拉模式：每作者 TOP 5 + 按发布时间倒序，需登录）
-      description: 生产接口当前仅支持与签名时间游标一致的发布时间排序；HotRanker 仅保留为内部排序实验，未开放为可翻页接口。
+      summary: 关注 Feed（完整时间线，按发布时间倒序，需登录）
+      description: 返回全部关注作者的已发布视频，按 (published_at,id) 倒序游标分页，不按作者截断。生产接口仅支持与签名时间游标一致的发布时间排序；HotRanker 仅保留为内部排序实验，未开放为可翻页接口。
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"

@@ -17,7 +17,7 @@ type fakeRepo struct {
 	calls   int
 	videos  []Video           // 已按 (published_at, id) 倒序排好，模拟索引顺序
 	likes   map[string]bool   // key: "{userID}-{videoID}"
-	follows map[int64][]int64 // userID -> followeeIDs（已按关注时间倒序）
+	follows map[int64][]int64 // userID -> followeeIDs
 	plays   map[int64]int64   // videoID -> 播放数
 }
 
@@ -54,36 +54,22 @@ func (f *fakeRepo) LikeCounts(_ context.Context, videoIDs []int64) (map[int64]in
 	return counts, nil
 }
 
-// ListFollowingIDs 模拟关注列表（nil map 读安全：未关注返回空）。
-func (f *fakeRepo) ListFollowingIDs(_ context.Context, userID int64) ([]int64, error) {
-	return f.follows[userID], nil
-}
-
-// ListFollowingCandidates 模拟窗口函数召回：每作者取（游标后）前 perAuthor 条，
-// 不排序不截断（召回与排序分离，排序交给 Ranker）。
-func (f *fakeRepo) ListFollowingCandidates(_ context.Context, userID int64, before *Cursor, perAuthor int) ([]Video, error) {
+// ListFollowingPublished 模拟全局时间索引查询；f.videos 已按时间键倒序。
+func (f *fakeRepo) ListFollowingPublished(ctx context.Context, userID int64, before *Cursor, limit int) ([]Video, error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
-	var candidates []Video
+	followees := make(map[int64]bool, len(f.follows[userID]))
 	for _, followeeID := range f.follows[userID] {
-		k := 0
-		for _, v := range f.videos {
-			if v.AuthorID != followeeID {
-				continue
-			}
-			if before != nil && !(v.PublishedAt.Before(before.PublishedAt) ||
-				(v.PublishedAt.Equal(before.PublishedAt) && v.ID < before.VideoID)) {
-				continue
-			}
-			candidates = append(candidates, v)
-			k++
-			if k >= perAuthor {
-				break
-			}
+		followees[followeeID] = true
+	}
+	rows := make([]Video, 0, len(f.videos))
+	for _, v := range f.videos {
+		if followees[v.AuthorID] {
+			rows = append(rows, v)
 		}
 	}
-	return candidates, nil
+	return f.list(ctx, rows, before, limit), nil
 }
 
 // PlayCounts 从 plays map 聚合（与生产 SQL 语义一致）。
@@ -610,20 +596,41 @@ func TestListFollowing_EmptyFollows(t *testing.T) {
 	require.Empty(t, result.NextCursor)
 }
 
-func TestListFollowing_TopKPerAuthor(t *testing.T) {
-	// 作者 1 有 6 条，作者 2 有 4 条；K=5 -> 作者 1 只出现 5 条（最旧的 a1 被截断）
+func TestListFollowing_IncludesAllFollowedVideos(t *testing.T) {
+	// 作者 1 有 6 条，作者 2 有 4 条；全部应出现在关注时间线。
 	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1, 2}}}
 	svc := newTestService(repo)
 
 	result, err := svc.ListFollowing(context.Background(), 7, 0, "")
 	require.NoError(t, err)
-	require.Len(t, result.Items, 9, "6+4=10 条中作者1被截到 5，共 9 条")
+	require.Len(t, result.Items, 10)
 	titles := make([]string, 0, len(result.Items))
 	for _, it := range result.Items {
 		titles = append(titles, it.Title)
 	}
-	require.Equal(t, []string{"a6", "b4", "a5", "b3", "a4", "b2", "a3", "b1", "a2"}, titles,
-		"全局 (published_at,id) 倒序，且作者1最旧的 a1 被 TOP K 截断")
+	require.Equal(t, []string{"a6", "b4", "a5", "b3", "a4", "b2", "a3", "b1", "a2", "a1"}, titles,
+		"全局 (published_at,id) 倒序，不按作者截断")
+	require.False(t, result.HasMore)
+}
+
+func TestListFollowing_SingleProlificAuthorPaginatesPastFive(t *testing.T) {
+	repo := &fakeRepo{videos: mixedAuthorVideos(), follows: map[int64][]int64{7: {1}}}
+	svc := newTestService(repo)
+	var seen []int64
+	cursor := ""
+	for {
+		page, err := svc.ListFollowing(context.Background(), 7, 2, cursor)
+		require.NoError(t, err)
+		for _, item := range page.Items {
+			seen = append(seen, item.VideoID)
+		}
+		if !page.HasMore {
+			break
+		}
+		cursor = cursorOrEmpty(page.NextCursor)
+		require.NotEmpty(t, cursor)
+	}
+	require.Equal(t, []int64{12, 10, 8, 6, 4, 2}, seen)
 }
 
 func TestListFollowing_CursorPagination(t *testing.T) {
@@ -657,7 +664,13 @@ func TestListFollowing_CursorPagination(t *testing.T) {
 		require.False(t, seen[it.VideoID], "翻页不重复")
 		seen[it.VideoID] = true
 	}
-	require.Len(t, seen, 9, "所有作者 TOP K 全被遍历")
+	require.Len(t, seen, 9, "三页后仍有一条更旧的视频")
+	require.True(t, page3.HasMore)
+	page4, err := svc.ListFollowing(context.Background(), 7, 3, cursorOrEmpty(page3.NextCursor))
+	require.NoError(t, err)
+	require.Len(t, page4.Items, 1)
+	require.Equal(t, int64(2), page4.Items[0].VideoID)
+	require.False(t, page4.HasMore)
 }
 
 func TestListFollowing_InvalidLimit(t *testing.T) {

@@ -5,7 +5,7 @@ import { FEED_PAGE_SIZE } from './use-feed'
 
 /**
  * 关注 Feed 无限查询（需登录）：
- * - 端点 /api/v1/feed/following：拉模式，每作者 TOP 5 + 全局排序
+ * - 端点 /api/v1/feed/following：拉模式，全部关注作者视频按发布时间排序
  * - enabled 控制：未登录时禁用（后端 401 无意义）
  * - 不依赖 URL cursor：个性化内容从第一页开始，翻页状态在 query 内存
  */

@@ -13,9 +13,9 @@ import (
 
 const (
 	firstPageKey = "feed:first_page"
-	// followingCachePrefix 关注 Feed 第一页缓存前缀，完整 key：feed:following:{user_id}:{rank_version}。
-	// 带 rank_version：未来排序版本变化时缓存不串数据；当前生产只使用 time-v1。
-	followingCachePrefix = "feed:following"
+	// full-v1 隔离旧版每作者 TOP 5 的第一页缓存。排序键仍是 time-v1，
+	// 因而时间游标格式不变；旧缓存由原有 TTL 自然清理。
+	followingCachePrefix = "feed:following:full-v1"
 )
 
 // followingCacheVersionsForInvalidation 是关注 Feed 缓存失效时要覆盖的版本集合。
@@ -132,7 +132,7 @@ func (c *RedisFollowingFeedCache) Set(ctx context.Context, userID int64, rankVer
 	return c.client.Set(ctx, followingCacheKey(userID, rankVersion), data, jitteredTTL(c.ttl)).Err()
 }
 
-// InvalidateFollowingFeed 精确删除一个 follower 的关注 Feed 第一页缓存。
+// InvalidateFollowingFeed 精确删除一个 follower 的当前完整时间线第一页缓存。
 // 当前 key 以 rank_version 隔离，所以一次 DEL 显式覆盖所有当前支持版本；不使用
 // SCAN，避免全库遍历和误删其他用户。缓存删除失败由调用方记录 Warn，业务写入
 // 不回滚，TTL 负责最终收敛。
