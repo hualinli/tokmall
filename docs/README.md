@@ -14,6 +14,10 @@
   幂等消费（回执与投影同事务）、DLQ 与人工重放、作者日销投影、`cmd/outboxctl`。
 - **对账与可证明性**（`1436fd5`、`68192ea`）：六项对账检查、对账驱动重放、
   读模型重建、契约 schema 级校验、CI 四个 job、压测客户端与故障演练脚本。
+- **热榜与媒体校验**（2026-10）：`GET /feed/hot`（分钟桶 + 冻结窗口 + 分数游标，
+  补上 HotRanker 缺失的游标闭合）；上传视频的异步 ffprobe 校验 + faststart remux
+  （实测把 moov 从尾部移到头部）。见 ADR-027/028 与
+  [`gcfeed-comparison-and-borrowing.md`](gcfeed-comparison-and-borrowing.md)。
 - **本地观测栈**（2026-10）：`make monitoring` 起 Prometheus + Grafana；
   8 条记录规则 + 6 条告警 + 11 面板看板（JSON 入库），并有测试保证规则引用的指标真实存在。
 - **优惠券域 v1**（2026-10）：满减券的发行量/每人限领/领取截止/状态机/退款退券，
@@ -32,7 +36,8 @@
 | 需要了解 | 看哪里 | 说明 |
 |---|---|---|
 | **面试讲解主文档（先看这个）** | [`interview-walkthrough.md`](interview-walkthrough.md) | 问题导向的十个故事 + 问答速查 + 边界清单 |
-| 同类开源项目对比与借鉴 | [`domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md) | 与 DomTok（Kitex 微服务电商）逐模块对比：借鉴清单 + 避坑清单 + 本轮落地的四项 |
+| 同类开源项目对比与借鉴（电商） | [`domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md) | 与 DomTok（Kitex 微服务电商）逐模块对比：借鉴清单 + 避坑清单 + 落地的五项；附录含 fzuhelper-server 核查 |
+| 同类开源项目对比与借鉴（Feed） | [`gcfeed-comparison-and-borrowing.md`](gcfeed-comparison-and-borrowing.md) | 与 GCFeed（短视频 Feed 系统，核心域高度重叠）对比：热榜与媒体校验的落地 + 16 条避坑清单 |
 | 审核结论与修复计划 | [`project-audit-2026-10.md`](project-audit-2026-10.md)、[`remediation-plan.md`](remediation-plan.md) | 审计发现（编号 BE-*/FE-*/CT-*）与分阶段计划 |
 | 项目结构、里程碑、开发命令 | [`AGENTS.md`](../AGENTS.md) | 项目工作记忆 |
 | 当前模块边界和数据所有权 | [`backend-architecture.md`](backend-architecture.md) | 对照 `cmd/api/main.go` 更新 |

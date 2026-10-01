@@ -32,7 +32,9 @@ internal/
   config/                环境变量配置（默认值 + required）
   database/              连接 + 连接池(25/5/1h) + migrate
   cache/                 Redis 客户端 + 慢命令 Hook（ADR-026）；l1/ 是进程内一级缓存（分片 LRU + 版本校验）
-  storage/               MinIO 封装（预签名 PUT 直传、预签名 GET 播放 URL、StatObject 翻译 NoSuchKey）
+  storage/               MinIO 封装（预签名 PUT 直传、预签名 GET 播放 URL、StatObject 翻译 NoSuchKey、
+                         下载/回写供媒体校验 worker 使用）
+  mediaprobe/            ffprobe 探测 + 策略校验 + faststart remux（纯能力，可独立测试）
   token/                 JWT Manager + GenClaims + Verify（access/refresh 类型区分）
   middleware/            auth（Bearer 校验 + user_id/role 注入，AuthOptional 用于公开接口）、recovery、requestid
   response/              BizError 统一错误码 + HTTP 状态映射 + Abort
@@ -40,7 +42,8 @@ internal/
   user/                  注册/登录/me + refresh 旋转 + logout 黑名单（model + repository + service + handler）
   video/                 发布/详情/发布/删除 + upload_ticket 防伪造（状态机）+ 作者视频列表 + 播放事件
   interaction/           点赞/关注（幂等，ON CONFLICT DO NOTHING）+ 关注/粉丝列表
-  feed/                  Feed 游标分页（HMAC 签名游标）+ 首页缓存 + 关注 Feed（拉模式）+ Ranker 排序 + read model
+  feed/                  Feed 游标分页（HMAC 签名游标）+ 首页缓存 + 关注 Feed（拉模式）+ Ranker 排序
+                         + read model + 热榜（hot*.go：分钟桶/冻结窗口/分数游标）
   product/               商品/SKU、上下架与商品列表/详情
   inventory/             库存与幂等流水
   order/                 单 SKU 订单、模拟支付、取消/超时关单(lazy expiry)、买卖双方查询与履约、
@@ -101,6 +104,8 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | 优惠券域（v1 满减券） | ✅ | 发行量+每人限领+领取截止+券状态机+退款退券+三项对账；100 并发抢 10 张恰好发 10 张；ADR-024 |
 | 依赖级熔断 | ✅ | 自研三态熔断器（装饰器注入对象存储）：MinIO 停机时 3~5s 超时 → 熔断后 0.7ms 快速失败 + 503；失败分类排除"对象不存在"；ADR-023 |
 | 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
+| 热榜（Hot Feed） | ✅ | 分钟桶 ZSET + 冻结窗口 + `(window_end,score,video_id)` 分数游标；后台物化 + singleflight + 降级；幂等计分（重复点赞不重复计分）；ADR-027 |
+| 上传媒体校验 | ✅ | 异步 ffprobe 校验（时长/分辨率/编码白名单）+ faststart remux；工具缺失与文件损坏可区分；实测 moov 从尾部移到头部；ADR-028 |
 | 两级缓存 | ✅ | L1 分片 LRU + 版本号跨实例失效（ADR-025）+ Redis 慢命令 Hook（排除阻塞命令，ADR-026）；feed 响应 ~9ms → ~2.5ms |
 | 观测栈与告警 | ✅ | 8 条记录规则（`level:metric:operations`）+ 6 条告警 + 11 面板看板（JSON 入库）；测试保证规则引用的指标真实存在（变异验证过） |
 | 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck + golangci-lint（精选 14 个 linter，存量 74 问题清零）；`make verify/coverage/vulncheck/lint/help`；`scripts/preflight.sh` |
@@ -140,6 +145,13 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
   request_id/trace_id/span_id/route/user_id，并按字段名黑名单脱敏。
   指标标签只用路由模板（`/api/v1/videos/:id`），禁止 user_id/order_no 等高基数字段
 - **GORM 日志**：ParameterizedQueries + IgnoreRecordNotFoundError + SlowThreshold=200ms
+- **热榜**：分钟桶（`feed:hot:minute:*`，TTL 2h）→ 冻结窗口（`feed:hot:window:*`，TTL 10m，
+  硬上限 2000 条）；游标必须同时带 `window_end` 与 `(hot_score, video_id)`——
+  只带窗口+offset 会在窗口重建后重复/漏数；读路径只读（后台每分钟物化），
+  窗口缺失才 singleflight 回源；窗口为空/Redis 故障 → 降级时间流并打点
+- **媒体校验**：上传后异步 ffprobe 校验（PENDING → PASSED/REJECTED/SKIPPED）；
+  **工具缺失（SKIPPED）与文件损坏（REJECTED）必须区分**——把没装 ffmpeg 当成
+  "视频全坏"是最危险的误判；下载失败不写结果（下轮重试）；REJECTED 不允许处于 PUBLISHED
 - **静态检查**：提交前跑 `make lint`（golangci-lint）。`errorlint`/`nilerr`/`forcetypeassert`
   是本项目错误链的护栏；确需例外时用 `//nolint:<linter> // 理由`（`nolintlint` 强制写理由），
   能用代码表达清楚的不要用 nolint
@@ -177,6 +189,8 @@ make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关�
 make lint                                   # golangci-lint（配置 .golangci.yml；未安装会提示安装命令）
 make verify                                 # 本地一次跑完 CI 门禁（fmt/vet/lint/test/tidy-check）
 make monitoring                             # 观测栈：Prometheus(:9090) + Grafana(:3000)，规则与看板已 provision
+# 热榜：curl "localhost:8080/api/v1/feed/hot?limit=10"（窗口为空时自动降级为时间流）
+# 媒体校验：上传后由 worker 异步处理，结果见 videos.media_probe_status（需本机装 ffmpeg/ffprobe）
 make coverage / make vulncheck / make help   # 覆盖率 / 漏洞扫描 / 目标说明
 scripts/preflight.sh                        # 提交前自检（含前端 tsc）
 wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # Feed 压测（基线见 docs/performance-baseline.md）
