@@ -51,13 +51,15 @@ internal/
                          传输抽象(Redis Streams)、消费组消费者(回执+投影同事务)、重放
   reconcile/             六项对账检查 + 对账驱动重放 + 读模型重建
   breaker/               三态熔断器（closed/open/half-open + 指数退避 + 失败分类）+ 存储装饰器
+  coupon/                优惠券域：满减券模板/领券（锁行+条件更新防超发）/我的券/规则纯函数
   existence/             缓存穿透防护：自研布隆过滤器（双缓冲轮换）+ Redis 负缓存 + 重建任务
   tracing/               W3C traceparent 解析/生成/透传（零依赖，可平滑升级到 OTel）
   testsupport/           跨模块集成测试脚手架（隔离 schema + 迁移 + Redis 开关）
   observability/         db_pool / feed_cache / outbox / reconcile / existence / http 指标、
                          ContextHandler（日志自动注入 request_id/trace_id/route + 脱敏）
-migrations/             版本化 SQL 迁移（000001～000018；商域从 000007 起，退款在 000015，
-                         不变量加固在 000016，Outbox 与投影在 000017，users.status 在 000018）
+migrations/             版本化 SQL 迁移（000001～000019；商域从 000007 起，退款在 000015，
+                         不变量加固在 000016，Outbox 与投影在 000017，users.status 在 000018，
+                         优惠券与订单金额拆分在 000019）
 cmd/outboxctl/          Outbox 运维命令：status / dlq list / dlq requeue / drain
 cmd/reconcile/          对账命令：--json / --replay / --rebuild，退出码 0=一致 1=有差异 2=失败
 cmd/loadgen/            压测客户端：commerce / feed / penetration（缓存穿透）三个场景
@@ -95,6 +97,7 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | Outbox + Kafka | 部分 | Outbox 与可靠投递已完成（默认 Redis Streams，见 ADR-014）；Kafka 仅保留为可替换的 Publisher 实现，未接入（与已搁置的播放事件异步化是不同决策） |
 | 缓存穿透防护 | ✅ | 自研布隆过滤器（双缓冲轮换 + warmup 保护）+ Redis 负缓存（TTL 抖动）+ 重建任务；实测不存在的 ID 从 2,996→5,086 req/s 且数据库零查询；ADR-022 |
 | 超时关单双触发 | ✅ | Outbox `available_at` 实现延迟事件（加速器）+ 轮询 Worker（安全网），数据库为唯一事实源；ADR-021 |
+| 优惠券域（v1 满减券） | ✅ | 发行量+每人限领+领取截止+券状态机+退款退券+三项对账；100 并发抢 10 张恰好发 10 张；ADR-024 |
 | 依赖级熔断 | ✅ | 自研三态熔断器（装饰器注入对象存储）：MinIO 停机时 3~5s 超时 → 熔断后 0.7ms 快速失败 + 503；失败分类排除"对象不存在"；ADR-023 |
 | 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
 | 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck；`make verify/coverage/vulncheck/help`；`scripts/preflight.sh` |
@@ -134,6 +137,10 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
   request_id/trace_id/span_id/route/user_id，并按字段名黑名单脱敏。
   指标标签只用路由模板（`/api/v1/videos/:id`），禁止 user_id/order_no 等高基数字段
 - **GORM 日志**：ParameterizedQueries + IgnoreRecordNotFoundError + SlowThreshold=200ms
+- **券**：规则只有一份实现（`coupon.DiscountFor`，门槛按整单金额）；领取走
+  "锁券行 → 条件更新发行量 → 计数校验限领"三层；订单金额恒满足
+  `total = original - discount`（DB CHECK 兜底）；退款成功退券（过期则标 EXPIRED）；
+  对账覆盖发行量守恒、券-订单一致、金额拆分
 - **熔断**：依赖级熔断器用装饰器注入（业务代码零改动）；`Config.IsFailure` 必须排除
   "业务正常答复"（如对象不存在、redis.Nil），否则正常 404 会打开熔断器；
   熔断打开对外返回 **503**（可重试）而不是 500；对象存储不可用不阻塞服务启动
@@ -149,7 +156,8 @@ go test ./...                               # 后端全量测试
 cd web && pnpm test:e2e                     # Playwright e2e（需后端 + 依赖容器在跑）
 curl localhost:9091/metrics                 # 指标
 make drill                                  # 端到端业务闭环演练（curl+psql 全程可见）
-make drill-failure                          # 故障演练（Redis 停机 / 事件丢失 / 对账重放）
+make drill-failure                          # 故障演练（Redis 停机 / 事件丢失 / 对账重放 / 熔断降级）
+scripts/drill_coupon.sh                     # 优惠券闭环演练（发券→领券→用券→退款退券→对账）
 make reconcile [REPLAY=1] [REBUILD=1]       # 对账 / 重放 / 重建读模型
 make outbox-status                          # Outbox 积压与死信
 make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关闭）

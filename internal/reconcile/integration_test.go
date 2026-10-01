@@ -161,9 +161,10 @@ func seedCleanFixture(t *testing.T, db *gorm.DB) (authorID, buyerID, merchantID,
 	// source_* 三列必须同时存在（orders_source_all_or_none_check），
 	// 这里用真实商品 ID 与一个占位视频 ID 组成完整的归因快照。
 	require.NoError(t, db.Raw(`INSERT INTO orders
-		(order_no, user_id, merchant_id, status, total_amount, idempotency_key, request_fingerprint,
+		(order_no, user_id, merchant_id, status, total_amount, original_amount, discount_amount,
+		 idempotency_key, request_fingerprint,
 		 source_video_id, source_author_id, source_product_id, expires_at, paid_at)
-		VALUES (?, ?, ?, 'PAID', 200, ?, repeat('a', 64), 1, ?, ?, now() + interval '30 minutes', ?) RETURNING id`,
+		VALUES (?, ?, ?, 'PAID', 200, 200, 0, ?, repeat('a', 64), 1, ?, ?, now() + interval '30 minutes', ?) RETURNING id`,
 		prefix+"-order", buyerID, merchantID, prefix+"-key", authorID, productID, paidAt).Scan(&orderID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO order_items
 		(order_id, product_id, sku_id, merchant_id_snapshot, product_title_snapshot, sku_spec_snapshot, unit_price, quantity, line_amount)
@@ -196,4 +197,72 @@ func toStringInt(value int64) string {
 		value /= 10
 	}
 	return string(buf)
+}
+
+// TestReconcileDetectsCouponDrift：券域的三条检查必须能抓到对应的脏数据。
+// 券是"营销资源"，它的问题形态与库存不同（超发、券与订单金额不一致），
+// 因此单独验证，而不是复用库存的用例。
+func TestReconcileDetectsCouponDrift(t *testing.T) {
+	db := testsupport.IsolatedPostgres(t, testsupport.RequireDSN(t))
+	runner := reconcile.NewRunner(reconcile.NewRepository(db), reconcile.WithGrace(time.Minute))
+	ctx := context.Background()
+	_, buyerID, merchantID, _ := seedCleanFixture(t, db)
+
+	// 造一张券 + 一张持券 + 一张用券订单（内部一致）
+	var couponID int64
+	require.NoError(t, db.Raw(`INSERT INTO coupons
+		(merchant_id, title, threshold_amount, discount_amount, total_quantity, issued_quantity, per_user_limit, status, valid_from, valid_to)
+		VALUES (?, '满 10 减 2', 1000, 200, 100, 1, 1, 'ACTIVE', now() - interval '1 minute', now() + interval '1 hour')
+		RETURNING id`, merchantID).Scan(&couponID).Error)
+	var userCouponID int64
+	require.NoError(t, db.Raw(`INSERT INTO user_coupons (coupon_id, user_id, status)
+		VALUES (?, ?, 'UNUSED') RETURNING id`, couponID, buyerID).Scan(&userCouponID).Error)
+
+	t.Run("clean coupon data reports no differences", func(t *testing.T) {
+		report, err := runner.Run(ctx)
+		require.NoError(t, err)
+		require.Zero(t, differencesOf(t, report, "coupon_issuance"))
+		require.Zero(t, differencesOf(t, report, "coupon_usage"))
+	})
+
+	t.Run("issuance drift is detected", func(t *testing.T) {
+		// 发行量计数器被手工改大（模拟补偿脚本漏写/重复计数）
+		require.NoError(t, db.Exec(`UPDATE coupons SET issued_quantity = issued_quantity + 3 WHERE id = ?`, couponID).Error)
+		report, err := runner.Run(ctx)
+		require.NoError(t, err)
+		require.Positive(t, differencesOf(t, report, "coupon_issuance"))
+		require.NoError(t, db.Exec(`UPDATE coupons SET issued_quantity = issued_quantity - 3 WHERE id = ?`, couponID).Error)
+	})
+
+	// 注意：另外两种"更脏"的形态被数据库 CHECK 直接挡住了，注入不进去——
+	//   user_coupons_usage_check 要求 USED ⟺ used_at ⟺ order_id 三者同真同假；
+	//   orders_amount_split_check 要求 total = original - discount。
+	// 这说明约束把"能写坏的方式"收窄了，对账只需覆盖约束管不到的部分（下面两条）。
+	t.Run("usage drift is detected", func(t *testing.T) {
+		var orderID int64
+		require.NoError(t, db.Raw(`SELECT id FROM orders WHERE user_id = ? LIMIT 1`, buyerID).Scan(&orderID).Error)
+		// 券被核销到一张"优惠金额为 0、也没记录这张券"的订单上：
+		// 单独看两张表都合法，只有对账能把它们联系起来发现不一致。
+		require.NoError(t, db.Exec(`UPDATE user_coupons SET status = 'USED', used_at = now(), order_id = ? WHERE id = ?`,
+			orderID, userCouponID).Error)
+		report, err := runner.Run(ctx)
+		require.NoError(t, err)
+		require.Positive(t, differencesOf(t, report, "coupon_usage"))
+		require.NoError(t, db.Exec(`UPDATE user_coupons SET status = 'UNUSED', used_at = NULL, order_id = NULL WHERE id = ?`, userCouponID).Error)
+	})
+
+	t.Run("amount split drift is detected", func(t *testing.T) {
+		// 订单引用了持券但优惠金额为 0：算术约束（total = original - discount）管不到这种关系。
+		require.NoError(t, db.Exec(`UPDATE orders SET user_coupon_id = ? WHERE user_id = ?`, userCouponID, buyerID).Error)
+		report, err := runner.Run(ctx)
+		require.NoError(t, err)
+		require.Positive(t, differencesOf(t, report, "order_amount_split"))
+		require.NoError(t, db.Exec(`UPDATE orders SET user_coupon_id = NULL WHERE user_id = ?`, buyerID).Error)
+	})
+
+	t.Run("converges back to clean", func(t *testing.T) {
+		report, err := runner.Run(ctx)
+		require.NoError(t, err)
+		require.True(t, report.OK(), "清理后必须恢复一致：%+v", report)
+	})
 }

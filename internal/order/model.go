@@ -72,12 +72,19 @@ func (Refund) TableName() string { return "refunds" }
 // Order 对应 orders 表。Source* 是下单时归因快照 ID，不声明 GORM 关联，
 // 避免内容域对象后续变化影响订单事实。
 type Order struct {
-	ID                 int64      `gorm:"column:id;primaryKey"`
-	OrderNo            string     `gorm:"column:order_no"`
-	UserID             int64      `gorm:"column:user_id"`
-	MerchantID         int64      `gorm:"column:merchant_id"`
-	Status             Status     `gorm:"column:status"`
-	TotalAmount        Amount     `gorm:"column:total_amount"`
+	ID         int64  `gorm:"column:id;primaryKey"`
+	OrderNo    string `gorm:"column:order_no"`
+	UserID     int64  `gorm:"column:user_id"`
+	MerchantID int64  `gorm:"column:merchant_id"`
+	Status     Status `gorm:"column:status"`
+	// TotalAmount 是**实付金额**（= OriginalAmount - DiscountAmount）。
+	// GMV 口径按实付计（ADR-017 的延伸），优惠单独列出来供对账。
+	TotalAmount Amount `gorm:"column:total_amount"`
+	// OriginalAmount 是商品原价合计；DiscountAmount 是券带来的优惠。
+	OriginalAmount Amount `gorm:"column:original_amount"`
+	DiscountAmount Amount `gorm:"column:discount_amount"`
+	// UserCouponID 记录本单用了哪张券（退款退券与对账的依据）。
+	UserCouponID       *int64     `gorm:"column:user_coupon_id"`
 	IdempotencyKey     string     `gorm:"column:idempotency_key"`
 	RequestFingerprint string     `gorm:"column:request_fingerprint"`
 	SourceVideoID      *int64     `gorm:"column:source_video_id"`

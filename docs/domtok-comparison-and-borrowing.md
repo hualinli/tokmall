@@ -81,7 +81,7 @@
 | 5 | **GORM 日志策略：参数化 + 忽略 record not found + 慢查询阈值** | `pkg/base/client/db.go:52-55` | ⭐⭐⭐ 日志合规 + 噪声治理；压测里实测出 10 倍差距 | 小 | ✅ §4.1 附带 |
 | 6 | **库存"可售量 = stock − locked"三段式语义** | `sku_info(stock, lock_stock)`：下单预占、支付实扣、超时释放 | ⭐⭐⭐⭐ 讲清"可售量 vs 实物库存"与超卖边界 | 中 | ⏳ 见 §5 |
 | 7 | **SKU 价格版本表 + 全链路 version_id** | `sku_price_history` + 订单 `goods_version` | ⭐⭐⭐⭐ 价格审计、"下单时价格"的可证明性 | 中 | ⏳ 见 §5 |
-| 8 | **优惠券/促销域** | `coupon_info` + `user_coupon` + 贪心选券 | ⭐⭐⭐⭐ 券组合是背包问题、防超发、金额分摊、退款退券 | 大 | ⏳ 见 §5（必须重新设计） |
+| 8 | **优惠券/促销域** | `coupon_info` + `user_coupon` + 贪心选券 | ⭐⭐⭐⭐ 防超发、一券一单、退款退券、金额口径与对账 | 大 | ✅ §4.6（按它的反面清单重新设计） |
 | 9 | **熔断/降级（依赖级）** | Sentinel 流控（`app/gateway/mw/sentinel.go`）+ Redis 健康探测双路径降级 | ⭐⭐⭐⭐ 限流 vs 熔断 vs 降级的区别，有真实代码 | 中 | ✅ §4.5 |
 | 10 | **两级缓存（进程内 L1 + Redis L2）+ 失效广播** | DomTok 没有本地缓存 | ⭐⭐⭐⭐ 多级缓存一致性与 QPS 提升 | 中 | ⏳ 见 §5 |
 | 11 | **错误在"创建点"抓栈 + 错误日志分流** | `pkg/errno` 的 `callers()`（延迟符号化）+ `pkg/middleware/log.go:40-63` | ⭐⭐⭐ "错误现场是构造它的那一行" | 小 | ⏳（TokMall 的哨兵错误是单例，需改造才适用） |
@@ -230,6 +230,47 @@ DomTok 有 OTel/Jaeger 全家桶，但**trace 与 log 是两条互不相关的�
 （"省下了多少次必然失败的等待"的直接量化）、`breaker_probes_total{result}`。
 已加入 `scripts/drill_failure_modes.sh` 第 6 步，可复现。
 
+### 4.6 优惠券域（按 DomTok 的反面清单重新设计）
+
+DomTok 有券但实现有 8 处硬伤（§2.1 第 7 条与商域报告 §3）：**没有发行量**、领取截止
+从不校验、**领取次数由客户端传**、核销代码是死代码、门槛按单行而不是整单、
+金额字段语义错位（`discount_amount` 装的是应付金额）、退款不处理券、券没有状态机。
+结论是"功能缺失"而不是"简化"。
+
+TokMall 重新设计并实现了 v1 满减券（`internal/coupon` + 迁移 000019），逐条对上：
+
+| DomTok 的问题 | TokMall 的做法 |
+|---|---|
+| 没有发行量 | `total_quantity` + `issued_quantity`，领取时**条件更新**（`issued < total`）+ 数据库 CHECK 双保险 |
+| 无每人限领 | `per_user_limit` + 领取事务内计数；并发 20 次领 2 张限领 → 恰好 2 次成功 |
+| 领取截止不校验 | `valid_from/valid_to` 在**领取时**与**使用时**都校验；过期在读取时按当前时间判定 |
+| 次数由客户端传 | 请求体只有 `coupon_id`；发行量、限领、优惠金额全部服务端决定 |
+| 核销是死代码 | 下单事务内条件更新 `WHERE status='UNUSED'` + `RowsAffected=1` 校验；券状态机 UNUSED/USED/EXPIRED |
+| 门槛按单行 | `DiscountFor` 只接受**整单商品金额**（v1 单 SKU 订单等价，多商品时语义已就位） |
+| 金额字段语义错位 | 订单拆成 `original_amount / discount_amount / total_amount`，数据库 CHECK 保证 `total = original - discount` |
+| 退款不处理券 | 全额退款成功 → 券退回 UNUSED（已过期则标 EXPIRED），并清空订单引用 |
+| 无对账 | 新增三项对账检查：发行量守恒、券-订单一致、订单金额拆分 |
+
+**并发证明**（`internal/coupon/postgres_integration_test.go`，真实 PostgreSQL）：
+
+| 场景 | 结果 |
+|---|---|
+| 100 个用户并发抢 10 张券 | 恰好 10 成功、90 售罄；`issued_quantity` == 实际持券数 == 10 |
+| 同一用户并发领 20 次（限领 2 张） | 恰好 2 次成功、18 次 `COUPON_ALREADY_CLAIMED`；被拒的领取回滚了发行量计数 |
+| 绕过应用层裸 UPDATE 推高发行量 | 被数据库 CHECK `coupons_issued_not_exceed_total_check` 拒绝 |
+
+**订单侧集成**（`internal/order/coupon_postgres_integration_test.go`）：
+金额拆分正确、幂等重放不二次核销、退款退券（有效期内 UNUSED / 过期 EXPIRED）、
+门槛不足 / 用别人的券 / 重复用同一张券都被拒绝。
+
+**对账新增的三项**（`bin/reconcile` 从 6 项变 9 项）：`coupon_issuance`、`coupon_usage`、
+`order_amount_split`。有意思的是：另外两种"更脏"的形态（已核销却没有订单、实付≠原价−优惠）
+**被数据库 CHECK 直接挡住了，注入不进去**——约束把"能写坏的方式"收窄了，
+对账只需覆盖约束管不到的部分。
+
+**演练**：`scripts/drill_coupon.sh` 走完发券 → 领券防重 → 用券下单 → 支付 →
+退款退券 → 九项对账，每一步都回查数据库事实。
+
 ---
 
 ## 5. 未落地但值得做的（含设计要点）
@@ -254,7 +295,7 @@ UPDATE inventory SET locked = locked - $1 WHERE sku_id = $2;                    
 退款回补、对账（库存守恒公式变成 `quantity + locked` 的守恒）全部要跟着改，
 属于**一次完整的领域重构**，需要单独的 ADR 与并发实验。
 
-### 5.2 优惠券/促销域（必须重新设计）
+### 5.2 优惠券域 v2（v1 已落地，见 §4.6）
 
 DomTok 的券实现有 8 处硬伤（无发行量、无截止校验、领取次数由客户端传、
 核销是死代码、按单行而非整单门槛、金额字段语义错位、退款不处理券、无状态机）。

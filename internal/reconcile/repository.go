@@ -184,6 +184,44 @@ func checks(grace time.Duration) []check {
 					OR COALESCE(lr.refunded_amount, 0) <> COALESCE(p.refunded_amount, 0)`,
 		},
 		{
+			// 券是"营销资源"，它的守恒式与库存不同：
+			//   发行量 = 实际持券数（每条领取都必须计数）
+			//   已核销的券必须指向一张真实订单，且订单优惠金额 = 券面额
+			// 这两条覆盖了"超发"和"券金额与订单金额对不上"两类问题。
+			name:        "coupon_issuance",
+			description: "券的发行量必须等于实际持券数，且不超发行上限",
+			query: `SELECT c.id AS coupon_id, c.title, c.total_quantity, c.issued_quantity,
+					count(uc.id) AS actual_claims
+				FROM coupons c
+				LEFT JOIN user_coupons uc ON uc.coupon_id = c.id
+				GROUP BY c.id, c.title, c.total_quantity, c.issued_quantity
+				HAVING c.issued_quantity <> count(uc.id)
+					OR (c.total_quantity > 0 AND c.issued_quantity > c.total_quantity)`,
+		},
+		{
+			name:        "coupon_usage",
+			description: "已核销的券必须对应订单，且订单优惠金额等于券面额",
+			query: `SELECT uc.id AS user_coupon_id, uc.coupon_id, uc.status, uc.order_id,
+					c.discount_amount AS coupon_discount,
+					o.discount_amount AS order_discount,
+					o.user_coupon_id AS order_coupon_id
+				FROM user_coupons uc
+				JOIN coupons c ON c.id = uc.coupon_id
+				LEFT JOIN orders o ON o.id = uc.order_id
+				WHERE (uc.status = 'USED' AND (o.id IS NULL OR o.user_coupon_id <> uc.id))
+					OR (uc.status <> 'USED' AND uc.order_id IS NOT NULL)
+					OR (uc.status = 'USED' AND o.discount_amount <> c.discount_amount)`,
+		},
+		{
+			name:        "order_amount_split",
+			description: "订单金额必须满足 实付 = 原价 - 优惠，且用券订单必须引用持券",
+			query: `SELECT o.id AS order_id, o.original_amount, o.discount_amount, o.total_amount, o.user_coupon_id
+				FROM orders o
+				WHERE o.total_amount <> o.original_amount - o.discount_amount
+					OR (o.discount_amount > 0 AND o.user_coupon_id IS NULL)
+					OR (o.discount_amount = 0 AND o.user_coupon_id IS NOT NULL)`,
+		},
+		{
 			name:        "outbox_delivery",
 			description: "已发布事件必须在宽限期内拿到消费回执，否则说明事件可能已丢失",
 			query: `SELECT e.event_id, e.event_type, e.aggregate_id, e.published_at

@@ -1257,6 +1257,149 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/coupons:
+    post:
+      tags: [coupons]
+      summary: 商家创建满减券
+      description: >-
+        券模板由服务端校验：门槛与面额为正整数（分）、面额不超过门槛、有效期区间合法、
+        发行量与每人限领有上界。发行量为 0 表示不限量；已发放数量不接受客户端提交。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCouponRequest"
+      responses:
+        "201":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CouponDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/coupons/mine:
+    get:
+      tags: [coupons]
+      summary: 商家查看自己发行的券（含发行量进度）
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 券列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CouponList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /api/v1/coupons/available:
+    get:
+      tags: [coupons]
+      summary: 查看当前可领取的券（匿名可读）
+      description: >-
+        只返回 ACTIVE、在有效期内且仍有余量的券；已登录时附带 claimed_by_me
+        （服务端算好"我是否已达每人限领"，避免前端重复实现规则）。
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 可领取的券
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CouponList"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/coupons/{id}/claim:
+    post:
+      tags: [coupons]
+      summary: 领取优惠券
+      description: >-
+        领取在单个事务内完成：锁券行 → 校验状态与有效期 → 条件更新发行量（防超发）→
+        校验每人限领 → 写入持券。并发领取由券行锁串行化，因此不会超发也不会超领；
+        已达限领返回 409 COUPON_ALREADY_CLAIMED，领完返回 409 COUPON_SOLD_OUT。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        "201":
+          description: 领取成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserCouponDetail"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/CouponNotFound"
+        "409":
+          description: 已领完 / 已达每人限领 / 券不可领或已过期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/me/coupons:
+    get:
+      tags: [coupons]
+      summary: 我的券
+      description: >-
+        status 可选 UNUSED/USED/EXPIRED；不传返回全部。过期由服务端按当前时间判定
+        （不依赖定时任务刷状态），usable 字段直接给出"现在能不能用"。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [UNUSED, USED, EXPIRED] }
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 我的券列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserCouponList"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+
+  /api/v1/me/coupons/{id}:
+    get:
+      tags: [coupons]
+      summary: 查看单张持券（下单前校验用）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        "200":
+          description: 持券详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserCouponDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/UserCouponNotFound"
+
   /api/v1/authors/{id}/sales:
     get:
       tags: [attribution]
@@ -1443,6 +1586,18 @@ components:
             $ref: "#/components/schemas/Error"
     RefundNotFound:
       description: 订单没有退款单，或订单不属于当前买家/商家（统一 404，不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CouponNotFound:
+      description: 券不存在或已不可领取（统一 404，不泄露存在性）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UserCouponNotFound:
+      description: 持券不存在或不属于当前用户（统一 404，不泄露存在性）
       content:
         application/json:
           schema:
@@ -2108,6 +2263,10 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+        user_coupon_id:
+          type: integer
+          format: int64
+          description: 可选的持券 ID；服务端校验归属/状态/有效期/门槛并计算优惠金额
         source:
           $ref: "#/components/schemas/CreateOrderSource"
     CreateOrderSource:
@@ -2129,7 +2288,7 @@ components:
           minimum: 1
     CreateOrderResponse:
       type: object
-      required: [order_id, order_no, status, total_amount, expires_at, item, replayed]
+      required: [order_id, order_no, status, total_amount, original_amount, discount_amount, expires_at, item, replayed]
       properties:
         order_id:
           type: integer
@@ -2142,7 +2301,19 @@ components:
         total_amount:
           type: integer
           format: int64
-          description: 订单总金额，单位分
+          description: 实付金额（= original_amount - discount_amount），单位分
+        original_amount:
+          type: integer
+          format: int64
+          description: 商品原价合计
+        discount_amount:
+          type: integer
+          format: int64
+          description: 优惠金额（券面额）
+        user_coupon_id:
+          type: integer
+          format: int64
+          description: 本单使用的持券 ID
         expires_at:
           type: string
           format: date-time
@@ -2172,6 +2343,19 @@ components:
         total_amount:
           type: integer
           format: int64
+          description: 实付金额（= original_amount - discount_amount），也是支付金额
+        original_amount:
+          type: integer
+          format: int64
+          description: 商品原价合计
+        discount_amount:
+          type: integer
+          format: int64
+          description: 优惠金额（券面额）
+        user_coupon_id:
+          type: integer
+          format: int64
+          description: 本单使用的持券 ID
         source:
           $ref: "#/components/schemas/CreateOrderSource"
         expires_at:
@@ -2283,6 +2467,66 @@ components:
           format: date-time
         replayed:
           type: boolean
+    CreateCouponRequest:
+      type: object
+      required: [title, threshold_amount, discount_amount, valid_from, valid_to]
+      properties:
+        title: { type: string, maxLength: 100 }
+        threshold_amount: { type: integer, format: int64, description: 满（单位：分） }
+        discount_amount: { type: integer, format: int64, description: 减（单位：分，不得超过 threshold_amount） }
+        total_quantity: { type: integer, format: int64, description: 发行量，0 表示不限量 }
+        per_user_limit: { type: integer, format: int32, description: 每人限领，默认 1 }
+        valid_from: { type: string, format: date-time }
+        valid_to: { type: string, format: date-time }
+    CouponDetail:
+      type: object
+      required: [coupon_id, merchant_id, title, threshold_amount, discount_amount, total_quantity, issued_quantity, remaining, per_user_limit, status, valid_from, valid_to, claimed_by_me]
+      properties:
+        coupon_id: { type: integer, format: int64 }
+        merchant_id: { type: integer, format: int64 }
+        title: { type: string }
+        threshold_amount: { type: integer, format: int64 }
+        discount_amount: { type: integer, format: int64 }
+        total_quantity: { type: integer, format: int64 }
+        issued_quantity: { type: integer, format: int64 }
+        remaining: { type: integer, format: int64, description: 剩余可领数量，-1 表示不限量 }
+        per_user_limit: { type: integer, format: int32 }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        valid_from: { type: string, format: date-time }
+        valid_to: { type: string, format: date-time }
+        claimed_by_me: { type: boolean, description: 仅"可领取列表"填充：我是否已达限领 }
+    CouponList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CouponDetail"
+    UserCouponDetail:
+      type: object
+      required: [user_coupon_id, coupon_id, title, threshold_amount, discount_amount, status, valid_from, valid_to, claimed_at, usable]
+      properties:
+        user_coupon_id: { type: integer, format: int64 }
+        coupon_id: { type: integer, format: int64 }
+        title: { type: string }
+        threshold_amount: { type: integer, format: int64 }
+        discount_amount: { type: integer, format: int64 }
+        status: { type: string, enum: [UNUSED, USED, EXPIRED] }
+        valid_from: { type: string, format: date-time }
+        valid_to: { type: string, format: date-time }
+        claimed_at: { type: string, format: date-time }
+        used_at: { type: string, format: date-time }
+        order_id: { type: integer, format: int64 }
+        usable: { type: boolean, description: 服务端判定：未使用且在有效期内 }
+    UserCouponList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserCouponDetail"
     RequestRefundRequest:
       type: object
       required: [reason]

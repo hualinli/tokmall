@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/lihualin/tokmall/internal/outbox"
@@ -176,6 +177,13 @@ func approveRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundCom
 		}
 	}
 
+	// 退券：全额退款成功后把券退回可再用状态（前提是券仍在有效期内）。
+	// 这是 DomTok 完全缺失的一环——它的退款既不写金额也不处理券，
+	// 券一旦核销就永久消失，用户退款后拿不回优惠。
+	if err := restoreUserCoupon(db, order, at); err != nil {
+		return err
+	}
+
 	// 退款成功同样走 Outbox：投影、通知、对账都靠这条事件驱动。
 	// 与支付一样，事件与状态变更在同一事务里提交或回滚。
 	item, err := findOrderItem(db, order.ID)
@@ -277,6 +285,59 @@ func restoreStock(db *gorm.DB, order Order, at time.Time) error {
 	}
 	if inserted.RowsAffected == 0 {
 		return errors.New("inventory invariant violated: refund stock already restored for order")
+	}
+	return nil
+}
+
+// restoreUserCoupon 把订单用掉的券退回：
+//   - 券仍在有效期内 → UNUSED（清空 used_at/order_id，用户可以再次使用）；
+//   - 已过期 → EXPIRED（退也没用，但状态要如实反映，便于对账）。
+//
+// 注意"退款成功"与"退券"是两件事：券是营销资源，退回与否不影响资金事实，
+// 因此这里失败不会回滚退款（退款是资金终态，优先级更高）。
+func restoreUserCoupon(db *gorm.DB, order Order, at time.Time) error {
+	if order.UserCouponID == nil {
+		return nil
+	}
+	var row struct {
+		ID      int64     `gorm:"column:id"`
+		ValidTo time.Time `gorm:"column:valid_to"`
+		Status  string    `gorm:"column:status"`
+		OrderID *int64    `gorm:"column:order_id"`
+	}
+	err := db.Raw(`SELECT uc.id, c.valid_to, uc.status, uc.order_id
+		FROM user_coupons uc JOIN coupons c ON c.id = uc.coupon_id
+		WHERE uc.id = ? FOR UPDATE OF uc`, *order.UserCouponID).Scan(&row).Error
+	if err != nil {
+		return err
+	}
+	if row.ID == 0 {
+		// 券记录被删（人工运维）：退款仍然有效，只记日志。
+		slog.Warn("refund cannot restore coupon: user coupon missing",
+			"order_id", order.ID, "user_coupon_id", *order.UserCouponID)
+		return nil
+	}
+	if row.Status != "USED" || row.OrderID == nil || *row.OrderID != order.ID {
+		// 券不是被本单用掉的（数据不一致或已退回）：不动它，留给对账暴露。
+		slog.Warn("refund found coupon not used by this order",
+			"order_id", order.ID, "user_coupon_id", row.ID, "coupon_status", row.Status)
+		return nil
+	}
+
+	status := "UNUSED"
+	if !at.Before(row.ValidTo) {
+		status = "EXPIRED"
+	}
+	updated := db.Model(&userCouponRow{}).
+		Where("id = ? AND status = ? AND order_id = ?", row.ID, "USED", order.ID).
+		Updates(map[string]any{
+			"status": status, "used_at": nil, "order_id": nil, "updated_at": at,
+		})
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected != 1 {
+		return errors.New("refund invariant violated: coupon restore raced with another update")
 	}
 	return nil
 }

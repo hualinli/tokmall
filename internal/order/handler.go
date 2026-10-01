@@ -115,6 +115,9 @@ type CreateOrderRequest struct {
 	Quantity       int32              `json:"quantity" binding:"required"`
 	IdempotencyKey string             `json:"idempotency_key" binding:"required"`
 	Source         *CreateOrderSource `json:"source"`
+	// UserCouponID 可选：用哪张持券。服务端校验归属/状态/有效期/门槛，
+	// 优惠金额由服务端计算，客户端传不了金额。
+	UserCouponID *int64 `json:"user_coupon_id"`
 }
 
 type CreateOrderSource struct {
@@ -124,13 +127,16 @@ type CreateOrderSource struct {
 }
 
 type CreateOrderResponse struct {
-	OrderID     int64             `json:"order_id"`
-	OrderNo     string            `json:"order_no"`
-	Status      Status            `json:"status"`
-	TotalAmount Amount            `json:"total_amount"`
-	ExpiresAt   time.Time         `json:"expires_at"`
-	Item        OrderItemResponse `json:"item"`
-	Replayed    bool              `json:"replayed"`
+	OrderID        int64             `json:"order_id"`
+	OrderNo        string            `json:"order_no"`
+	Status         Status            `json:"status"`
+	TotalAmount    Amount            `json:"total_amount"`
+	OriginalAmount Amount            `json:"original_amount"`
+	DiscountAmount Amount            `json:"discount_amount"`
+	UserCouponID   *int64            `json:"user_coupon_id,omitempty"`
+	ExpiresAt      time.Time         `json:"expires_at"`
+	Item           OrderItemResponse `json:"item"`
+	Replayed       bool              `json:"replayed"`
 }
 
 type OrderItemResponse struct {
@@ -181,6 +187,7 @@ func (h *Handler) create(ctx context.Context, c *app.RequestContext) {
 	params := CreateParams{
 		UserID: c.GetInt64(middleware.CtxUserIDKey), SKUID: req.SKUID,
 		Quantity: req.Quantity, IdempotencyKey: req.IdempotencyKey,
+		UserCouponID: req.UserCouponID,
 	}
 	if req.Source != nil {
 		params.Source = &Source{
@@ -278,6 +285,14 @@ func (h *Handler) mapError(c *app.RequestContext, err error) {
 		response.Error(c, response.ErrRefundAlreadyDecided)
 	case errors.Is(err, ErrPaymentAmountMismatch):
 		response.Error(c, response.ErrPaymentAmountMismatch)
+	case errors.Is(err, ErrCouponNotFound):
+		response.Error(c, response.ErrUserCouponNotFound)
+	case errors.Is(err, ErrCouponConflict):
+		response.Error(c, response.ErrCouponAlreadyUsed)
+	case errors.Is(err, ErrCouponNotUsable):
+		response.Error(c, response.ErrCouponNotClaimable)
+	case errors.Is(err, ErrCouponThresholdNotMet):
+		response.Error(c, response.ErrCouponThresholdNotMet)
 	default:
 		slog.Error("order command internal error", "err", err)
 		response.Error(c, response.ErrInternal)
@@ -287,7 +302,9 @@ func (h *Handler) mapError(c *app.RequestContext, err error) {
 func mapCreateResponse(result *CreateResult) CreateOrderResponse {
 	return CreateOrderResponse{
 		OrderID: result.OrderID, OrderNo: result.OrderNo, Status: result.Status,
-		TotalAmount: result.TotalAmount, ExpiresAt: result.ExpiresAt, Replayed: result.Replayed,
+		TotalAmount: result.TotalAmount, OriginalAmount: result.OriginalAmount,
+		DiscountAmount: result.DiscountAmount, UserCouponID: result.UserCouponID,
+		ExpiresAt: result.ExpiresAt, Replayed: result.Replayed,
 		Item: OrderItemResponse{
 			ProductID: result.Item.ProductID, SKUID: result.Item.SKUID,
 			MerchantID: result.Item.MerchantID, ProductTitle: result.Item.ProductTitle,

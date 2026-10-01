@@ -24,6 +24,7 @@ import (
 	"github.com/lihualin/tokmall/internal/breaker"
 	"github.com/lihualin/tokmall/internal/cache"
 	"github.com/lihualin/tokmall/internal/config"
+	"github.com/lihualin/tokmall/internal/coupon"
 	"github.com/lihualin/tokmall/internal/database"
 	"github.com/lihualin/tokmall/internal/existence"
 	"github.com/lihualin/tokmall/internal/feed"
@@ -240,6 +241,7 @@ func run() error {
 	orderService.SetRefundRepository(orderRepository)
 	orderHandler := order.NewHandler(orderService)
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
+	couponHandler := coupon.NewHandler(coupon.NewService(coupon.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
 	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository)
 	registerRoutes(h, routes{
@@ -254,6 +256,7 @@ func run() error {
 		order:       orderHandler,
 		promotion:   promotionHandler,
 		attribution: attributionHandler,
+		coupon:      couponHandler,
 		rateLimiter: rateLimiter,
 		rateRules: rateRules{
 			authAccount: middleware.RateLimitRule{Scope: "auth-account", Limit: cfg.AuthAccountLimit, Window: time.Minute},
@@ -490,6 +493,7 @@ type routes struct {
 	order       *order.Handler
 	promotion   *promotion.Handler
 	attribution *attribution.Handler
+	coupon      *coupon.Handler
 	rateLimiter middleware.Limiter
 	rateRules   rateRules
 }
@@ -538,6 +542,7 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.interaction.RegisterOptionalRoutes(optional)
 	r.product.RegisterOptionalRoutes(optional)
 	r.promotion.RegisterOptionalRoutes(optional)
+	r.coupon.RegisterOptionalRoutes(optional)
 	protected := g.Group("/", middleware.AuthMiddleware(r.token))
 	if r.rateLimiter != nil {
 		// 写接口：用户级限流（ByUser，登录后按 user_id）
@@ -553,4 +558,5 @@ func registerRoutes(h *server.Hertz, r routes) {
 	r.order.RegisterProtectedRoutes(protected)
 	r.promotion.RegisterProtectedRoutes(protected)
 	r.attribution.RegisterProtectedRoutes(protected)
+	r.coupon.RegisterProtectedRoutes(protected)
 }

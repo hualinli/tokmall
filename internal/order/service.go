@@ -24,6 +24,11 @@ var (
 	// 关单并回补库存（lazy expiry），因此这是终态而不是可重试的临时冲突。
 	ErrOrderExpired          = errors.New("order expired before payment")
 	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
+	// 券相关：分别对应"券不可用/已用"、"券不存在或不属于你"、"未达门槛"。
+	ErrCouponNotFound        = errors.New("user coupon not found")
+	ErrCouponConflict        = errors.New("user coupon is not usable")
+	ErrCouponNotUsable       = errors.New("user coupon expired")
+	ErrCouponThresholdNotMet = errors.New("order amount does not meet the coupon threshold")
 )
 
 const (
@@ -44,6 +49,9 @@ type CreateParams struct {
 	Quantity       int32
 	IdempotencyKey string
 	Source         *Source
+	// UserCouponID 是可选的持券 ID。它是**请求指纹的一部分**：
+	// 同一个幂等键换一张券重放必须冲突，否则会出现"用 A 券的请求拿到 B 券的订单"。
+	UserCouponID *int64
 }
 
 type CreateCommand struct {
@@ -54,13 +62,16 @@ type CreateCommand struct {
 }
 
 type CreateResult struct {
-	OrderID     int64
-	OrderNo     string
-	Status      Status
-	TotalAmount Amount
-	ExpiresAt   time.Time
-	Item        ItemView
-	Replayed    bool
+	OrderID        int64
+	OrderNo        string
+	Status         Status
+	TotalAmount    Amount
+	OriginalAmount Amount
+	DiscountAmount Amount
+	UserCouponID   *int64
+	ExpiresAt      time.Time
+	Item           ItemView
+	Replayed       bool
 }
 
 type ItemView struct {
@@ -283,7 +294,9 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (*CreateResul
 func mapCreateResult(record *createRecord) *CreateResult {
 	return &CreateResult{
 		OrderID: record.Order.ID, OrderNo: record.Order.OrderNo, Status: record.Order.Status,
-		TotalAmount: record.Order.TotalAmount, ExpiresAt: record.Order.ExpiresAt,
+		TotalAmount: record.Order.TotalAmount, OriginalAmount: record.Order.OriginalAmount,
+		DiscountAmount: record.Order.DiscountAmount, UserCouponID: record.Order.UserCouponID,
+		ExpiresAt: record.Order.ExpiresAt,
 		Item: ItemView{
 			ProductID: record.Item.ProductID, SKUID: record.Item.SKUID,
 			MerchantID: record.Item.MerchantIDSnapshot, ProductTitle: record.Item.ProductTitleSnapshot,
@@ -302,19 +315,24 @@ func validateCreateParams(p CreateParams) error {
 	if p.Source != nil && (p.Source.VideoID <= 0 || p.Source.AuthorID <= 0 || p.Source.ProductID <= 0) {
 		return ErrInvalidParam
 	}
+	if p.UserCouponID != nil && *p.UserCouponID <= 0 {
+		return ErrInvalidParam
+	}
 	return nil
 }
 
 type fingerprintPayload struct {
-	UserID   int64   `json:"user_id"`
-	SKUID    int64   `json:"sku_id"`
-	Quantity int32   `json:"quantity"`
-	Source   *Source `json:"source"`
+	UserID       int64   `json:"user_id"`
+	SKUID        int64   `json:"sku_id"`
+	Quantity     int32   `json:"quantity"`
+	Source       *Source `json:"source"`
+	UserCouponID *int64  `json:"user_coupon_id"`
 }
 
 func requestFingerprint(p CreateParams) (string, error) {
 	payload, err := json.Marshal(fingerprintPayload{
 		UserID: p.UserID, SKUID: p.SKUID, Quantity: p.Quantity, Source: p.Source,
+		UserCouponID: p.UserCouponID,
 	})
 	if err != nil {
 		return "", err

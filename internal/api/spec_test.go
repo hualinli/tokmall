@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lihualin/tokmall/internal/coupon"
 	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/video"
@@ -144,6 +145,15 @@ func TestReferencesResolve(t *testing.T) {
 	}
 }
 
+// 列表响应在 handler 里是匿名 map，这里用等价结构体绑定，保证 items 的 schema 不漂移。
+type couponListShape struct {
+	Items []coupon.CouponView `json:"items"`
+}
+
+type userCouponListShape struct {
+	Items []coupon.UserCouponView `json:"items"`
+}
+
 // dtoBinding 把 schema 名与 Go DTO 绑定。新增对外 DTO 时在这里登记，
 // 契约漂移就会在 CI 里失败。
 type dtoBinding struct {
@@ -164,6 +174,11 @@ func TestSchemaMatchesGoDTO(t *testing.T) {
 		{"RefundDetail", order.RefundView{}},
 		{"OrderDetail", order.OrderView{}},
 		{"OrderPage", order.OrderPage{}},
+		{"CreateCouponRequest", coupon.CreateCouponRequest{}},
+		{"CouponDetail", coupon.CouponView{}},
+		{"CouponList", couponListShape{}},
+		{"UserCouponDetail", coupon.UserCouponView{}},
+		{"UserCouponList", userCouponListShape{}},
 		{"CreateProductRequest", product.CreateProductRequest{}},
 		{"CreateSKURequest", product.AddSKURequest{}},
 		{"ChangeStatusRequest", product.ChangeStatusRequest{}},

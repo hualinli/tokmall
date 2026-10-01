@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lihualin/tokmall/internal/coupon"
 	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -55,9 +56,31 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 			return ErrInvalidParam
 		}
 
+		// 用券：锁住持券行 → 校验归属/状态/有效期/门槛 → 算出优惠。
+		// 锁在扣库存之前，且所有路径都用同一顺序（券 → 库存），避免死锁。
+		discount := Amount(0)
+		var userCouponID *int64
+		if cmd.UserCouponID != nil {
+			// 注意传的是"当前时间"而不是 cmd.ExpiresAt：后者是订单支付截止时间，
+			// 用它判断券是否在有效期内会把窗口放大 30 分钟。
+			applied, err := applyUserCoupon(db, cmd.UserID, *cmd.UserCouponID, int64(lineAmount), time.Now())
+			if err != nil {
+				return err
+			}
+			discount = Amount(applied)
+			userCouponID = cmd.UserCouponID
+		}
+		payable := lineAmount - discount
+		if payable <= 0 {
+			// 券面额把订单金额吃光会让 orders.total_amount 违反 CHECK；
+			// 这里显式拒绝，语义是"优惠后必须仍有应付金额"。
+			return ErrInvalidParam
+		}
+
 		order := Order{
 			OrderNo: cmd.OrderNo, UserID: cmd.UserID, MerchantID: sku.MerchantID,
-			Status: StatusPendingPayment, TotalAmount: lineAmount,
+			Status: StatusPendingPayment, TotalAmount: payable,
+			OriginalAmount: lineAmount, DiscountAmount: discount, UserCouponID: userCouponID,
 			IdempotencyKey: cmd.IdempotencyKey, RequestFingerprint: cmd.RequestFingerprint,
 			ExpiresAt: cmd.ExpiresAt,
 		}
@@ -129,6 +152,24 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 		}
 		if err := db.Create(&item).Error; err != nil {
 			return translateError(err)
+		}
+
+		// 核销券：条件更新（只在 UNUSED 时生效）。锁已经保证不会并发，
+		// 这里是第二道防线——RowsAffected != 1 说明券状态被别的路径改了，
+		// 必须整体回滚，绝不能出现"订单用了券但券还是未使用"。
+		if userCouponID != nil {
+			used := db.Model(&userCouponRow{}).
+				Where("id = ? AND user_id = ? AND status = ?", *userCouponID, cmd.UserID, "UNUSED").
+				Updates(map[string]any{
+					"status": "USED", "used_at": time.Now().UTC(),
+					"order_id": order.ID, "updated_at": time.Now().UTC(),
+				})
+			if used.Error != nil {
+				return used.Error
+			}
+			if used.RowsAffected != 1 {
+				return ErrCouponConflict
+			}
 		}
 
 		// 超时事件与订单同事务写入，available_at = expires_at：
@@ -407,6 +448,68 @@ func translatePaymentWriteError(err error) error {
 	}
 	return err
 }
+
+// applyUserCoupon 锁住持券行并校验它能不能用于这笔订单，返回优惠金额。
+//
+// 这里读的是 coupon 模块的表（order 自己的 read model + 直接 SQL），
+// 但**折扣规则调用 coupon.DiscountFor**——规则只能有一份实现，
+// 否则"下单算一次、视图显示一次、对账再算一次"必然漂移（DomTok 的教训）。
+func applyUserCoupon(db *gorm.DB, userID, userCouponID int64, orderAmount int64, now time.Time) (int64, error) {
+	var row struct {
+		UserCouponID int64     `gorm:"column:id"`
+		CouponID     int64     `gorm:"column:coupon_id"`
+		Status       string    `gorm:"column:status"`
+		Title        string    `gorm:"column:title"`
+		Threshold    int64     `gorm:"column:threshold_amount"`
+		Discount     int64     `gorm:"column:discount_amount"`
+		ValidFrom    time.Time `gorm:"column:valid_from"`
+		ValidTo      time.Time `gorm:"column:valid_to"`
+	}
+	err := db.Raw(`
+		SELECT uc.id, uc.coupon_id, uc.status, c.title, c.threshold_amount,
+		       c.discount_amount, c.valid_from, c.valid_to
+		FROM user_coupons uc
+		JOIN coupons c ON c.id = uc.coupon_id
+		WHERE uc.id = ? AND uc.user_id = ?
+		FOR UPDATE OF uc`, userCouponID, userID).Scan(&row).Error
+	if err != nil {
+		return 0, err
+	}
+	if row.UserCouponID == 0 {
+		// 券不存在与券不属于当前用户返回同一错误，不泄露存在性。
+		return 0, ErrCouponNotFound
+	}
+	discount, err := coupon.DiscountFor(
+		coupon.UserCoupon{ID: row.UserCouponID, CouponID: row.CouponID, UserID: userID, Status: coupon.UserCouponStatus(row.Status)},
+		coupon.Coupon{ID: row.CouponID, Title: row.Title, ThresholdAmount: row.Threshold, DiscountAmount: row.Discount, ValidFrom: row.ValidFrom, ValidTo: row.ValidTo},
+		orderAmount, now.UTC(),
+	)
+	if err != nil {
+		return 0, translateCouponError(err)
+	}
+	return discount, nil
+}
+
+// translateCouponError 把券域的哨兵翻译成订单域的错误，避免订单模块
+// 把 coupon 包的内部类型泄露给 handler。
+func translateCouponError(err error) error {
+	switch {
+	case errors.Is(err, coupon.ErrUserCouponUsed):
+		return ErrCouponConflict
+	case errors.Is(err, coupon.ErrCouponExpired):
+		return ErrCouponNotUsable
+	case errors.Is(err, coupon.ErrThresholdNotMet):
+		return ErrCouponThresholdNotMet
+	default:
+		return err
+	}
+}
+
+type userCouponRow struct {
+	ID int64 `gorm:"column:id;primaryKey"`
+}
+
+func (userCouponRow) TableName() string { return "user_coupons" }
 
 func findExistingOrder(db *gorm.DB, userID int64, key string) (*Order, error) {
 	var existing Order
