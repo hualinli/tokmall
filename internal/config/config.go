@@ -29,6 +29,10 @@ const (
 	defaultRedisAddr            = "localhost:6380"
 	defaultRedisDB              = 0
 	defaultFeedCacheTTL         = 60 * time.Second
+	defaultFeedL1Enabled        = true
+	defaultFeedL1TTL            = 5 * time.Second
+	defaultFeedL1Capacity       = 512
+	defaultFeedVersionInterval  = time.Second
 	defaultFeedCacheOn          = true
 	defaultFollowingCacheOn     = true
 	defaultRankStrategy         = "time"
@@ -151,6 +155,13 @@ type RedisConfig struct {
 	Password string
 	DB       int
 	UseTLS   bool
+	// FeedL1Enabled/FeedL1TTL/FeedL1Capacity：进程内一级缓存（两级缓存的 L1）。
+	// L1 是"最终一致"的一层：TTL 要远短于 L2，作为失效机制失灵时的兜底。
+	FeedL1Enabled  bool
+	FeedL1TTL      time.Duration
+	FeedL1Capacity int
+	// FeedVersionInterval 是版本号探测间隔：L1 失效延迟的上界（见 feed.VersionStamp）。
+	FeedVersionInterval time.Duration
 	// FeedCacheTTL 是 feed 首页缓存的过期时间：TTL 兜底防删缓存失败导致
 	// 脏数据永久存活（先写库再删缓存的 Cache-Aside 策略依赖它）。
 	FeedCacheTTL time.Duration
@@ -197,6 +208,22 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	redisDB, err := envInt("REDIS_DB", defaultRedisDB)
+	if err != nil {
+		return nil, err
+	}
+	feedL1Enabled, err := envBool("FEED_L1_ENABLED", defaultFeedL1Enabled)
+	if err != nil {
+		return nil, err
+	}
+	feedL1TTL, err := envDuration("FEED_L1_TTL", defaultFeedL1TTL)
+	if err != nil {
+		return nil, err
+	}
+	feedL1Capacity, err := envInt("FEED_L1_CAPACITY", defaultFeedL1Capacity)
+	if err != nil {
+		return nil, err
+	}
+	feedVersionInterval, err := envDuration("FEED_VERSION_INTERVAL", defaultFeedVersionInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -399,6 +426,10 @@ func Load() (*Config, error) {
 			DB:                    redisDB,
 			UseTLS:                redisUseTLS,
 			FeedCacheTTL:          feedCacheTTL,
+			FeedL1Enabled:         feedL1Enabled,
+			FeedL1TTL:             feedL1TTL,
+			FeedL1Capacity:        feedL1Capacity,
+			FeedVersionInterval:   feedVersionInterval,
 			FeedCacheEnabled:      feedCacheEnabled,
 			FollowingCacheEnabled: followingCacheEnabled,
 		},
@@ -483,6 +514,15 @@ func (c *Config) validate() error {
 	}
 	if c.ReconcileInterval <= 0 || c.ReconcileGrace <= 0 {
 		return errors.New("RECONCILE_INTERVAL and RECONCILE_GRACE must be positive")
+	}
+	if c.FeedL1Enabled {
+		if c.FeedL1TTL <= 0 || c.FeedL1TTL > c.FeedCacheTTL {
+			// L1 比 L2 活得久没有意义：只会让陈旧窗口更长。
+			return errors.New("FEED_L1_TTL must be positive and not greater than FEED_CACHE_TTL")
+		}
+		if c.FeedL1Capacity <= 0 || c.FeedVersionInterval <= 0 {
+			return errors.New("FEED_L1_CAPACITY and FEED_VERSION_INTERVAL must be positive")
+		}
 	}
 	if c.BreakerEnabled {
 		if c.BreakerFailureThreshold <= 0 || c.BreakerOpenDuration <= 0 || c.BreakerMaxOpen <= 0 {

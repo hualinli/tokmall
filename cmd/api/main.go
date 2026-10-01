@@ -23,6 +23,7 @@ import (
 	"github.com/lihualin/tokmall/internal/attribution"
 	"github.com/lihualin/tokmall/internal/breaker"
 	"github.com/lihualin/tokmall/internal/cache"
+	"github.com/lihualin/tokmall/internal/cache/l1"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/coupon"
 	"github.com/lihualin/tokmall/internal/database"
@@ -99,7 +100,10 @@ func run() error {
 	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("database migrate: %w", err)
 	}
-	redisClient, err := cache.NewClient(cfg.RedisConfig)
+	redisClient, err := cache.NewClient(cfg.RedisConfig,
+		// 慢命令日志：缓存命中后瓶颈就在 Redis 读上（见 performance-baseline），
+		// 没有这层日志就只能看到"命中率"，看不到"哪条命令慢"。
+		cache.WithSlowCommandLogging(cache.SlowCommandThreshold, observability.NewRedisMetrics(metricsRegistry)))
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)
 	}
@@ -158,12 +162,28 @@ func run() error {
 	}
 	// 注意：必须用 nil 接口变量。直接声明 *feed.RedisFeedCache 再赋给接口，
 	// 关闭时会得到"typed nil"——接口判 nil 为真但方法调用即 panic。
+	feedCacheStats := observability.NewFeedCacheStats(metricsRegistry)
+	l1Metrics := observability.NewL1CacheMetrics(metricsRegistry)
 	var feedCache feed.FirstPageCache
 	var feedInvalidator video.FeedCacheInvalidator
 	if cfg.FeedCacheEnabled {
 		redisFeedCache := feed.NewRedisFeedCache(redisClient, cfg.FeedCacheTTL)
-		feedCache = redisFeedCache
-		feedInvalidator = redisFeedCache
+		if cfg.FeedL1Enabled {
+			// 两级缓存：L1 进程内（内存查表）+ L2 Redis。
+			// 版本号是跨实例失效的载体：写路径递增，读路径校验（见 feed.VersionStamp）。
+			versionStamp := feed.NewVersionStamp(redisClient, cfg.FeedVersionInterval)
+			tiered := feed.NewTieredFeedCache(feed.TieredCacheOptions{
+				L2:      redisFeedCache,
+				L1:      l1.New(16, cfg.FeedL1Capacity, l1.WithTTL(cfg.FeedL1TTL), l1.WithMetrics(l1Metrics)),
+				Version: versionStamp,
+				Stats:   feedCacheStats,
+			})
+			feedCache = tiered
+			feedInvalidator = tiered
+		} else {
+			feedCache = redisFeedCache
+			feedInvalidator = redisFeedCache
+		}
 	}
 	followingCache, followingFeedInvalidator := assembleFollowingFeedCache(cfg.RedisConfig, redisClient)
 	// 限流器（M7）：Redis 固定窗口计数；关闭（压测/调试）时 nil，registerRoutes 不挂载。
@@ -194,7 +214,7 @@ func run() error {
 		storageClient,
 		feedCache,
 		followingCache,
-		observability.NewFeedCacheStats(metricsRegistry),
+		feedCacheStats,
 		ranker,
 	)
 	feedService.SetProductCardReader(feed.NewProductCardReader(db))

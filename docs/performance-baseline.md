@@ -320,3 +320,32 @@ make monitoring      # Prometheus(:9090) + Grafana(:3000)，看板已 provision
 与真实注册的指标集合对账，写错指标名（规则永远不会触发）会让测试直接失败。
 这个检查是变异验证过的：把 `outbox_pending_events` 改成 `outbox_pending_evnts`
 或换成不存在的指标，测试都会报错并指出具体行。
+
+---
+
+## 两级缓存（L1 + L2，2026-10）
+
+| 层 | 位置 | 命中成本 | TTL | 失效方式 |
+|---|---|---|---|---|
+| L1 | 进程内分片 LRU | 一次内存查表 + 反序列化 | 5s（`FEED_L1_TTL`） | 本地删除 + 版本号校验 |
+| L2 | Redis | 网络往返 + 传输 + 反序列化 | 60s（`FEED_CACHE_TTL`） | 直接删除 |
+
+跨实例失效用"版本号 + 短 TTL 探测"（ADR-025）：写路径删两级缓存并 `INCR feed:version`，
+读路径用本地缓存的版本号（默认 1 秒刷新）校验 L1 副本。指标：
+
+- `cache_l1_hit_total / miss_total`：L1 命中率；
+- `cache_l1_stale_total`：因版本变化失效的次数——它直接反映"别的实例写了新数据"的频率；
+  若 stale 与 hit 同量级，说明写入太频繁、L1 没起到作用（该调大 TTL 或干脆关掉）；
+- `cache_l1_eviction_total`：LRU 淘汰，容量不够的信号。
+
+实测（本机 5 次连续请求）：首次冷启动未命中，之后 4 次全部 L1 命中，
+`cache_l1_hit_total=4 / miss_total=2`，feed 响应时间从 ~9ms 降到 ~2.5ms。
+
+## Redis 慢命令观测（2026-10）
+
+`internal/cache/slowlog.go`：go-redis Hook，命令耗时 ≥10ms 记一条 WARN
+（命令名 + 耗时 + **key 前缀**，不打完整 key）并计入 `redis_slow_commands_total{command}`。
+
+排除阻塞命令（`XREADGROUP`/`BLPOP`/`SUBSCRIBE` 等）——实测踩到：Outbox 消费者的
+`XREADGROUP ... BLOCK 5000` 让慢命令计数持续增长，看起来像 Redis 变慢，
+其实是消费者在正常等待（ADR-026）。

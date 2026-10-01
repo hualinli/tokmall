@@ -31,7 +31,7 @@ internal/
   api/                   OpenAPI 契约（spec.go embed openapi.yaml + route-sync 测试）
   config/                环境变量配置（默认值 + required）
   database/              连接 + 连接池(25/5/1h) + migrate
-  cache/                 Redis 客户端（模块不持有原始 client，main 装配注入消费侧接口）
+  cache/                 Redis 客户端 + 慢命令 Hook（ADR-026）；l1/ 是进程内一级缓存（分片 LRU + 版本校验）
   storage/               MinIO 封装（预签名 PUT 直传、预签名 GET 播放 URL、StatObject 翻译 NoSuchKey）
   token/                 JWT Manager + GenClaims + Verify（access/refresh 类型区分）
   middleware/            auth（Bearer 校验 + user_id/role 注入，AuthOptional 用于公开接口）、recovery、requestid
@@ -101,6 +101,7 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | 优惠券域（v1 满减券） | ✅ | 发行量+每人限领+领取截止+券状态机+退款退券+三项对账；100 并发抢 10 张恰好发 10 张；ADR-024 |
 | 依赖级熔断 | ✅ | 自研三态熔断器（装饰器注入对象存储）：MinIO 停机时 3~5s 超时 → 熔断后 0.7ms 快速失败 + 503；失败分类排除"对象不存在"；ADR-023 |
 | 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
+| 两级缓存 | ✅ | L1 分片 LRU + 版本号跨实例失效（ADR-025）+ Redis 慢命令 Hook（排除阻塞命令，ADR-026）；feed 响应 ~9ms → ~2.5ms |
 | 观测栈与告警 | ✅ | 8 条记录规则（`level:metric:operations`）+ 6 条告警 + 11 面板看板（JSON 入库）；测试保证规则引用的指标真实存在（变异验证过） |
 | 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck；`make verify/coverage/vulncheck/help`；`scripts/preflight.sh` |
 
@@ -143,6 +144,9 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
   "锁券行 → 条件更新发行量 → 计数校验限领"三层；订单金额恒满足
   `total = original - discount`（DB CHECK 兜底）；退款成功退券（过期则标 EXPIRED）；
   对账覆盖发行量守恒、券-订单一致、金额拆分
+- **两级缓存**：写路径必须同时做三件事——删 L2、删本地 L1、递增 `feed:version`；
+  少任何一步都会脏读（有测试锁死）。L1 是最终一致层：TTL 必须 ≤ L2 TTL，
+  版本探测间隔就是失效延迟的上界（ADR-025）
 - **告警规则**：改 `observability/prometheus/rules/*.yml` 后必须跑
   `go test ./internal/observability/`——规则里引用的指标名会被校验，写错即失败；
   记录规则命名遵循 `level:metric:operations`；只对"已到期"的 Outbox 事件告警

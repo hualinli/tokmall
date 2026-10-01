@@ -83,9 +83,9 @@
 | 7 | **SKU 价格版本表 + 全链路 version_id** | `sku_price_history` + 订单 `goods_version` | ⭐⭐⭐⭐ 价格审计、"下单时价格"的可证明性 | 中 | ⏳ 见 §5 |
 | 8 | **优惠券/促销域** | `coupon_info` + `user_coupon` + 贪心选券 | ⭐⭐⭐⭐ 防超发、一券一单、退款退券、金额口径与对账 | 大 | ✅ §4.6（按它的反面清单重新设计） |
 | 9 | **熔断/降级（依赖级）** | Sentinel 流控（`app/gateway/mw/sentinel.go`）+ Redis 健康探测双路径降级 | ⭐⭐⭐⭐ 限流 vs 熔断 vs 降级的区别，有真实代码 | 中 | ✅ §4.5 |
-| 10 | **两级缓存（进程内 L1 + Redis L2）+ 失效广播** | DomTok 没有本地缓存 | ⭐⭐⭐⭐ 多级缓存一致性与 QPS 提升 | 中 | ⏳ 见 §5 |
+| 10 | **两级缓存（进程内 L1 + Redis L2）** | DomTok 没有本地缓存 | ⭐⭐⭐⭐ 多级缓存一致性与 QPS 提升 | 中 | ✅ §4.7 |
 | 11 | **错误在"创建点"抓栈 + 错误日志分流** | `pkg/errno` 的 `callers()`（延迟符号化）+ `pkg/middleware/log.go:40-63` | ⭐⭐⭐ "错误现场是构造它的那一行" | 小 | ⏳（TokMall 的哨兵错误是单例，需改造才适用） |
-| 12 | **Prometheus recording rule 命名 `level:metric:ops` + 告警规则** | `config/prometheus/mysqld_rules.yml:4-8` | ⭐⭐⭐ 高基数留在预聚合里，看板只查低基数 | 小 | ⏳ 见 §5 |
+| 12 | **Prometheus recording rule 命名 `level:metric:ops` + 告警规则** | `config/prometheus/mysqld_rules.yml:4-8` | ⭐⭐⭐ 高基数留在预聚合里，看板只查低基数 | 小 | ✅ §4.8 |
 | 13 | **支付一次性令牌（Lua GET+DEL，保留剩余 TTL 以便回滚）** | `app/payment/infrastructure/redis/script.go:47-57` | ⭐⭐⭐ 防重放 + 原子消费令牌 | 小 | ⏳ 见 §5 |
 | 14 | **下单固化商品快照** | `order_goods` 冗余标题/规格/单价 | ⭐⭐⭐ "订单是历史事实" | 小 | 已有（TokMall order_items 快照） |
 | 15 | **bigint 主键在 JSON/ES 里序列化为 string** | `model.SpuES` 用 string 存 spu_id | ⭐⭐ JS `MAX_SAFE_INTEGER` 精度坑 | 小 | 已有（TokMall 用 int64 + 前端 number 安全范围内） |
@@ -271,6 +271,27 @@ TokMall 重新设计并实现了 v1 满减券（`internal/coupon` + 迁移 00001
 **演练**：`scripts/drill_coupon.sh` 走完发券 → 领券防重 → 用券下单 → 支付 →
 退款退券 → 九项对账，每一步都回查数据库事实。
 
+### 4.7 两级缓存（L1 进程内 + L2 Redis）
+
+DomTok 没有本地缓存。TokMall 加了 L1（分片 LRU + TTL + 版本校验），
+难点不在缓存本身而在**多实例失效**：写路径删 L2 + 删本地 L1 + `INCR feed:version`，
+读路径用本地缓存 1 秒的版本号校验副本（ADR-025）。
+刻意不用 Pub/Sub 广播失效——断线期间的消息丢失会让本地副本长期陈旧，
+而版本号方案最坏只有 1 秒窗口，且失败模式是"多命中"而不是"永久脏"。
+实测 feed 响应从 ~9ms 降到 ~2.5ms，指标 `cache_l1_stale_total` 直接量化失效频率。
+
+顺带补上 Redis 侧缺失的观测面：慢命令 Hook（阈值 10ms，只打命令名 + key 前缀），
+并排除阻塞命令——实测 `XREADGROUP ... BLOCK` 曾让慢命令计数持续增长（ADR-026）。
+
+### 4.8 记录规则、告警与代码化看板
+
+DomTok 有 17 个观测容器却**没有任何告警规则**，Grafana 面板也只记社区 ID 靠人工导入。
+TokMall 补上：8 条记录规则（严格 `level:metric:operations` 命名）+ 6 条告警
+（每条都写明排查入口）+ 11 面板看板 JSON（入库 + provisioning）。
+并且加了一条测试：规则文件里引用的每个指标名必须真实注册，否则测试失败——
+"配了告警但规则永远不触发"是最隐蔽的可观测性故障。该测试经过变异验证
+（把指标名改成拼写错误或不存在的名字都会被抓到）。
+
 ---
 
 ## 5. 未落地但值得做的（含设计要点）
@@ -325,16 +346,19 @@ DomTok 的券实现有 8 处硬伤（无发行量、无截止校验、领取次�
 - 注意**失败分类**：`redis.Nil`（key 不存在）不是故障，必须走 `Config.IsFailure` 排除，
   否则缓存未命中就能把熔断器打开。
 
-### 5.4 两级缓存（L1 进程内 + L2 Redis）
+### 5.4 缓存回填的键控异步队列（来自 fzuhelper-server）
 
-TokMall 的 Feed 首页缓存目前只有 Redis（~11.3k QPS 封顶于 Redis GET + JSON 反序列化）。
-加一层进程内 LRU（几百行、零依赖）可以把热 key 的读取从"一次网络往返"降到"一次内存查表"；
-难点不在缓存本身，而在**失效**：
+对照第二个仓库（`west2-online/fzuhelper-server`，同组织的生产 Go 后端）后新增的候选：
+它的 `pkg/taskqueue`（基于 workqueue）用**按 key 去重合并 + 限速 + 指数退避 + 定时任务**
+处理"尽力而为"的活。TokMall 的 cache-aside 回填目前是同步的，SET 失败只打日志。
 
-- 写路径删 L2 后 `PUBLISH cache:invalidate:{key}`，各实例订阅并删自己的 L1；
-- L1 TTL 设短（秒级），作为"广播丢失"的兜底；
-- 指标：`cache_l1_hit_total / l1_miss_total / l1_evictions_total / l1_invalidations_total`；
-- 验收：压测对比 L1 开关的 QPS 与 p99；并发测试证明失效广播能在秒级内传播。
+移植时必须划三条红线（都是它的反面教材）：
+1. **只能放非业务事实**（缓存回填、计数刷盘），业务事实仍走 Outbox；
+2. **不能带请求 ctx 进闭包**（它把 handler 的 ctx 存进 service 字段，RPC 返回后即失效）；
+3. **必须有界 + 显式丢弃并打点**（它的 workqueue 是无界的，而同仓库另一处
+   `select { case ch <- task: default: drop }` 才是正确姿势）。
+另外它的"异步写缓存后立刻把结果返回给客户端"造成过 read-your-writes 破裂的真实 bug，
+这条也是不能碰的。
 
 ### 5.5 其他低成本项
 
@@ -361,3 +385,33 @@ TokMall 的 Feed 首页缓存目前只有 Redis（~11.3k QPS 封顶于 Redis GET
 > 最有价值的一次借鉴是它的延迟消息：我用 Outbox 的 `available_at` 实现了同样的
 > 延迟语义，但把数据库留作唯一事实源、消息只当加速器——**消息全丢，系统仍在
 > 轮询间隔内收敛**。这是"引入中间件不等于提升可靠性"的一个具体例子。
+
+---
+
+## 附录：第二个仓库的核查（fzuhelper-server）
+
+用户最初贴的两个链接其实是同一个仓库（DomTok）。为排除"其实想看同组织的另一个项目"，
+另外完整扫了一遍 `west2-online/fzuhelper-server`（同组织的生产 Go 后端：
+Kitex + Hertz + MySQL + Redis + etcd，日服务 3 万+ 师生，577 个 Go 文件 / 86k 行）。
+结论：**值得借鉴 5 个小模式，但不值得借鉴架构**——它的架构/可靠性/可观测性水位
+明显低于 TokMall 现状（没有应用级指标、没有 Outbox/幂等/对账、没有熔断与重试、
+没有版本化迁移、CI 不跑 -race、没有真实依赖的集成测试）。
+
+值得借鉴的 5 条（按性价比）：
+
+| # | 模式 | 它怎么做 | TokMall 的处理 |
+|---|---|---|---|
+| 1 | **Redis 慢命令 Hook** | go-redis logger + hook，阈值 10ms | ✅ 已落地（§4.7 附带，并排除阻塞命令） |
+| 2 | **golangci-lint 精选配置** | `default: none` + 24 个 linter，`errorlint`/`nilerr`/`forcetypeassert` | ⏳ 待落地（纯增量护栏） |
+| 3 | **键控异步工作队列** | workqueue：按 key 去重合并 + 限速 + 退避 + 定时任务 | ⏳ 见 §5.4（含三条红线） |
+| 4 | **Redis Hash 承载"每用户集合"** | `user_friends:{id}` 一个 Hash，HSET/HDEL 只动一个成员 | ⏳ 设计参考（TokMall 目前零 Hash 用法） |
+| 5 | **进程内限流兜底 + 有界丢弃** | Sentinel 进程内 QPS + 按路由单独限额 | ⏳ 设计参考（TokMall 限流是纯 Redis + fail-open） |
+
+它明确**不如** TokMall 的地方（不要倒退）：JWT 每请求重签且无黑名单（坑）、
+"非对称签名"但私钥分发给所有服务、缓存层在单测里整体空转（`IsTestEnvironment` 直接 return nil）、
+无版本化迁移、k8s 无任何探针、Redis 逻辑库当租户隔离（堵死 Cluster 扩展）、
+日志文件权限 0755、COS 直传 policy 无 `content-length-range`/content-type 约束。
+
+以及三条"看着好、实际是坑"的实现细节：异步写缓存后立刻返回新值造成 read-your-writes
+破裂；异步任务复用请求 ctx；配额校验是 check-then-act（TOCTOU）——
+最后这条恰好是 TokMall 优惠券用"锁券行 + 条件更新 + 计数校验"解掉的问题。
