@@ -102,6 +102,10 @@ func (h *Handler) create(ctx context.Context, c *app.RequestContext) {
 			response.Error(c, response.ErrInvalidArgument)
 		case errors.Is(err, ErrUploadURLExpired):
 			response.Error(c, response.ErrUploadURLExpired)
+		case errors.Is(err, ErrStorageUnavailable):
+			// 熔断打开：依赖暂时不可用，返回 503 让客户端退避重试，
+			// 而不是 500（那会被当成服务端 bug 计入错误率）。
+			response.Error(c, response.ErrDependencyUnavailable)
 		default:
 			response.Error(c, response.ErrInternal)
 		}

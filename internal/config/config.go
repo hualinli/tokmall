@@ -61,6 +61,10 @@ const (
 	defaultExistenceNegTTL      = 30 * time.Second
 	defaultExistenceNegJitter   = 15 * time.Second
 	defaultExistenceRebuildTick = 10 * time.Minute
+	defaultBreakerOn            = true
+	defaultBreakerThreshold     = 5
+	defaultBreakerOpenDuration  = 5 * time.Second
+	defaultBreakerMaxOpen       = 30 * time.Second
 
 	// defaultMetricsAddr 默认只监听回环地址：/metrics 会暴露路由级 QPS/延迟、
 	// 连接池与运行时指标，属于容量指纹。生产如需 Prometheus 抓取，
@@ -130,7 +134,14 @@ type Config struct {
 	ExistenceNegativeJitter time.Duration
 	// ExistenceRebuildInterval 是全量重建布隆过滤器的周期（删除无法从过滤器移除，
 	// 靠重建把误判率拉回设计值）。
-	ExistenceRebuildInterval   time.Duration
+	ExistenceRebuildInterval time.Duration
+	// BreakerEnabled：对象存储等下游依赖的熔断器。
+	BreakerEnabled bool
+	// BreakerFailureThreshold 是连续失败多少次后打开。
+	BreakerFailureThreshold int
+	// BreakerOpenDuration/Max 是冷却期及其指数退避上限。
+	BreakerOpenDuration        time.Duration
+	BreakerMaxOpen             time.Duration
 	OrderExpiryWorkerInterval  time.Duration
 	OrderExpiryWorkerBatchSize int
 }
@@ -326,6 +337,22 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	breakerEnabled, err := envBool("BREAKER_ENABLED", defaultBreakerOn)
+	if err != nil {
+		return nil, err
+	}
+	breakerThreshold, err := envInt("BREAKER_FAILURE_THRESHOLD", defaultBreakerThreshold)
+	if err != nil {
+		return nil, err
+	}
+	breakerOpenDuration, err := envDuration("BREAKER_OPEN_DURATION", defaultBreakerOpenDuration)
+	if err != nil {
+		return nil, err
+	}
+	breakerMaxOpen, err := envDuration("BREAKER_MAX_OPEN_DURATION", defaultBreakerMaxOpen)
+	if err != nil {
+		return nil, err
+	}
 	trustedProxies, err := parseTrustedProxies(envString("TRUSTED_PROXIES", ""))
 	if err != nil {
 		return nil, err
@@ -408,6 +435,11 @@ func Load() (*Config, error) {
 		ExistenceNegativeTTL:     existenceNegTTL,
 		ExistenceNegativeJitter:  existenceNegJitter,
 		ExistenceRebuildInterval: existenceRebuild,
+
+		BreakerEnabled:          breakerEnabled,
+		BreakerFailureThreshold: breakerThreshold,
+		BreakerOpenDuration:     breakerOpenDuration,
+		BreakerMaxOpen:          breakerMaxOpen,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -451,6 +483,14 @@ func (c *Config) validate() error {
 	}
 	if c.ReconcileInterval <= 0 || c.ReconcileGrace <= 0 {
 		return errors.New("RECONCILE_INTERVAL and RECONCILE_GRACE must be positive")
+	}
+	if c.BreakerEnabled {
+		if c.BreakerFailureThreshold <= 0 || c.BreakerOpenDuration <= 0 || c.BreakerMaxOpen <= 0 {
+			return errors.New("breaker threshold and durations must be positive")
+		}
+		if c.BreakerMaxOpen < c.BreakerOpenDuration {
+			return errors.New("BREAKER_MAX_OPEN_DURATION must not be shorter than BREAKER_OPEN_DURATION")
+		}
 	}
 	if c.ExistenceEnabled {
 		if c.ExistenceExpected == 0 {

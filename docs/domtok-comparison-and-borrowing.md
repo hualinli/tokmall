@@ -82,7 +82,7 @@
 | 6 | **库存"可售量 = stock − locked"三段式语义** | `sku_info(stock, lock_stock)`：下单预占、支付实扣、超时释放 | ⭐⭐⭐⭐ 讲清"可售量 vs 实物库存"与超卖边界 | 中 | ⏳ 见 §5 |
 | 7 | **SKU 价格版本表 + 全链路 version_id** | `sku_price_history` + 订单 `goods_version` | ⭐⭐⭐⭐ 价格审计、"下单时价格"的可证明性 | 中 | ⏳ 见 §5 |
 | 8 | **优惠券/促销域** | `coupon_info` + `user_coupon` + 贪心选券 | ⭐⭐⭐⭐ 券组合是背包问题、防超发、金额分摊、退款退券 | 大 | ⏳ 见 §5（必须重新设计） |
-| 9 | **熔断/降级（依赖级）** | Sentinel 流控（`app/gateway/mw/sentinel.go`）+ Redis 健康探测双路径降级 | ⭐⭐⭐⭐ 限流 vs 熔断 vs 降级的区别，有真实代码 | 中 | ⏳ 见 §5 |
+| 9 | **熔断/降级（依赖级）** | Sentinel 流控（`app/gateway/mw/sentinel.go`）+ Redis 健康探测双路径降级 | ⭐⭐⭐⭐ 限流 vs 熔断 vs 降级的区别，有真实代码 | 中 | ✅ §4.5 |
 | 10 | **两级缓存（进程内 L1 + Redis L2）+ 失效广播** | DomTok 没有本地缓存 | ⭐⭐⭐⭐ 多级缓存一致性与 QPS 提升 | 中 | ⏳ 见 §5 |
 | 11 | **错误在"创建点"抓栈 + 错误日志分流** | `pkg/errno` 的 `callers()`（延迟符号化）+ `pkg/middleware/log.go:40-63` | ⭐⭐⭐ "错误现场是构造它的那一行" | 小 | ⏳（TokMall 的哨兵错误是单例，需改造才适用） |
 | 12 | **Prometheus recording rule 命名 `level:metric:ops` + 告警规则** | `config/prometheus/mysqld_rules.yml:4-8` | ⭐⭐⭐ 高基数留在预聚合里，看板只查低基数 | 小 | ⏳ 见 §5 |
@@ -197,6 +197,39 @@ DomTok 有 OTel/Jaeger 全家桶，但**trace 与 log 是两条互不相关的�
 | 一键复现 CI | ✅ `make verify` | ✅ `make verify` + `scripts/preflight.sh` |
 | 模块缓存 | ✖ `cache: false` | ✅ 全部开启 |
 
+### 4.5 依赖级熔断器（对象存储）
+
+**DomTok 的做法**：Sentinel 做入口流控（全局 QPS=100，粒度过粗），另有一套
+"Redis 健康探测 + 双路径切换"（`IsHealthy()` 每 5 秒 PING，健康走 Redis+DB 双写、
+不健康走纯 DB）。**问题**：它把熔断和"选哪条实现路径"混在一起，
+两套语义静默切换（同一业务在两套一致性模型之间来回跳）。
+
+**TokMall 的做法**（`internal/breaker/`）：标准三态熔断器 + 装饰器，业务代码零改动。
+
+- 状态机：closed →（连续失败达阈值）→ open →（冷却期，指数退避）→ half-open
+  →（探测成功）→ closed；half-open 只放行少量探测，避免恢复瞬间打垮下游；
+- **装饰器注入**：`breaker.NewStorage(rawStorage, b)` 实现 `StorageClient` 接口面，
+  main 装配时替换即可——业务模块一行不改；
+- **失败分类**（踩坑后补上的关键设计）：`Config.IsFailure` 允许把"对象不存在"
+  这类**健康依赖的正常答复**排除在故障之外。实测踩过：MinIO 恢复后的 half-open
+  探测因为返回 `NoSuchKey` 被判失败，熔断器立刻重新打开；
+- **对外语义**：熔断打开 → `ErrStorageUnavailable` → HTTP **503**（依赖暂时不可用，
+  客户端可退避重试），而不是 500（会被当成服务端 bug 计入错误率）；
+- **启动不被依赖卡住**：bucket 检查失败只告警不阻塞启动——对象存储暂时不可用
+  不应该让整个服务起不来（实测：MinIO 停着时服务直接启动失败）。
+
+**实测（停掉 MinIO 后连续请求创建视频，该路径会 StatObject）**：
+
+| 阶段 | 响应 | 延迟 |
+|---|---|---|
+| 前 5 次（真实故障） | 500 | 3.1 ~ 5.0s（底层超时） |
+| 熔断打开后 | **503** | **0.7ms**（快速失败，不再调用 MinIO） |
+| MinIO 恢复 + 冷却期后探测 | 400（业务答复） | 2.6ms，熔断器自动闭合 |
+
+指标：`breaker_state{name}`、`breaker_opens_total`、`breaker_rejections_total`
+（"省下了多少次必然失败的等待"的直接量化）、`breaker_probes_total{result}`。
+已加入 `scripts/drill_failure_modes.sh` 第 6 步，可复现。
+
 ---
 
 ## 5. 未落地但值得做的（含设计要点）
@@ -239,16 +272,17 @@ DomTok 的券实现有 8 处硬伤（无发行量、无截止校验、领取次�
 - **对账**：把"券发行量 = 已发放 + 未发放""已用券数 = 使用券的订单数"加进 reconcile 检查项；
 - **口径**：GMV 记实付还是原价？——按 ADR-017 的口径原则，**毛额记原价、优惠单列**。
 
-### 5.3 熔断器 + 降级
+### 5.3 把熔断扩展到 Redis 与下游 HTTP
 
-DomTok 用 Sentinel 做**入口流控**（全局 QPS=100，粒度过粗），用 Redis 健康探测做**依赖降级**。
-TokMall 已有入口限流（按账号/IP/用户三档），缺的是**依赖级熔断**：
+本轮只把熔断接在对象存储上（`StatObject`/`DeleteObject` 是真正走网络的调用；
+预签名是本地签名运算，不走网络——这也是个容易搞错的点）。
+下一步的自然延伸：
 
-- 状态机：closed →（连续失败/失败率超阈值）→ open →（冷却期后）→ half-open →（探测成功）→ closed；
-- 作用点：MinIO 预签名、Redis 缓存读写、下游 HTTP；
-- 与现有 fail-open 的关系：缓存读失败现在每次都等超时，熔断后直接快速失败并走数据库；
-- 指标：`breaker_state{name}`、`breaker_rejections_total{name}`、`breaker_opens_total{name}`；
-- 演练：停掉 MinIO/Redis，观察"快速失败 + 自动恢复"，写进 `scripts/drill_failure_modes.sh`。
+- **Redis**：缓存读失败目前每次都要等连接超时（fail-open 但仍付超时代价），
+  熔断后直接快速失败并走数据库；作用点是 feed 缓存与穿透防护的负缓存；
+- **下游 HTTP**（未来拆服务后）：用同一套 breaker 包住 RPC 客户端；
+- 注意**失败分类**：`redis.Nil`（key 不存在）不是故障，必须走 `Config.IsFailure` 排除，
+  否则缓存未命中就能把熔断器打开。
 
 ### 5.4 两级缓存（L1 进程内 + L2 Redis）
 

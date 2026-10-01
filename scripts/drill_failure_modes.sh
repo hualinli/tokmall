@@ -75,4 +75,35 @@ note "对账应把它报成 outbox_delivery 差异，并在 --replay 时重新�
 (env APP_ENV=development JWT_SECRET=x FEED_CURSOR_SECRET=y ./bin/reconcile --replay | tail -12) || true
 note "结论：事件丢失不是靠"相信 broker"兜住的，而是靠对账发现 + 幂等重放修复。"
 
+say "6/6 熔断降级（对象存储不可用时快速失败）"
+note "停掉 MinIO，连续请求一个会真正访问 MinIO 的接口（创建视频会 StatObject）："
+note "注意延迟变化——前几次是真实超时（秒级），阈值之后熔断打开，变成毫秒级快速失败。"
+docker stop tokmall-minio >/dev/null
+BREAKER_SUFFIX=$(date +%s | tail -c 7)
+TOKEN=$(curl -sS -X POST localhost:8080/api/v1/auth/register -H 'Content-Type: application/json' \
+  -d "{\"email\":\"drill-breaker-$BREAKER_SUFFIX@example.com\",\"username\":\"dbk$BREAKER_SUFFIX\",\"password\":\"password123\"}" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+if [[ -n ${TOKEN:-} ]]; then
+  for i in 1 2 3 4 5 6 7; do
+    curl -sS -o /dev/null -w "   create-video -> HTTP %{http_code}  %{time_total}s\n" \
+      -X POST localhost:8080/api/v1/videos -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer $TOKEN" \
+      -d '{"title":"t","object_key":"videos/1/none.mp4","duration_seconds":5}'
+  done
+  curl -s localhost:9091/metrics | grep -E '^breaker' | sed 's/^/   /'
+else
+  note "（未能注册演练账号，跳过熔断步骤）"
+fi
+note "结论：依赖故障时不再让每个请求都等到底层超时（连接池会被拖满），"
+note "而是快速失败并对外返回 503（可重试语义）；依赖恢复后 half-open 探测自动闭合。"
+
+docker start tokmall-minio >/dev/null
+sleep 6
+note "MinIO 已恢复，等待冷却期后探测自动闭合："
+curl -sS -o /dev/null -w "   probe -> HTTP %{http_code}  %{time_total}s\n" \
+  -X POST localhost:8080/api/v1/videos -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${TOKEN:-}" \
+  -d '{"title":"t","object_key":"videos/1/none.mp4","duration_seconds":5}' 2>/dev/null || true
+curl -s localhost:9091/metrics | grep -E '^breaker_state' | sed 's/^/   /'
+
 say "演练结束。可用 bin/outboxctl status / dlq list 查看当前状态。"

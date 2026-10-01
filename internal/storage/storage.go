@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"log/slog"
+
 	"context"
 	"errors"
 	"fmt"
@@ -36,8 +38,12 @@ func New(cfg config.MinIOConfig) (*Client, error) {
 		downloadExpiry: cfg.DownloadURLExpiry,
 		avatarExpiry:   cfg.AvatarURLExpiry,
 	}
+	// bucket 检查**不作为启动门槛**：对象存储暂时不可用不应该让整个服务起不来
+	// （那会把一次依赖故障放大成全站不可用）。这里只告警并继续启动，
+	// 后续调用由熔断器保护、由健康检查暴露；bucket 会在下次启动或人工创建时补齐。
 	if err := c.ensureBucket(context.Background()); err != nil {
-		return nil, err
+		slog.Warn("object storage is not ready at startup; continuing with degraded storage",
+			"bucket", cfg.Bucket, "err", err)
 	}
 	return c, nil
 }

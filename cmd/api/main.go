@@ -21,6 +21,7 @@ import (
 	"github.com/hertz-contrib/requestid"
 	"github.com/lihualin/tokmall/internal/api"
 	"github.com/lihualin/tokmall/internal/attribution"
+	"github.com/lihualin/tokmall/internal/breaker"
 	"github.com/lihualin/tokmall/internal/cache"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
@@ -133,9 +134,26 @@ func run() error {
 		middleware.HTTPMetrics(httpMetrics),
 		middleware.AccessLog(),
 	)
-	storageClient, err := storage.New(cfg.MinIOConfig)
+	rawStorage, err := storage.New(cfg.MinIOConfig)
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
+	}
+	// 对象存储的熔断装饰器：MinIO 不可用时快速失败，业务侧降级
+	// （卡片无封面/详情无播放地址），而不是让每个请求都等到底层超时。
+	var storageClient breaker.StorageClient = rawStorage
+	if cfg.BreakerEnabled {
+		storageClient = breaker.NewStorage(rawStorage, breaker.New(breaker.Config{
+			Name:             "minio",
+			FailureThreshold: cfg.BreakerFailureThreshold,
+			OpenDuration:     cfg.BreakerOpenDuration,
+			MaxOpenDuration:  cfg.BreakerMaxOpen,
+			HalfOpenProbes:   1,
+			// "对象不存在"是健康依赖的正常答复，不能计成故障——
+			// 否则一次正常的 404 就能把熔断器打开。
+			IsFailure: func(err error) bool {
+				return !errors.Is(err, storage.ErrObjectNotFound)
+			},
+		}, breaker.WithStats(observability.NewBreakerMetrics(metricsRegistry))))
 	}
 	// 注意：必须用 nil 接口变量。直接声明 *feed.RedisFeedCache 再赋给接口，
 	// 关闭时会得到"typed nil"——接口判 nil 为真但方法调用即 panic。

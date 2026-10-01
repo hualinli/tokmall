@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lihualin/tokmall/internal/breaker"
 	"github.com/lihualin/tokmall/internal/storage"
 )
 
@@ -16,6 +17,10 @@ var (
 	ErrInvalidParam     = errors.New("invalid param")
 	ErrForbidden        = errors.New("forbidden")
 	ErrUploadURLExpired = errors.New("upload url expired or never issued")
+	// ErrStorageUnavailable：对象存储熔断打开（下游暂时不可用）。
+	// 与"上传凭证过期"区分开：前者是依赖故障（503，可重试），
+	// 后者是客户端问题（400，需要重新申请凭证）。
+	ErrStorageUnavailable = errors.New("object storage temporarily unavailable")
 	// ErrIdempotencyConflict 表示 event_id 已经绑定了另一组业务事实。
 	// 它与“同一请求重试成功”不同，handler 应明确返回 409。
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different payload")
@@ -96,6 +101,19 @@ func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, cu
 // invalidateFeed 先写库、后删缓存（Cache-Aside 标准动作）。
 // 失效失败只记 Warn 不回滚请求：DB 已写入，脏窗口由 TTL 兜底
 // （最坏 60s 后自动恢复）。缓存失效绝不能进入请求的成功路径。
+// mapStorageError 把"熔断打开"翻译成领域哨兵，让 handler 能返回 503 而不是 500。
+// 这是熔断的最后一环：快速失败之后，对外语义也要正确——依赖暂时不可用
+// 与"服务端 bug"对客户端和监控的含义完全不同。
+func mapStorageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, breaker.ErrOpen) {
+		return ErrStorageUnavailable
+	}
+	return err
+}
+
 func (s *Service) invalidateFeed(ctx context.Context) {
 	if s.feedCache == nil {
 		return
@@ -212,6 +230,9 @@ func (s *Service) GetUploadURL(ctx context.Context, userID int64, filename strin
 	}
 	uploadURL, err := s.storage.PresignPutURL(ctx, objectKey)
 	if err != nil {
+		if mapped := mapStorageError(err); errors.Is(mapped, ErrStorageUnavailable) {
+			return nil, mapped
+		}
 		slog.Error("presign upload url failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("presign upload url: %w", err)
 	}
@@ -244,6 +265,9 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotFound) {
 			return nil, ErrUploadURLExpired
+		}
+		if mapped := mapStorageError(err); errors.Is(mapped, ErrStorageUnavailable) {
+			return nil, mapped
 		}
 		slog.Error("stat object failed", "object_key", p.ObjectKey, "err", err)
 		return nil, fmt.Errorf("stat object: %w", err)
@@ -609,6 +633,9 @@ func (s *Service) ValidateImage(ctx context.Context, userID int64, objectKey str
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotFound) {
 			return ErrUploadURLExpired
+		}
+		if mapped := mapStorageError(err); errors.Is(mapped, ErrStorageUnavailable) {
+			return mapped
 		}
 		slog.Error("stat image failed", "object_key", objectKey, "err", err)
 		return fmt.Errorf("stat image: %w", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,12 +114,19 @@ func TestAuth_TamperedToken(t *testing.T) {
 	engine := newAuthEngine(manager)
 	tok := signToken(t, manager, "42", 3600, token.TypeAccess)
 
-	tampered := tok[:len(tok)-1]
-	if tok[len(tok)-1] == 'a' {
-		tampered += "b"
+	// 篡改签名**中间**的字符，而不是最后一个：
+	// base64url 的最后一个字符可能带非规范尾部位，换成另一个字符仍会解码出
+	// 相同的字节，签名因此没变——这个用例曾经因此偶发失败（实测 flaky）。
+	parts := strings.Split(tok, ".")
+	require.Len(t, parts, 3)
+	signature := []byte(parts[2])
+	index := len(signature) / 2
+	if signature[index] == 'A' {
+		signature[index] = 'B'
 	} else {
-		tampered += "a"
+		signature[index] = 'A'
 	}
+	tampered := parts[0] + "." + parts[1] + "." + string(signature)
 	w := performWithHeader(engine, "Bearer "+tampered)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
