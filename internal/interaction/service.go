@@ -246,7 +246,8 @@ func (s *Service) ListFollowers(ctx context.Context, viewerID, userID int64, lim
 
 func (s *Service) decodeCursor(cursorRaw string) (*Cursor, error) {
 	if cursorRaw == "" {
-		return nil, nil
+		// 首页没有游标，是正常输入而不是错误。
+		return nil, nil //nolint:nilnil // 见上方注释：空游标不是错误
 	}
 	cur, err := s.cursor.Decode(cursorRaw)
 	if err != nil {

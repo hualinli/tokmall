@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/reconcile"
-	"github.com/lihualin/tokmall/internal/testsupport"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/reconcile"
+	"github.com/lihualin/tokmall/internal/testsupport"
 )
 
 // 对账的验收方式很直接：先造一份**干净的**数据证明"没错报"，

@@ -11,8 +11,9 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/hertz-contrib/requestid"
-	"github.com/lihualin/tokmall/internal/response"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/lihualin/tokmall/internal/response"
 )
 
 // Limiter 限流器消费侧接口：middleware 只依赖它，实现由 main 装配（Redis 版）。

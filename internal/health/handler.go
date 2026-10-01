@@ -5,8 +5,9 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/lihualin/tokmall/internal/response"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/response"
 )
 
 type Handler struct {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
+
 	"github.com/lihualin/tokmall/internal/response"
 	"github.com/lihualin/tokmall/internal/token"
 )

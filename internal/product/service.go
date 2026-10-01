@@ -420,7 +420,7 @@ func canTransitionProductStatus(from, to ProductStatus) bool {
 
 func (s *Service) toProductItem(ctx context.Context, p *Product) (*ProductItem, error) {
 	if p == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // 入参为 nil 时返回 nil，调用方已判空
 	}
 	item := &ProductItem{
 		ID:          p.ID,

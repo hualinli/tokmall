@@ -482,10 +482,10 @@ func (c *Config) validate() error {
 	if _, err := strconv.ParseUint(c.ServerPort, 10, 16); err != nil || c.ServerPort == "0" {
 		return errors.New("SERVER_PORT must be an integer between 1 and 65535")
 	}
-	if _, err := strconv.ParseUint(c.DBConfig.Port, 10, 16); err != nil || c.DBConfig.Port == "0" {
+	if _, err := strconv.ParseUint(c.Port, 10, 16); err != nil || c.Port == "0" {
 		return errors.New("DB_PORT must be an integer between 1 and 65535")
 	}
-	if c.RedisConfig.DB < 0 {
+	if c.DB < 0 {
 		return errors.New("REDIS_DB must be non-negative")
 	}
 	if c.FeedCacheTTL <= 0 || c.UploadURLExpiry <= 0 || c.DownloadURLExpiry <= 0 || c.AvatarURLExpiry <= 0 {
@@ -581,21 +581,21 @@ func (c *Config) validate() error {
 		return errors.New("production configuration invalid: JWT_SECRET and FEED_CURSOR_SECRET must be different")
 	}
 	if isKnownDevelopmentSecret(c.JWTSecret) || isKnownDevelopmentSecret(c.CursorSecret) ||
-		isKnownDevelopmentSecret(c.DBConfig.Password) || isKnownDevelopmentSecret(c.MinIOConfig.AccessKey) ||
-		isKnownDevelopmentSecret(c.MinIOConfig.SecretKey) || isKnownDevelopmentSecret(c.RedisConfig.Password) ||
-		c.DBConfig.Password == defaultDBPassword || c.MinIOConfig.SecretKey == "tokmall123" {
+		isKnownDevelopmentSecret(c.DBConfig.Password) || isKnownDevelopmentSecret(c.AccessKey) ||
+		isKnownDevelopmentSecret(c.SecretKey) || isKnownDevelopmentSecret(c.RedisConfig.Password) ||
+		c.DBConfig.Password == defaultDBPassword || c.SecretKey == "tokmall123" {
 		return errors.New("production configuration invalid: development or placeholder credentials are not allowed")
 	}
-	if c.DBConfig.SSLMode == "disable" {
+	if c.SSLMode == "disable" {
 		return errors.New("production configuration invalid: DB_SSL_MODE must enable TLS")
 	}
-	if !c.MinIOConfig.UseSSL {
+	if !c.UseSSL {
 		return errors.New("production configuration invalid: MINIO_USE_SSL must be true")
 	}
-	if !c.RedisConfig.UseTLS {
+	if !c.UseTLS {
 		return errors.New("production configuration invalid: REDIS_USE_TLS must be true")
 	}
-	if host, _, err := net.SplitHostPort(c.MinIOConfig.Endpoint); err != nil || strings.TrimSpace(host) == "" {
+	if host, _, err := net.SplitHostPort(c.Endpoint); err != nil || strings.TrimSpace(host) == "" {
 		return errors.New("production configuration invalid: MINIO_ENDPOINT must use host:port format")
 	}
 	return nil

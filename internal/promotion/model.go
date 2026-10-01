@@ -27,9 +27,9 @@ func (VideoProduct) TableName() string { return "video_products" }
 // ProductCard 是内容侧公开展示所需的最小只读投影。库存是交易域事实，
 // 不进入该 DTO；封面 URL 在 3B Feed 批量装配时统一签发。
 type ProductCard struct {
-	ProductID     int64  `gorm:"column:product_id" json:"product_id"`
-	Title         string `gorm:"column:title" json:"title"`
-	MinPrice      int64  `gorm:"column:min_price" json:"min_price"`
-	ProductStatus string `gorm:"column:product_status" json:"product_status"`
-	SortOrder     int32  `gorm:"column:sort_order" json:"sort_order"`
+	ProductID     int64  `json:"product_id"     gorm:"column:product_id"`
+	Title         string `json:"title"          gorm:"column:title"`
+	MinPrice      int64  `json:"min_price"      gorm:"column:min_price"`
+	ProductStatus string `json:"product_status" gorm:"column:product_status"`
+	SortOrder     int32  `json:"sort_order"     gorm:"column:sort_order"`
 }

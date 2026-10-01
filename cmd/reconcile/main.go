@@ -47,7 +47,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "reconcile: get sql db: %v\n", err)
 		return 2
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

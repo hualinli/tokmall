@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/lihualin/tokmall/internal/testsupport"
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
-	"github.com/stretchr/testify/require"
 )
 
 // TestPostgresRegisterPersistsActiveStatus 是一个由真实故障倒逼出来的测试。

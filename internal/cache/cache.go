@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/config"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/lihualin/tokmall/internal/config"
 )
 
 // Option 配置客户端行为。用选项而不是参数：将来加"命令重试策略""连接池大小"

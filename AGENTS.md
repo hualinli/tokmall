@@ -103,7 +103,7 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
 | 两级缓存 | ✅ | L1 分片 LRU + 版本号跨实例失效（ADR-025）+ Redis 慢命令 Hook（排除阻塞命令，ADR-026）；feed 响应 ~9ms → ~2.5ms |
 | 观测栈与告警 | ✅ | 8 条记录规则（`level:metric:operations`）+ 6 条告警 + 11 面板看板（JSON 入库）；测试保证规则引用的指标真实存在（变异验证过） |
-| 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck；`make verify/coverage/vulncheck/help`；`scripts/preflight.sh` |
+| 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck + golangci-lint（精选 14 个 linter，存量 74 问题清零）；`make verify/coverage/vulncheck/lint/help`；`scripts/preflight.sh` |
 
 > 注：M4+ 三行不在原里程碑规划内（按"出现可测量问题再引入技术"的原则，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
@@ -140,6 +140,9 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
   request_id/trace_id/span_id/route/user_id，并按字段名黑名单脱敏。
   指标标签只用路由模板（`/api/v1/videos/:id`），禁止 user_id/order_no 等高基数字段
 - **GORM 日志**：ParameterizedQueries + IgnoreRecordNotFoundError + SlowThreshold=200ms
+- **静态检查**：提交前跑 `make lint`（golangci-lint）。`errorlint`/`nilerr`/`forcetypeassert`
+  是本项目错误链的护栏；确需例外时用 `//nolint:<linter> // 理由`（`nolintlint` 强制写理由），
+  能用代码表达清楚的不要用 nolint
 - **券**：规则只有一份实现（`coupon.DiscountFor`，门槛按整单金额）；领取走
   "锁券行 → 条件更新发行量 → 计数校验限领"三层；订单金额恒满足
   `total = original - discount`（DB CHECK 兜底）；退款成功退券（过期则标 EXPIRED）；
@@ -171,7 +174,8 @@ make reconcile [REPLAY=1] [REBUILD=1]       # 对账 / 重放 / 重建读模型
 make outbox-status                          # Outbox 积压与死信
 make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关闭）
 ./bin/loadgen -scenario penetration -concurrency 30 -duration 10s   # 缓存穿透压测
-make verify                                 # 本地一次跑完 CI 门禁（fmt/vet/test/tidy-check）
+make lint                                   # golangci-lint（配置 .golangci.yml；未安装会提示安装命令）
+make verify                                 # 本地一次跑完 CI 门禁（fmt/vet/lint/test/tidy-check）
 make monitoring                             # 观测栈：Prometheus(:9090) + Grafana(:3000)，规则与看板已 provision
 make coverage / make vulncheck / make help   # 覆盖率 / 漏洞扫描 / 目标说明
 scripts/preflight.sh                        # 提交前自检（含前端 tsc）

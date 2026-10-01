@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/lihualin/tokmall/internal/breaker"
 	"github.com/lihualin/tokmall/internal/storage"
 )
@@ -219,9 +220,10 @@ func (s *Service) GetUploadURL(ctx context.Context, userID int64, filename strin
 			return nil, ErrInvalidParam
 		}
 		ext := "jpg"
-		if contentType == "image/png" {
+		switch contentType {
+		case "image/png":
 			ext = "png"
-		} else if contentType == "image/webp" {
+		case "image/webp":
 			ext = "webp"
 		}
 		objectKey = fmt.Sprintf("covers/%d/%s.%s", userID, uuid.NewString(), ext)

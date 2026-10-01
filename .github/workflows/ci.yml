@@ -77,6 +77,13 @@ jobs:
           }
       - name: go vet
         run: go vet ./...
+      - name: golangci-lint
+        # 版本钉死（不用 latest）：上游发版把历史 PR 变红是对照项目踩过的坑。
+        # 配置见 .golangci.yml——精选 linter，重点是 errorlint/nilerr/forcetypeassert：
+        # 它们直接对应本项目"三层错误链 + 领域哨兵"的约定。
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.14.0
       - name: 单元测试
         run: go test ./... -count=1
       - name: 竞态检测（并发密集模块）

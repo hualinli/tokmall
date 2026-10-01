@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/lihualin/tokmall/internal/outbox"
 )
 
 // Projector 是作者日销投影的消费者：把 OrderPaid / OrderRefunded 事件

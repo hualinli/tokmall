@@ -8,19 +8,20 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
 
 type RegisterRequest struct {
-	Email    string `json:"email" binding:"required"`
+	Email    string `json:"email"    binding:"required"`
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
 }
 
 type LoginRequest struct {
 	Identifier string `json:"identifier" binding:"required"`
-	Password   string `json:"password" binding:"required"`
+	Password   string `json:"password"   binding:"required"`
 }
 
 type RefreshRequest struct {
@@ -84,10 +85,7 @@ func (h *Handler) updateMe(ctx context.Context, c *app.RequestContext) {
 		response.Error(c, response.ErrInvalidArgument)
 		return
 	}
-	profile, err := h.service.UpdateMe(ctx, h.userID(c), UpdateMeParams{
-		Bio:       req.Bio,
-		AvatarKey: req.AvatarKey,
-	})
+	profile, err := h.service.UpdateMe(ctx, h.userID(c), UpdateMeParams(req))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidImageKey):

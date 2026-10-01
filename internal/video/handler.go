@@ -10,19 +10,20 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
 	"github.com/hertz-contrib/requestid"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
 
 type UploadURLRequest struct {
-	Filename    string `json:"filename" binding:"required"`
-	FileSize    int64  `json:"file_size" binding:"required"`
+	Filename    string `json:"filename"     binding:"required"`
+	FileSize    int64  `json:"file_size"    binding:"required"`
 	ContentType string `json:"content_type" binding:"required"`
 }
 
 type CreateVideoRequest struct {
-	Title           string  `json:"title" binding:"required"`
-	ObjectKey       string  `json:"object_key" binding:"required"`
+	Title           string  `json:"title"            binding:"required"`
+	ObjectKey       string  `json:"object_key"       binding:"required"`
 	CoverKey        *string `json:"cover_key"`
 	DurationSeconds int     `json:"duration_seconds" binding:"required"`
 }
@@ -30,7 +31,7 @@ type CreateVideoRequest struct {
 // PlayRequest 播放事件上报。EventID 客户端生成标准 UUID（v4/v7 均接受，幂等去重）；
 // PlayedAt 是客户端事件时间（RFC3339），缺省服务端 now()。
 type PlayRequest struct {
-	EventID   string     `json:"event_id" binding:"required"`
+	EventID   string     `json:"event_id"   binding:"required"`
 	SessionID *string    `json:"session_id"`
 	PlayedAt  *time.Time `json:"played_at"`
 }
@@ -90,12 +91,7 @@ func (h *Handler) create(ctx context.Context, c *app.RequestContext) {
 		response.Error(c, response.ErrInvalidArgument)
 		return
 	}
-	result, err := h.service.Create(ctx, h.userID(c), CreateParams{
-		Title:           req.Title,
-		ObjectKey:       req.ObjectKey,
-		CoverKey:        req.CoverKey,
-		DurationSeconds: req.DurationSeconds,
-	})
+	result, err := h.service.Create(ctx, h.userID(c), CreateParams(req))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidParam):

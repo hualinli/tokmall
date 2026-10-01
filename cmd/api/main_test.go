@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
 	"github.com/lihualin/tokmall/internal/api"
 	"github.com/lihualin/tokmall/internal/attribution"
 	"github.com/lihualin/tokmall/internal/config"
@@ -21,9 +25,6 @@ import (
 	"github.com/lihualin/tokmall/internal/promotion"
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func TestStopWorkerIsBounded(t *testing.T) {

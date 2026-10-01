@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/coupon"
-	"github.com/lihualin/tokmall/internal/testsupport"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/coupon"
+	"github.com/lihualin/tokmall/internal/testsupport"
 )
 
 // 领券并发证明：券的发行量是**券级别**的共享资源，必须在真实数据库上验证
@@ -38,6 +39,8 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 		require.NoError(t, err)
 
 		var success, soldOut, unexpected atomic.Int64
+		var unexpectedMu sync.Mutex
+		unexpectedSamples := make([]string, 0, 4)
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		for _, userID := range userIDs {
@@ -45,7 +48,7 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 			go func(userID int64) {
 				defer wg.Done()
 				<-start
-				callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				defer cancel()
 				_, err := svc.Claim(callCtx, userID, view.CouponID)
 				switch {
@@ -55,6 +58,11 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 					soldOut.Add(1)
 				default:
 					unexpected.Add(1)
+					unexpectedMu.Lock()
+					if len(unexpectedSamples) < 4 {
+						unexpectedSamples = append(unexpectedSamples, err.Error())
+					}
+					unexpectedMu.Unlock()
 				}
 			}(userID)
 		}
@@ -62,8 +70,8 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 		wg.Wait()
 
 		require.Equal(t, int64(10), success.Load(), "恰好 10 张被领走")
+		require.Zero(t, unexpected.Load(), "出现了预期之外的错误：%v", unexpectedSamples)
 		require.Equal(t, int64(90), soldOut.Load())
-		require.Zero(t, unexpected.Load())
 
 		var issued, rows int64
 		require.NoError(t, db.Raw(`SELECT issued_quantity FROM coupons WHERE id = ?`, view.CouponID).Scan(&issued).Error)
@@ -83,6 +91,8 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 
 		// 同一用户并发领 20 次：只有 2 次成功，其余都是"已达限领"。
 		var success, alreadyClaimed, unexpected atomic.Int64
+		var unexpectedMu sync.Mutex
+		unexpectedSamples := make([]string, 0, 4)
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		for range 20 {
@@ -100,6 +110,11 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 					alreadyClaimed.Add(1)
 				default:
 					unexpected.Add(1)
+					unexpectedMu.Lock()
+					if len(unexpectedSamples) < 4 {
+						unexpectedSamples = append(unexpectedSamples, err.Error())
+					}
+					unexpectedMu.Unlock()
 				}
 			}()
 		}
@@ -107,8 +122,8 @@ func TestPostgresCouponClaimConcurrency(t *testing.T) {
 		wg.Wait()
 
 		require.Equal(t, int64(2), success.Load(), "每人限领 2 张必须精确成立")
+		require.Zero(t, unexpected.Load(), "出现了预期之外的错误：%v", unexpectedSamples)
 		require.Equal(t, int64(18), alreadyClaimed.Load())
-		require.Zero(t, unexpected.Load())
 
 		var rows, issued int64
 		require.NoError(t, db.Raw(`SELECT count(*) FROM user_coupons WHERE coupon_id = ? AND user_id = ?`,

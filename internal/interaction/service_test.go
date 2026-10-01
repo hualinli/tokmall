@@ -126,9 +126,13 @@ func (f *fakeRepo) ListFollowers(ctx context.Context, userID int64, before *Curs
 func (f *fakeRepo) filterEdges(edges []FollowEdge, before *Cursor, limit int) []FollowEdge {
 	out := make([]FollowEdge, 0, limit+1)
 	for _, e := range edges {
-		if before != nil && !(e.CreatedAt.Before(before.CreatedAt) ||
-			(e.CreatedAt.Equal(before.CreatedAt) && e.UserID < before.UserID)) {
-			continue
+		// 比游标更新的行直接跳过（正面表述，避免否定复合条件）。
+		if before != nil {
+			newerThanCursor := e.CreatedAt.After(before.CreatedAt) ||
+				(e.CreatedAt.Equal(before.CreatedAt) && e.UserID >= before.UserID)
+			if newerThanCursor {
+				continue
+			}
 		}
 		out = append(out, e)
 		if len(out) >= limit+1 {

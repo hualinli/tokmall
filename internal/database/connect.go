@@ -5,10 +5,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/config"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/lihualin/tokmall/internal/config"
 )
 
 // 连接池参数：补充文档 §7 推荐初始值。

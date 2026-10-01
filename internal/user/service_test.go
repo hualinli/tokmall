@@ -12,9 +12,10 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lihualin/tokmall/internal/token"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/token"
 )
 
 // fakeRepo 内存版仓库：模拟 gorm 行为，重点回填主键（对应 Create 后的 RETURNING）。

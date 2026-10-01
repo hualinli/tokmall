@@ -260,7 +260,7 @@ func (r *GormRepository) RunCheck(ctx context.Context, name, description, query 
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columns, err := rows.Columns()
 	if err != nil {

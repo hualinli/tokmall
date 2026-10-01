@@ -9,8 +9,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/route"
-	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lihualin/tokmall/internal/middleware"
 )
 
 func TestSalesOnlyExposesAuthenticatedAuthor(t *testing.T) {

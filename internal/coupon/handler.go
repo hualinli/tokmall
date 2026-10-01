@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
@@ -34,15 +35,15 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 }
 
 type CreateCouponRequest struct {
-	Title           string `json:"title" binding:"required"`
+	Title           string `json:"title"            binding:"required"`
 	ThresholdAmount int64  `json:"threshold_amount" binding:"required"`
-	DiscountAmount  int64  `json:"discount_amount" binding:"required"`
+	DiscountAmount  int64  `json:"discount_amount"  binding:"required"`
 	// TotalQuantity 为 0 表示不限量。
 	TotalQuantity int64 `json:"total_quantity"`
 	PerUserLimit  int32 `json:"per_user_limit"`
 	// 有效期用 RFC3339 字符串，避免各语言时间戳精度差异。
 	ValidFrom string `json:"valid_from" binding:"required"`
-	ValidTo   string `json:"valid_to" binding:"required"`
+	ValidTo   string `json:"valid_to"   binding:"required"`
 }
 
 func (h *Handler) create(ctx context.Context, c *app.RequestContext) {

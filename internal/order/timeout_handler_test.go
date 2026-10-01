@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/outbox"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/outbox"
 )
 
 // 超时延迟事件的单元测试（不需要数据库）：
@@ -40,12 +41,6 @@ func TestTimeoutHandlerRejectsInvalidOrderID(t *testing.T) {
 	event := outbox.Event{EventType: outbox.EventTypeOrderTimeout, Payload: payload}
 	require.Error(t, handler.Handle(context.Background(), nil, event))
 }
-
-type recordingStats struct {
-	results []string
-}
-
-func (s *recordingStats) TimeoutEvent(result string) { s.results = append(s.results, result) }
 
 var _ = gorm.DB{}
 var _ = time.Now

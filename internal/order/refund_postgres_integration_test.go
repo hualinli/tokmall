@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/outbox"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/outbox"
 )
 
 // 售后（退款）的真实 PostgreSQL 证据测试。

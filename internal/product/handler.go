@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
@@ -38,7 +39,7 @@ func (h *Handler) RegisterOptionalRoutes(g *route.RouterGroup) {
 }
 
 type CreateProductRequest struct {
-	Title       string `json:"title" binding:"required"`
+	Title       string `json:"title"       binding:"required"`
 	Description string `json:"description"`
 	CoverKey    string `json:"cover_key"`
 }

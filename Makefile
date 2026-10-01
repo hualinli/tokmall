@@ -39,6 +39,12 @@ run: ## 前台运行 api（开发模式）
 fmt: ## gofmt 原地格式化所有 Go 代码
 	$(GO) fmt ./...
 
+lint: ## golangci-lint 静态检查（配置见 .golangci.yml，未安装时给出提示）
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "未安装 golangci-lint。安装：go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
+		exit 1; }
+	golangci-lint run ./...
+
 vet: ## go vet 静态检查
 	$(GO) vet ./...
 
@@ -56,7 +62,7 @@ tidy-check: ## 校验 go.mod/go.sum 已是 tidy 状态（只读，不改文件�
 
 # CI 的四道门禁本地一次跑完。顺序有意为之：先 fmt 自动修好格式，再 vet/test 验证，
 # 最后确认依赖文件没有漂移——跑完就是"可以直接提交"的状态。
-verify: fmt vet test tidy-check ## 本地跑 CI 同款门禁（fmt → vet → test → tidy 漂移）
+verify: fmt vet lint test tidy-check ## 本地跑 CI 同款门禁（fmt → vet → lint → test → tidy 漂移）
 	@echo "✅ 本地门禁全部通过（fmt / vet / test / tidy-check）"
 
 # -coverpkg=./... 让每个包都按"整体代码"统计（否则未测包会拉低/虚高数字）；

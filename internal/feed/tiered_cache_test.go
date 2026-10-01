@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/cache/l1"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lihualin/tokmall/internal/cache/l1"
 )
 
 // fakeFirstPageCache 是一个可观测的 L2，用来验证"L1 命中时不再访问 L2"。

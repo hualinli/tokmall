@@ -23,18 +23,6 @@ func (l *inventorySQLLogger) Trace(_ context.Context, _ time.Time, fc func() (st
 	l.queries = append(l.queries, sql)
 }
 
-func dryRunInventoryRepo(t *testing.T, log *inventorySQLLogger) *GormRepository {
-	t.Helper()
-	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=invalid"}), &gorm.Config{
-		DryRun:                 true,
-		DisableAutomaticPing:   true,
-		SkipDefaultTransaction: true,
-		Logger:                 log,
-	})
-	require.NoError(t, err)
-	return NewRepository(db)
-}
-
 func TestGormRepositoryAdjustClaimsScopedIdempotencyKey(t *testing.T) {
 	log := &inventorySQLLogger{Interface: logger.Discard}
 	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=invalid"}), &gorm.Config{

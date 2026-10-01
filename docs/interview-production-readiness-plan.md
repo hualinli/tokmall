@@ -240,3 +240,31 @@ PENDING_PAYMENT → EXPIRED
 | 4 Outbox 与 Kafka | 待开始 |  |  |  |
 | 5 工程化与可证明性 | 待开始 |  |  |  |
 | 6 简历与面试交付 | 待开始 |  |  |  |
+
+---
+
+## 静态检查（2026-10 落地）
+
+对照同类项目后引入 golangci-lint（v2 schema，`.golangci.yml`），**精选而非全开**：
+
+| Linter | 为什么必须有 |
+|---|---|
+| `errorlint` | 本项目核心是三层错误链（repo 哨兵 → service 判定 → handler 映射）。`err == ErrX` 必须换 `errors.Is`、`%v` 换 `%w`，否则哨兵判定在包装后静默失效 |
+| `nilerr` | 抓 `if err != nil { return nil }`（吞错误）。本轮就抓到两处需要显式说明的 fail-open/幂等语义 |
+| `nilnil` | 抓 `(nil, nil)`。抓到 6 处"不存在不是错误"的既有约定——**每处都必须写明理由**，而不是默默通过 |
+| `forcetypeassert` | `ctx.Value(...).(*T)` / singleflight 返回值断言不检查会 panic（抓到 3 处） |
+| `errcheck` | 未处理的 error（抓到 10 处：defer Close、bcrypt 时间侧信道比对等） |
+| `unused` | 死代码（抓到 5 处，包括我自己写完没用的字段与测试类型） |
+| `bodyclose` / `sqlclosecheck` / `rowserrcheck` | 资源泄漏三件套（HTTP body / sql.Rows / Stmt） |
+| `tagalign` + `gofmt`/`goimports` | 契约驱动项目里 DTO tag 与 import 分组统一，可 `--fix` 自动修 |
+
+接入过程：74 个存量问题 → 0。其中 **auto-fix 处理 51 个**（tag 对齐、import 分组），
+**人工处理 23 个**（语义类）。原则是：**能用代码表达清楚的就不用 nolint**，
+必须 nolint 的一律写明理由（`nolintlint` 强制要求解释），例如：
+
+```go
+return nil, nil //nolint:nilnil // 见上方注释：不存在不是错误
+```
+
+CI 里版本钉死为 `v2.14.0`（不用 `latest`）：上游发版把历史 PR 变红是对照项目踩过的坑。
+本地用 `make lint` 或 `make verify`（一条命令跑完 fmt → vet → lint → test → tidy 漂移）。

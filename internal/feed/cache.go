@@ -105,11 +105,12 @@ func followingCacheKeys(userID int64) []string {
 
 func (c *RedisFollowingFeedCache) Get(ctx context.Context, userID int64, rankVersion string) (*FeedResult, error) {
 	if c == nil || c.client == nil {
-		return nil, nil
+		// 缓存未启用：返回"未命中"而不是错误，调用方回源数据库。
+		return nil, nil //nolint:nilnil // 见上方注释：未命中不是错误
 	}
 	data, err := c.client.Get(ctx, followingCacheKey(userID, rankVersion)).Bytes()
 	if errors.Is(err, redis.Nil) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // 见上方注释：未命中不是错误
 	}
 	if err != nil {
 		return nil, err
@@ -146,7 +147,7 @@ func (c *RedisFollowingFeedCache) InvalidateFollowingFeed(ctx context.Context, f
 func (c *RedisFeedCache) Get(ctx context.Context) (*FeedResult, error) {
 	data, err := c.client.Get(ctx, firstPageKey).Bytes()
 	if errors.Is(err, redis.Nil) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // 见上方注释：未命中不是错误
 	}
 	if err != nil {
 		return nil, err

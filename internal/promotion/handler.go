@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
@@ -28,7 +29,7 @@ func (h *Handler) RegisterOptionalRoutes(g *route.RouterGroup) {
 
 type linkRequest struct {
 	ProductID int64 `json:"product_id" binding:"required"`
-	SortOrder int32 `json:"sort_order" vd:"$>=0"`
+	SortOrder int32 `json:"sort_order"                    vd:"$>=0"`
 }
 type sortRequest struct {
 	SortOrder *int32 `json:"sort_order"`

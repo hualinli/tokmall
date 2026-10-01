@@ -6,6 +6,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	hertzrecovery "github.com/cloudwego/hertz/pkg/app/middlewares/server/recovery"
+
 	"github.com/lihualin/tokmall/internal/response"
 )
 

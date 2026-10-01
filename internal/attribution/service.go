@@ -15,8 +15,8 @@ type Sales struct {
 	BuyerCount int64   `json:"buyer_count"`
 	UnitsSold  int64   `json:"units_sold"`
 	GMV        int64   `json:"gmv"`
-	ByVideo    []Slice `gorm:"-" json:"by_video"`
-	ByProduct  []Slice `gorm:"-" json:"by_product"`
+	ByVideo    []Slice `json:"by_video"    gorm:"-"`
+	ByProduct  []Slice `json:"by_product"  gorm:"-"`
 }
 
 type Slice struct {

@@ -12,8 +12,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/storage"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lihualin/tokmall/internal/storage"
 )
 
 type fakeRepo struct {
@@ -112,9 +113,13 @@ func (f *fakeRepo) ListByAuthor(ctx context.Context, authorID int64, before *Cur
 	})
 	out := make([]Video, 0, limit+1)
 	for _, v := range rows {
-		if before != nil && !(v.CreatedAt.Before(before.CreatedAt) ||
-			(v.CreatedAt.Equal(before.CreatedAt) && v.ID < before.VideoID)) {
-			continue
+		// 比游标更新的行直接跳过（正面表述，避免否定复合条件）。
+		if before != nil {
+			newerThanCursor := v.CreatedAt.After(before.CreatedAt) ||
+				(v.CreatedAt.Equal(before.CreatedAt) && v.ID >= before.VideoID)
+			if newerThanCursor {
+				continue
+			}
 		}
 		out = append(out, v)
 		if len(out) >= limit+1 {

@@ -337,8 +337,8 @@ func (r *runner) createOrder(ctx context.Context, token string, skuID int64, key
 		r.record("network_error", latency, kindSystem)
 		return 0, 0, kindSystem, err
 	}
-	switch {
-	case response.status == http.StatusCreated:
+	switch response.status {
+	case http.StatusCreated:
 		var payload struct {
 			OrderID     int64 `json:"order_id"`
 			TotalAmount int64 `json:"total_amount"`
@@ -349,11 +349,11 @@ func (r *runner) createOrder(ctx context.Context, token string, skuID int64, key
 		}
 		r.record("order_created", latency, kindSuccess)
 		return payload.OrderID, payload.TotalAmount, kindSuccess, nil
-	case response.status == http.StatusConflict:
+	case http.StatusConflict:
 		// 库存不足是压测的**预期终点**：它证明"不超卖"这条不变量在起作用。
 		r.record("order_conflict", latency, kindBusiness)
 		return 0, 0, kindBusiness, nil
-	case response.status == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		// 限流生效同样是"预期内的保护行为"：它说明按用户的写配额在起作用。
 		// 压测链路本身要么提高并发用户数，要么显式关闭限流（RATE_LIMIT_ENABLED=false）。
 		r.record("order_429", latency, kindBusiness)
@@ -374,10 +374,10 @@ func (r *runner) payOrder(ctx context.Context, token string, orderID, amount int
 		r.record("network_error", latency, kindSystem)
 		return
 	}
-	switch {
-	case response.status == http.StatusOK:
+	switch response.status {
+	case http.StatusOK:
 		r.record("order_paid", latency, kindSuccess)
-	case response.status == http.StatusConflict:
+	case http.StatusConflict:
 		r.record("pay_conflict", latency, kindBusiness)
 	default:
 		r.record(fmt.Sprintf("pay_%d", response.status), latency, kindSystem)
@@ -410,7 +410,7 @@ func (r *runner) do(ctx context.Context, method, path, token string, body any) (
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		return nil, err

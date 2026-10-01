@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/hertz-contrib/requestid"
+
 	"github.com/lihualin/tokmall/internal/observability"
 	"github.com/lihualin/tokmall/internal/tracing"
 )

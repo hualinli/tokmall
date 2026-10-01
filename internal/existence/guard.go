@@ -302,8 +302,10 @@ func (g *Guard) MayExist(ctx context.Context, namespace string, id int64) (bool,
 	}
 	missing, err := g.missing.IsMissing(ctx, namespace, id)
 	if err != nil {
+		// 负缓存故障必须 fail-open：返回"可能存在"让请求继续走到数据库。
+		// 反过来（当成不存在）会凭空造出假 404，是灾难性错误。
 		g.stats.Lookup(namespace, "negative_cache_error")
-		return true, nil
+		return true, nil //nolint:nilerr // 依赖故障时刻意 fail-open，见上方注释
 	}
 	if missing {
 		g.stats.NegativeHit(namespace)

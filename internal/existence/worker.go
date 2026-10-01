@@ -62,8 +62,7 @@ func (w *RebuildWorker) RunOnce(ctx context.Context) error {
 	var firstErr error
 	for namespace, loader := range w.loaders {
 		started := time.Now()
-		loader := loader
-		namespace := namespace
+
 		err := w.guard.Rebuild(namespace, func(add func(id int64) error) error {
 			return loader(ctx, add)
 		})

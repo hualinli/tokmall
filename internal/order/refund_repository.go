@@ -6,9 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/lihualin/tokmall/internal/outbox"
 )
 
 // GormRefundRepository 为退款命令提供独立事务边界。
@@ -353,7 +354,8 @@ func findLatestRefund(db *gorm.DB, orderID int64) (*Refund, error) {
 	var refund Refund
 	err := db.Where("order_id = ?", orderID).Order("id DESC").Take(&refund).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+		// 没有退款单是正常状态（不是错误），调用方按 nil 判断。
+		return nil, nil //nolint:nilnil // 见上方注释：不存在不是错误
 	}
 	if err != nil {
 		return nil, err

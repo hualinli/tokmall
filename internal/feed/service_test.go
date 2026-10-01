@@ -106,10 +106,14 @@ func (f *blockingLikeRepo) LikeCounts(ctx context.Context, videoIDs []int64) (ma
 func (f *fakeRepo) list(ctx context.Context, videos []Video, before *Cursor, limit int) []Video {
 	out := make([]Video, 0, limit+1)
 	for _, v := range videos {
-		// 与生产 SQL 一致：保留 (published_at, id) < 游标 的行（DESC 顺序下更旧的）
-		if before != nil && !(v.PublishedAt.Before(before.PublishedAt) ||
-			(v.PublishedAt.Equal(before.PublishedAt) && v.ID < before.VideoID)) {
-			continue
+		// 与生产 SQL 一致：保留 (published_at, id) < 游标 的行（DESC 顺序下更旧的）。
+		// 用正面表述"比游标更新的行直接跳过"，避免否定复合条件（也更贴近游标语义）。
+		if before != nil {
+			newerThanCursor := v.PublishedAt.After(before.PublishedAt) ||
+				(v.PublishedAt.Equal(before.PublishedAt) && v.ID >= before.VideoID)
+			if newerThanCursor {
+				continue
+			}
 		}
 		out = append(out, v)
 		if len(out) >= limit+1 {
@@ -170,7 +174,7 @@ func (f *fakeFollowingCache) Get(_ context.Context, userID int64, rankVersion st
 	defer f.mu.Unlock()
 	f.gets++
 	if f.store == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // 假实现模拟"未命中"
 	}
 	return f.store[followingCacheKey(userID, rankVersion)], nil
 }

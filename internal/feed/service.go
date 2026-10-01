@@ -289,7 +289,13 @@ func (s *Service) followingFirstPage(ctx context.Context, viewerID int64) (*Feed
 		slog.Error("following first page load failed", "user_id", viewerID, "err", err)
 		return nil, err
 	}
-	return v.(*FeedResult), nil
+	result, ok := v.(*FeedResult)
+	if !ok {
+		// singleflight 的返回值由本函数的 loader 产生，类型不可能不符；
+		// 断言失败会 panic，这里按内部错误返回（防御性）。
+		return nil, fmt.Errorf("unexpected singleflight value type %T", v)
+	}
+	return result, nil
 }
 
 // loadFollowingPage 关注 Feed 的查询 + 排序 + 拼 URL（无缓存路径，时间游标翻页共用）。
@@ -340,7 +346,8 @@ func (s *Service) loadFollowingPage(ctx context.Context, viewerID int64, before 
 // 关注 Feed 仍使用 time-v1，候选范围扩大但时间排序键不变。
 func (s *Service) decodeCursor(cursorRaw, expectedVersion string) (*Cursor, error) {
 	if cursorRaw == "" {
-		return nil, nil
+		// 首页没有游标，是正常输入而不是错误。
+		return nil, nil //nolint:nilnil // 见上方注释：空游标不是错误
 	}
 	cur, err := s.cursor.Decode(cursorRaw)
 	if err != nil {
@@ -431,7 +438,11 @@ func (s *Service) firstPage(ctx context.Context) (*FeedResult, error) {
 		slog.Error("first page load failed", "err", err)
 		return nil, err
 	}
-	return v.(*FeedResult), nil
+	result, ok := v.(*FeedResult)
+	if !ok {
+		return nil, fmt.Errorf("unexpected singleflight value type %T", v)
+	}
+	return result, nil
 }
 
 // loadPage 查库 + 拼 URL + 生成游标，是 firstPage 与翻页共用的核心。

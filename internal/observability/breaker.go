@@ -1,8 +1,9 @@
 package observability
 
 import (
-	"github.com/lihualin/tokmall/internal/breaker"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/lihualin/tokmall/internal/breaker"
 )
 
 // BreakerMetrics 暴露熔断器状态：

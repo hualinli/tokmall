@@ -19,6 +19,11 @@ import (
 	hertzslog "github.com/hertz-contrib/logger/slog"
 	hertzmonitor "github.com/hertz-contrib/monitor-prometheus"
 	"github.com/hertz-contrib/requestid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
+	"gopkg.in/natefinch/lumberjack.v2"
+	"gorm.io/gorm"
+
 	"github.com/lihualin/tokmall/internal/api"
 	"github.com/lihualin/tokmall/internal/attribution"
 	"github.com/lihualin/tokmall/internal/breaker"
@@ -43,10 +48,6 @@ import (
 	"github.com/lihualin/tokmall/internal/token"
 	"github.com/lihualin/tokmall/internal/user"
 	"github.com/lihualin/tokmall/internal/video"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
-	"gopkg.in/natefinch/lumberjack.v2"
-	"gorm.io/gorm"
 )
 
 func main() {
@@ -107,7 +108,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	h := server.New(
 		server.WithHostPorts(addr),
@@ -295,7 +296,7 @@ func run() error {
 	go verifyMetricsEndpoint(ctx, cfg.MetricsAddr)
 	select {
 	case err := <-errCh:
-		workers.stopAll(30 * time.Second)
+		_ = workers.stopAll(30 * time.Second)
 		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -309,7 +310,7 @@ func run() error {
 			return workerStopErr
 		}
 		if sqlDB, err := db.DB(); err == nil {
-			sqlDB.Close()
+			_ = sqlDB.Close()
 		}
 		slog.Info("server stopped gracefully")
 		return nil

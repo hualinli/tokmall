@@ -19,12 +19,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
 	"github.com/lihualin/tokmall/internal/coupon"
 	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/video"
-	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 // refPattern 匹配 $ref 的值：允许行内 flow 写法（`$ref: "#/..." }`），
@@ -245,7 +246,7 @@ func jsonFields(value any) map[string]reflect.Type {
 // 指针/切片/时间等都在这里有明确归属，避免"类型对不上但没人发现"。
 func schemaTypeOf(typ reflect.Type) string {
 	switch typ.Kind() {
-	case reflect.Ptr, reflect.Slice, reflect.Array:
+	case reflect.Pointer, reflect.Slice, reflect.Array:
 		if typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array {
 			return "array"
 		}

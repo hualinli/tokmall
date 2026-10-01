@@ -1,0 +1,64 @@
+version: "2"
+
+# 精选而非全开：只保留"能防住本项目已知退化"的检查。
+# 对照同类项目（fzuhelper-server 开了 24 个）后的取舍——
+# errorlint / nilerr / forcetypeassert 直接对应 TokMall 的三层错误链与断言习惯，
+# 是"不装就等于埋 bug"的那一类；其余保持克制，避免第一次接入就被存量告警淹没。
+linters:
+  default: none
+  enable:
+    # 错误处理（本项目核心约定：repo 哨兵 → service 判定 → handler 映射）
+    - errcheck        # 未处理的 error
+    - errorlint       # 强制 errors.Is/As 与 %w（哨兵判定在包装后不能失效）
+    - nilerr          # if err != nil { return nil } —— 吞错误
+    - nilnil          # 返回 (nil, nil)
+    # 断言与并发
+    - forcetypeassert # ctx.Value/claims 断言不检查会 panic
+    - copyloopvar     # Go 1.22+ 循环变量语义
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - bodyclose       # HTTP 响应体未关闭（对象存储/回调）
+    - rowserrcheck    # sql.Rows.Err 未检查
+    - sqlclosecheck   # sql.Rows/Stmt 未关闭
+    # 风格与可维护性
+    - misspell
+    - nolintlint      # //nolint 必须有理由
+    - tagalign        # 结构体 tag 对齐（契约驱动项目里 diff 更可读）
+
+  settings:
+    errorlint:
+      errorf: true
+      errorf-multi: true
+      asserts: true
+      comparison: true
+    tagalign:
+      align: true
+      sort: true
+      strict: true
+      order:
+        - json
+        - yaml
+        - mapstructure
+        - binding
+        - validate
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    generated: lax
+    rules:
+      # 测试文件里断言失败即 panic 是可接受的，不强制检查类型断言。
+      - path: _test\.go
+        linters: [forcetypeassert, errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/lihualin/tokmall

@@ -45,7 +45,6 @@ type L1CacheMetrics struct {
 	misses    prometheus.Counter
 	evictions prometheus.Counter
 	stales    prometheus.Counter
-	entries   prometheus.GaugeFunc
 }
 
 func NewL1CacheMetrics(reg prometheus.Registerer) *L1CacheMetrics {

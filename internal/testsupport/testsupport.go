@@ -68,8 +68,15 @@ func IsolatedPostgres(t *testing.T, dsn string) *gorm.DB {
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(50)
-	sqlDB.SetMaxIdleConns(10)
+	// 连接池上限刻意压小：`go test ./...` 会**并行**跑多个包的集成测试，
+	// 每个包一个隔离 schema + 一个池。若每池开 50 条连接，5 个包就能把
+	// PostgreSQL 默认的 max_connections=100 打满，报出
+	// `FATAL: sorry, too many clients already (SQLSTATE 53300)`——
+	// 实测踩到过：并发领券用例因此偶发失败，看起来像业务 bug，其实是测试基建
+	// 把数据库连接耗尽了。并发用例仍然有效：goroutine 会在池上排队，
+	// 真正并发的请求数等于池大小。
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
 
 	t.Cleanup(func() {
 		_ = sqlDB.Close()

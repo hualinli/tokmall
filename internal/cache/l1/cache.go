@@ -113,7 +113,15 @@ func (c *Cache) Get(key string, version int64) ([]byte, bool) {
 		c.metrics.L1Miss()
 		return nil, false
 	}
-	item := element.Value.(*entry)
+	item, ok := element.Value.(*entry)
+	if !ok {
+		// 链表节点类型由本包独占维护，理论上不可能失败；
+		// 但断言失败会 panic，这里按未命中处理（防御性）。
+		s.mu.Unlock()
+		c.misses.Add(1)
+		c.metrics.L1Miss()
+		return nil, false
+	}
 	if now.After(item.expiresAt) {
 		s.order.Remove(element)
 		delete(s.items, key)
@@ -146,15 +154,20 @@ func (c *Cache) Set(key string, value []byte, version int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if element, ok := s.items[key]; ok {
-		item := element.Value.(*entry)
-		item.value = value
-		item.version = version
-		item.expiresAt = time.Now().Add(c.ttl)
-		s.order.MoveToFront(element)
-		return
+	if existing, ok := s.items[key]; ok {
+		item, ok := existing.Value.(*entry)
+		if !ok {
+			// 链表节点由本包独占维护，类型不可能不符；防御性删除后按新增处理。
+			s.order.Remove(existing)
+			delete(s.items, key)
+		} else {
+			item.value = value
+			item.version = version
+			item.expiresAt = time.Now().Add(c.ttl)
+			s.order.MoveToFront(existing)
+			return
+		}
 	}
-
 	element := s.order.PushFront(&entry{key: key, value: value, version: version, expiresAt: time.Now().Add(c.ttl)})
 	s.items[key] = element
 	if s.order.Len() > s.capacity {
@@ -215,8 +228,11 @@ func (c *Cache) evictLocked(s *shard) {
 	if element == nil {
 		return
 	}
-	item := element.Value.(*entry)
+	item, ok := element.Value.(*entry)
 	s.order.Remove(element)
+	if !ok {
+		return
+	}
 	delete(s.items, item.key)
 	c.evictions.Add(1)
 	c.metrics.L1Eviction()

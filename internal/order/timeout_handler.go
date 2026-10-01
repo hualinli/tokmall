@@ -8,8 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/outbox"
 )
 
 // TimeoutHandler 消费"订单超时"延迟事件：把到点仍未支付的订单关掉。

@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/lihualin/tokmall/internal/coupon"
-	"github.com/lihualin/tokmall/internal/outbox"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/lihualin/tokmall/internal/coupon"
+	"github.com/lihualin/tokmall/internal/outbox"
 )
 
 type GormRepository struct{ db *gorm.DB }
@@ -425,7 +426,8 @@ func findPaymentByIdentity(db *gorm.DB, paymentNo, providerTradeNo string) (*Pay
 		return nil, err
 	}
 	if len(payments) == 0 {
-		return nil, nil
+		// 未支付订单没有成功支付记录，是正常状态。
+		return nil, nil //nolint:nilnil // 见上方注释：不存在不是错误
 	}
 	if len(payments) != 1 {
 		return nil, ErrIdempotencyConflict
@@ -515,7 +517,8 @@ func findExistingOrder(db *gorm.DB, userID int64, key string) (*Order, error) {
 	var existing Order
 	err := db.Where("user_id = ? AND idempotency_key = ?", userID, key).Take(&existing).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+		// 幂等键没有对应订单是正常状态（首次下单），不是错误。
+		return nil, nil //nolint:nilnil // 见上方注释：不存在不是错误
 	}
 	if err != nil {
 		return nil, err

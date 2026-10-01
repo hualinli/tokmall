@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -116,7 +117,7 @@ func (h *SlowCommandHook) observe(ctx context.Context, cmd redis.Cmder, elapsed 
 		"redis_duration_ms", float64(elapsed.Microseconds()) / 1000.0,
 		"redis_key_prefix", keyPrefix,
 	}
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		attrs = append(attrs, "err", err.Error())
 		h.logger.WarnContext(ctx, "redis slow command", attrs...)
 		return
@@ -131,7 +132,7 @@ func (h *SlowCommandHook) report(ctx context.Context, commands string, count int
 		"redis_pipeline_size", count,
 		"redis_duration_ms", float64(elapsed.Microseconds()) / 1000.0,
 	}
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		attrs = append(attrs, "err", err.Error())
 	}
 	h.logger.WarnContext(ctx, "redis slow pipeline", attrs...)

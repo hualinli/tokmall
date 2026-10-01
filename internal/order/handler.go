@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
@@ -111,8 +112,8 @@ func (h *Handler) transition(ctx context.Context, c *app.RequestContext, merchan
 // CreateOrderRequest 是 HTTP 边界 DTO。user_id 刻意不在请求体中，防止调用者
 // 伪造身份；Handler 只从认证中间件写入的上下文读取当前用户。
 type CreateOrderRequest struct {
-	SKUID          int64              `json:"sku_id" binding:"required"`
-	Quantity       int32              `json:"quantity" binding:"required"`
+	SKUID          int64              `json:"sku_id"          binding:"required"`
+	Quantity       int32              `json:"quantity"        binding:"required"`
 	IdempotencyKey string             `json:"idempotency_key" binding:"required"`
 	Source         *CreateOrderSource `json:"source"`
 	// UserCouponID 可选：用哪张持券。服务端校验归属/状态/有效期/门槛，
@@ -121,8 +122,8 @@ type CreateOrderRequest struct {
 }
 
 type CreateOrderSource struct {
-	VideoID   int64 `json:"video_id" binding:"required"`
-	AuthorID  int64 `json:"author_id" binding:"required"`
+	VideoID   int64 `json:"video_id"   binding:"required"`
+	AuthorID  int64 `json:"author_id"  binding:"required"`
 	ProductID int64 `json:"product_id" binding:"required"`
 }
 
@@ -153,9 +154,9 @@ type OrderItemResponse struct {
 // PayOrderRequest 是学习环境中的用户主动模拟支付请求，不是支付渠道回调。
 // 真实渠道回调必须使用独立入口并在进入领域服务前完成签名、时间窗与防重放校验。
 type PayOrderRequest struct {
-	PaymentNo       string `json:"payment_no" binding:"required"`
+	PaymentNo       string `json:"payment_no"        binding:"required"`
 	ProviderTradeNo string `json:"provider_trade_no" binding:"required"`
-	Amount          Amount `json:"amount" binding:"required"`
+	Amount          Amount `json:"amount"            binding:"required"`
 }
 
 type PayOrderResponse struct {

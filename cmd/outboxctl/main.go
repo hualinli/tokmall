@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -51,7 +50,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	repo := outbox.NewRepository(db)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -155,7 +154,7 @@ func drain(ctx context.Context, cfg *config.Config, repo *outbox.GormRepository)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	publisher := outbox.NewRedisStreamPublisher(client, cfg.OutboxStream, cfg.OutboxStreamMaxLen)
 	relay := outbox.NewRelay(repo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
 		cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts))
@@ -173,7 +172,3 @@ func drain(ctx context.Context, cfg *config.Config, repo *outbox.GormRepository)
 }
 
 // 保留：便于将来增加 "event inspect" 子命令时直接打印完整载荷。
-func printEvent(event outbox.Event) {
-	body, _ := json.MarshalIndent(event, "", "  ")
-	fmt.Println(string(body))
-}

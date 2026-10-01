@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/route"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )
@@ -28,7 +29,7 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 }
 
 type AdjustStockRequest struct {
-	Change         int64  `json:"change" vd:"$!=0"` // 正数入库，负数扣减
+	Change         int64  `json:"change"          vd:"$!=0"` // 正数入库，负数扣减
 	IdempotencyKey string `json:"idempotency_key" vd:"len($)>0"`
 }
 

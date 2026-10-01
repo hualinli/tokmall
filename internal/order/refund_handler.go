@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/hertz/pkg/app"
+
 	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/response"
 )

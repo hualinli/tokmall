@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/token"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/lihualin/tokmall/internal/token"
 )
 
 const (
@@ -277,7 +278,9 @@ func (s *Service) Login(ctx context.Context, p LoginParams) (*AuthResult, error)
 		u, findErr := s.repo.FindByEmail(ctx, email)
 		if findErr != nil {
 			if errors.Is(findErr, ErrNotFound) {
-				bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
+				// 用户不存在时也做一次 bcrypt 比对：抹平"存在/不存在"的响应时间差，
+				// 避免账号枚举。返回值刻意丢弃。
+				_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
 				return nil, ErrInvalidCredentials
 			}
 			slog.Error("find user failed", "err", findErr)
@@ -288,7 +291,7 @@ func (s *Service) Login(ctx context.Context, p LoginParams) (*AuthResult, error)
 	u, err := s.repo.FindByUsername(ctx, identifier)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
+			_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(p.Password))
 			return nil, ErrInvalidCredentials
 		}
 		slog.Error("find user failed", "err", err)
@@ -414,7 +417,9 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResult
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	claims, err := s.tokens.Verify(refreshToken)
 	if err != nil || !claims.IsRefresh() {
-		return nil
+		// 幂等语义：token 无效/过期/类型不符都视为"已经登出"，返回成功。
+		// 这不是吞错误——登出的目标状态已经达成，报错只会让客户端做无意义重试。
+		return nil //nolint:nilerr // 见上方注释：登出是幂等操作
 	}
 	remaining := time.Until(claims.ExpiresAt.Time)
 	if remaining <= 0 {

@@ -13,9 +13,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/route"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lihualin/tokmall/internal/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lihualin/tokmall/internal/token"
 )
 
 var testSecret = []byte("test-secret-not-for-production")

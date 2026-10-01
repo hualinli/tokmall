@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/attribution"
-	"github.com/lihualin/tokmall/internal/outbox"
-	"github.com/lihualin/tokmall/internal/testsupport"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+
+	"github.com/lihualin/tokmall/internal/attribution"
+	"github.com/lihualin/tokmall/internal/outbox"
+	"github.com/lihualin/tokmall/internal/testsupport"
 )
 
 // Outbox 的证据测试：证明"事件与业务同事务、至少一次投递、幂等消费、

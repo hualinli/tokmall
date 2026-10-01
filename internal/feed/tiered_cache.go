@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lihualin/tokmall/internal/cache/l1"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/lihualin/tokmall/internal/cache/l1"
 )
 
 // feedVersionKey 是 Feed 缓存的**数据版本号**：任何会改变首页内容的写入
@@ -146,8 +147,9 @@ func (c *TieredFeedCache) Get(ctx context.Context) (*FeedResult, error) {
 		return nil, err
 	}
 	if result == nil {
+		// 两级都未命中：返回"没有缓存"而不是错误，调用方回源数据库。
 		c.stats.Miss()
-		return nil, nil
+		return nil, nil //nolint:nilnil // 见上方注释：未命中不是错误
 	}
 	c.stats.Hit()
 	c.fillL1(ctx, result)

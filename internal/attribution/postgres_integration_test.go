@@ -11,13 +11,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/lihualin/tokmall/internal/feed"
-	"github.com/lihualin/tokmall/internal/promotion"
-	"github.com/lihualin/tokmall/internal/video"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/lihualin/tokmall/internal/feed"
+	"github.com/lihualin/tokmall/internal/promotion"
+	"github.com/lihualin/tokmall/internal/video"
 )
 
 func TestPostgresCardsAndPaidAttribution(t *testing.T) {

@@ -17,8 +17,8 @@ func TestLoadDevelopmentUsesLocalDefaults(t *testing.T) {
 	require.Equal(t, EnvironmentDevelopment, cfg.Environment)
 	require.Equal(t, "dev-jwt-secret-for-local-run", cfg.JWTSecret)
 	require.Equal(t, "dev-cursor-secret-for-local-run", cfg.CursorSecret)
-	require.Equal(t, "localhost", cfg.DBConfig.Host)
-	require.False(t, cfg.MinIOConfig.UseSSL)
+	require.Equal(t, "localhost", cfg.Host)
+	require.False(t, cfg.UseSSL)
 	require.True(t, cfg.OrderExpiryWorkerEnabled)
 	require.Equal(t, 5*time.Second, cfg.OrderExpiryWorkerInterval)
 	require.Equal(t, 100, cfg.OrderExpiryWorkerBatchSize)
@@ -85,12 +85,12 @@ func TestLoadExplicitDevelopmentConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "9999", cfg.ServerPort)
 	require.Equal(t, "TEST_JWT_SECRET", cfg.JWTSecret)
-	require.Equal(t, "127.0.0.1", cfg.DBConfig.Host)
-	require.Equal(t, "9990", cfg.DBConfig.Port)
-	require.Equal(t, "testuser", cfg.DBConfig.User)
+	require.Equal(t, "127.0.0.1", cfg.Host)
+	require.Equal(t, "9990", cfg.Port)
+	require.Equal(t, "testuser", cfg.User)
 	require.Equal(t, "test", cfg.DBConfig.Password)
-	require.Equal(t, "tbase", cfg.DBConfig.Database)
-	require.Equal(t, "full", cfg.DBConfig.SSLMode)
+	require.Equal(t, "tbase", cfg.Database)
+	require.Equal(t, "full", cfg.SSLMode)
 	require.Equal(t, "time", cfg.FeedRankStrategy)
 }
 
@@ -99,8 +99,8 @@ func TestLoadProductionAcceptsExplicitSecureConfig(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, EnvironmentProduction, cfg.Environment)
-	require.True(t, cfg.MinIOConfig.UseSSL)
-	require.True(t, cfg.RedisConfig.UseTLS)
+	require.True(t, cfg.UseSSL)
+	require.True(t, cfg.UseTLS)
 }
 
 func TestLoadProductionRequiresEveryCriticalSetting(t *testing.T) {
