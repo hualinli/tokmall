@@ -1,0 +1,13 @@
+# Grafana 数据源自动配置：容器启动即可用，不需要手工点界面。
+# 与 DomTok 的差别：它的 Grafana 只把社区面板 ID 记在 txt 文件里、
+# 不挂 provisioning，面板要人工导入；这里全部代码化（数据源 + 看板 JSON）。
+apiVersion: 1
+
+datasources:
+  - name: TokMall
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s

@@ -1,0 +1,130 @@
+# TokMall 记录规则与告警规则。
+#
+# 命名遵循 Prometheus 官方约定 `level:metric:operations`：
+#   - 前缀表示聚合层级（job: 跨实例聚合、instance: 单实例）
+#   - 后缀表示运算（rate5m / max5m / p95 …）
+# 好处是**高基数留在记录规则里**，看板与告警只查预聚合后的低基数结果——
+# 这正是 outbox / reconcile / http 这些多标签指标需要的护栏。
+#
+# 另一个约定：每条告警都必须能回答"看到它该做什么"。
+# 描述里写清楚排查入口（指标 → 日志 → 对账命令），而不是只报"指标异常"。
+
+groups:
+  - name: tokmall.recording
+    interval: 30s
+    rules:
+      # —— 请求量与时延 ——
+      - record: job:tokmall_http_requests:rate5m
+        expr: sum by (route, status) (rate(http_server_duration_seconds_count[5m]))
+      - record: job:tokmall_http_request_duration:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, route) (rate(http_server_duration_seconds_bucket[5m])))
+      - record: job:tokmall_http_error_ratio:rate5m
+        expr: |
+          sum(rate(http_server_duration_seconds_count{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_server_duration_seconds_count[5m])), 0.001)
+
+      # —— 数据库连接池 ——
+      - record: instance:tokmall_db_pool_utilization:ratio
+        expr: db_pool_in_use_connections / clamp_min(db_pool_open_connections, 1)
+      - record: instance:tokmall_db_pool_wait:rate5m
+        expr: rate(db_pool_wait_count_total[5m])
+
+      # —— 缓存 ——
+      - record: job:tokmall_feed_cache_hit_ratio:rate5m
+        expr: |
+          sum(rate(feed_cache_hit_total[5m]))
+          /
+          clamp_min(sum(rate(feed_cache_hit_total[5m])) + sum(rate(feed_cache_miss_total[5m])), 0.001)
+      - record: job:tokmall_existence_reject_ratio:rate5m
+        expr: |
+          sum(rate(existence_lookup_total{result="bloom_rejected"}[5m]))
+          /
+          clamp_min(sum(rate(existence_lookup_total[5m])), 0.001)
+
+      # —— 事件投递（Outbox）——
+      - record: job:tokmall_outbox_publish:rate5m
+        expr: sum(rate(outbox_published_total[5m]))
+      - record: job:tokmall_outbox_publish_failure_ratio:rate5m
+        expr: |
+          sum(rate(outbox_publish_failures_total[5m]))
+          /
+          clamp_min(sum(rate(outbox_published_total[5m])) + sum(rate(outbox_publish_failures_total[5m])), 0.001)
+
+  - name: tokmall.alerts
+    rules:
+      # 事件积压：只看"已到期未投递"的事件（延迟事件不算积压，见 ADR-021）。
+      - alert: TokMallOutboxBacklog
+        expr: outbox_pending_events > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox 有 {{ $value }} 条已到期事件未投递"
+          description: >-
+            事件投递跟不上写入。排查：`make outbox-status` 看积压与死信，
+            `curl localhost:9091/metrics | grep outbox_` 看失败率与最老事件年龄；
+            若中继进程挂了，积压会持续增长（`outbox_oldest_pending_seconds` 同步上升）。
+
+      - alert: TokMallOutboxDeadLetters
+        expr: outbox_dead_events > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox 出现 {{ $value }} 条死信"
+          description: >-
+            消息重试超限进入 DLQ，说明消费侧持续失败。排查：
+            `bin/outboxctl dlq list` 看事件与错误，修复后 `bin/outboxctl dlq requeue` 重放；
+            重放后跑 `bin/reconcile` 确认投影追平（没有回执 ⟺ 投影没生效）。
+
+      - alert: TokMallReconcileDrift
+        expr: reconcile_last_run_ok == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "对账发现账实不一致"
+          description: >-
+            最近一次对账存在差异（`reconcile_differences > 0`）。排查：
+            `bin/reconcile` 看是哪几项检查、差异明细，必要时
+            `bin/reconcile --replay`（补投事件）或 `--rebuild`（重建读模型）。
+
+      - alert: TokMallHighErrorRatio
+        expr: job:tokmall_http_error_ratio:rate5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "5xx 比例 {{ $value | humanizePercentage }} 持续 10 分钟"
+          description: >-
+            先看 `job:tokmall_http_request_duration:p95_5m` 与
+            `breaker_state`（依赖熔断会直接返回 503）：
+            按 route 定位到具体接口后，用日志里的 trace_id 追这次请求（访问日志带
+            route/status/duration_ms，错误日志带 stack）。
+
+      - alert: TokMallDBPoolSaturation
+        expr: instance:tokmall_db_pool_utilization:ratio > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "数据库连接池使用率 {{ $value | humanizePercentage }}"
+          description: >-
+            连接池接近打满，请求开始排队（`db_pool_wait_count_total` 会同步上升）。
+            先看慢查询与是否存在长事务；若缓存命中率下降
+            （`job:tokmall_feed_cache_hit_ratio:rate5m`），说明流量直接压到了数据库。
+
+      - alert: TokMallStorageBreakerOpen
+        expr: breaker_state{name="minio"} == 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "对象存储熔断器已打开（依赖不可用）"
+          description: >-
+            熔断打开期间上传/取播放地址会快速失败（503）。
+            排查：MinIO 容器是否在跑、`breaker_rejections_total` 增长说明正在被保护；
+            依赖恢复后冷却期结束会自动 half-open 探测并闭合（`breaker_probes_total{result="success"}`）。

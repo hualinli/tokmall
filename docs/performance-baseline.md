@@ -299,3 +299,24 @@ API 与压测客户端同机。连接池 max_open=25。**这些数字只代表�
 4. **当前瓶颈排序**：连接池（25）> 单请求事务往返 > CPU。
    若要把下单链路推到数千 QPS，先做的是提高连接池并合并下单/支付往返，
    而不是引入消息队列。
+
+---
+
+## 观测栈（本地可选启动）
+
+```bash
+make dev-backend     # 应用指标在 127.0.0.1:9091
+make monitoring      # Prometheus(:9090) + Grafana(:3000)，看板已 provision
+```
+
+- `observability/prometheus/prometheus.yml`：抓取应用自身（`tokmall-api` job）+ Prometheus；
+- `observability/prometheus/rules/tokmall.yml`：8 条记录规则（`level:metric:operations` 命名）
+  + 6 条告警（Outbox 积压/死信、对账差异、5xx 比例、连接池饱和、对象存储熔断）；
+- `observability/grafana/dashboards/tokmall-overview.json`：11 个面板（请求量与 P95、
+  5xx、连接池、缓存命中率、Outbox 积压与延迟事件、投递失败率、对账、熔断、穿透防护、
+  订单超时事件结果）——**面板 JSON 提交进仓库**，不是"去 grafana.com 导个 ID"。
+
+**规则不是摆设**：`internal/observability/rules_test.go` 会把规则文件里引用的每个标识符
+与真实注册的指标集合对账，写错指标名（规则永远不会触发）会让测试直接失败。
+这个检查是变异验证过的：把 `outbox_pending_events` 改成 `outbox_pending_evnts`
+或换成不存在的指标，测试都会报错并指出具体行。

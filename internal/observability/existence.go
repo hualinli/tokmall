@@ -96,3 +96,9 @@ func (m *ExistenceMetrics) Observe(namespace string, ready bool, items, bits uin
 	m.filterCount.WithLabelValues(namespace).Set(float64(items))
 	m.filterBits.WithLabelValues(namespace).Set(float64(bits))
 }
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *ExistenceMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.lookup, m.bloom, m.negative, m.missMarked, m.ready, m.filterCount, m.filterBits}
+}

@@ -24,3 +24,9 @@ func NewFeedCacheStats(reg prometheus.Registerer) *FeedCacheStats {
 
 func (s *FeedCacheStats) Hit()  { s.hit.Inc() }
 func (s *FeedCacheStats) Miss() { s.miss.Inc() }
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *FeedCacheStats) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.hit, m.miss}
+}

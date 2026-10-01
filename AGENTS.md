@@ -64,8 +64,9 @@ cmd/outboxctl/          Outbox 运维命令：status / dlq list / dlq requeue / 
 cmd/reconcile/          对账命令：--json / --replay / --rebuild，退出码 0=一致 1=有差异 2=失败
 cmd/loadgen/            压测客户端：commerce / feed / penetration（缓存穿透）三个场景
 web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
+observability/          Prometheus 抓取配置与记录/告警规则、Grafana provisioning 与看板 JSON
 scripts/                seed_perf.sql 造数、drill_commerce_loop.sh 端到端演练、
-                        drill_failure_modes.sh 故障演练
+                        drill_failure_modes.sh 故障演练、drill_coupon.sh 券闭环演练
 .github/workflows/      CI：后端/契约/前端/e2e 四个 job；security.yml：CodeQL + govulncheck
 docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR + 性能基线（git 跟踪）
 ```
@@ -100,6 +101,7 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | 优惠券域（v1 满减券） | ✅ | 发行量+每人限领+领取截止+券状态机+退款退券+三项对账；100 并发抢 10 张恰好发 10 张；ADR-024 |
 | 依赖级熔断 | ✅ | 自研三态熔断器（装饰器注入对象存储）：MinIO 停机时 3~5s 超时 → 熔断后 0.7ms 快速失败 + 503；失败分类排除"对象不存在"；ADR-023 |
 | 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
+| 观测栈与告警 | ✅ | 8 条记录规则（`level:metric:operations`）+ 6 条告警 + 11 面板看板（JSON 入库）；测试保证规则引用的指标真实存在（变异验证过） |
 | 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck；`make verify/coverage/vulncheck/help`；`scripts/preflight.sh` |
 
 > 注：M4+ 三行不在原里程碑规划内（按"出现可测量问题再引入技术"的原则，这些是 M4 的
@@ -141,6 +143,9 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
   "锁券行 → 条件更新发行量 → 计数校验限领"三层；订单金额恒满足
   `total = original - discount`（DB CHECK 兜底）；退款成功退券（过期则标 EXPIRED）；
   对账覆盖发行量守恒、券-订单一致、金额拆分
+- **告警规则**：改 `observability/prometheus/rules/*.yml` 后必须跑
+  `go test ./internal/observability/`——规则里引用的指标名会被校验，写错即失败；
+  记录规则命名遵循 `level:metric:operations`；只对"已到期"的 Outbox 事件告警
 - **熔断**：依赖级熔断器用装饰器注入（业务代码零改动）；`Config.IsFailure` 必须排除
   "业务正常答复"（如对象不存在、redis.Nil），否则正常 404 会打开熔断器；
   熔断打开对外返回 **503**（可重试）而不是 500；对象存储不可用不阻塞服务启动
@@ -163,6 +168,7 @@ make outbox-status                          # Outbox 积压与死信
 make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关闭）
 ./bin/loadgen -scenario penetration -concurrency 30 -duration 10s   # 缓存穿透压测
 make verify                                 # 本地一次跑完 CI 门禁（fmt/vet/test/tidy-check）
+make monitoring                             # 观测栈：Prometheus(:9090) + Grafana(:3000)，规则与看板已 provision
 make coverage / make vulncheck / make help   # 覆盖率 / 漏洞扫描 / 目标说明
 scripts/preflight.sh                        # 提交前自检（含前端 tsc）
 wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # Feed 压测（基线见 docs/performance-baseline.md）

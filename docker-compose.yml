@@ -30,5 +30,38 @@ services:
       - "6380:6379"
     command: ["redis-server", "--appendonly", "yes"]
 
+  # 观测栈：默认不启动（profile: monitoring），用 `make monitoring` 起。
+  # 应用指标由 bin/api 在宿主机暴露 127.0.0.1:9091，容器通过 host.docker.internal 访问。
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tokmall-prometheus
+    profiles: ["monitoring"]
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: tokmall-grafana
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
 volumes:
   minio-data:

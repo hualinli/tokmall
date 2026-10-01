@@ -1,0 +1,588 @@
+{
+  "uid": "tokmall-overview",
+  "title": "TokMall 业务与可靠性总览",
+  "tags": [
+    "tokmall"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "请求量（按路由）",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "job:tokmall_http_requests:rate5m",
+          "legendFormat": "{{route}} {{status}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "来源 http_server_duration_seconds_count，按路由模板聚合（不是原始 path，避免基数爆炸）"
+    },
+    {
+      "id": 2,
+      "title": "P95 时延（按路由）",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "job:tokmall_http_request_duration:p95_5m",
+          "legendFormat": "{{route}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "直方图分桶覆盖 5ms~10s，可直接算 P95/P99"
+    },
+    {
+      "id": 3,
+      "title": "5xx 比例",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "job:tokmall_http_error_ratio:rate5m",
+          "legendFormat": "5xx 比例",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "超过 5% 持续 10 分钟触发 TokMallHighErrorRatio 告警"
+    },
+    {
+      "id": 4,
+      "title": "数据库连接池",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "instance:tokmall_db_pool_utilization:ratio",
+          "legendFormat": "使用率",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "instance:tokmall_db_pool_wait:rate5m",
+          "legendFormat": "每秒等待次数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "连接池打满意味着应用在排队，而不是数据库慢"
+    },
+    {
+      "id": 5,
+      "title": "Feed 缓存命中率",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "job:tokmall_feed_cache_hit_ratio:rate5m",
+          "legendFormat": "命中率",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "命中率下降会直接体现在数据库连接池使用率上"
+    },
+    {
+      "id": 6,
+      "title": "Outbox 积压与延迟事件",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "outbox_pending_events",
+          "legendFormat": "已到期未投递",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "outbox_pending_delayed_events",
+          "legendFormat": "延迟中（如订单超时）",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "outbox_dead_events",
+          "legendFormat": "死信",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "只对已到期事件告警：延迟事件（available_at 在未来）是正常状态，见 ADR-021"
+    },
+    {
+      "id": 7,
+      "title": "事件投递速率与失败率",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "job:tokmall_outbox_publish:rate5m",
+          "legendFormat": "发布速率",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "job:tokmall_outbox_publish_failure_ratio:rate5m",
+          "legendFormat": "失败率",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "对账结果",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reconcile_last_run_ok",
+          "legendFormat": "最近一次是否一致",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "reconcile_differences",
+          "legendFormat": "差异条数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "reconcile_last_run_ok == 0 触发 TokMallReconcileDrift 告警；排查入口 bin/reconcile"
+    },
+    {
+      "id": 9,
+      "title": "熔断器状态",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "breaker_state",
+          "legendFormat": "{{name}}（0=closed 1=half_open 2=open）",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "breaker_rejections_total",
+          "legendFormat": "{{name}} 被拒绝调用数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "rejections 是熔断省下了多少次必然失败的等待的直接量化"
+    },
+    {
+      "id": 10,
+      "title": "缓存穿透防护",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "existence_filter_ready",
+          "legendFormat": "{{namespace}} 过滤器就绪",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "existence_filter_items",
+          "legendFormat": "{{namespace}} 元素数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "job:tokmall_existence_reject_ratio:rate5m",
+          "legendFormat": "被过滤器直接拒绝的比例",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "被拒绝比例高说明穿透流量大且已被挡住（数据库零查询）"
+    },
+    {
+      "id": 11,
+      "title": "订单超时事件结果",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tokmall"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(order_timeout_event_total[5m])",
+          "legendFormat": "{{result}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tokmall"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "description": "expired 多说明延迟事件在承担主责；noop 多说明轮询 Worker 已经足够快"
+    }
+  ]
+}

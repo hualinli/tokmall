@@ -53,3 +53,9 @@ func (m *HTTPMetrics) DecInFlight() { m.inFlight.Dec() }
 
 // Since 是一个小工具：把起始时间转成秒，避免每处都写 time.Since(x).Seconds()。
 func Since(start time.Time) float64 { return time.Since(start).Seconds() }
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *HTTPMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.duration, m.inFlight}
+}

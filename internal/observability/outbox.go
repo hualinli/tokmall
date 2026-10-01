@@ -140,3 +140,21 @@ func (m *OutboxConsumerMetrics) DeadLettered(eventType string) {
 func (m *OutboxConsumerMetrics) Lag(pending int64) {
 	m.lag.Set(float64(pending))
 }
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *OutboxRelayMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.published, m.failed, m.dead, m.pending, m.delayed, m.deadGauge, m.oldest}
+}
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *OrderTimeoutMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.results}
+}
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *OutboxConsumerMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.processed, m.duplicate, m.failed, m.dlq, m.lag}
+}

@@ -66,3 +66,9 @@ func stateValue(state breaker.State) float64 {
 		return 0
 	}
 }
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *BreakerMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.state, m.opens, m.rejections, m.probes}
+}

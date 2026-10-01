@@ -105,6 +105,11 @@ stop: ## 停掉前后端（幂等）
 	-kill -9 $$(pgrep -f "vite") 2>/dev/null || true
 	@echo "✅ 前后端已停止"
 
+monitoring: ## 启动本地观测栈（Prometheus + Grafana，含记录/告警规则与预置看板）
+	DOCKER_CONFIG=$(CURDIR)/.docker-anon docker compose --profile monitoring up -d prometheus grafana
+	@echo "Prometheus: http://localhost:9090  Grafana: http://localhost:3000（匿名可进，看板已 provision）"
+	@echo "提示：先 make dev-backend，让应用指标在 127.0.0.1:9091 有数据"
+
 logs: ## 跟踪前后端日志（Ctrl-C 退出）
 	tail -f $(API_LOG) $(WEB_LOG)
 

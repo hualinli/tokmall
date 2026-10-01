@@ -55,3 +55,9 @@ func (m *ReconcileMetrics) Run(ok bool, _ int) {
 func (m *ReconcileMetrics) Replayed(count int) {
 	m.replayed.Add(float64(count))
 }
+
+// Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
+// 需要拿到真实指标名做校验，而不是靠字符串约定猜。
+func (m *ReconcileMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.differences, m.lastOK, m.lastRun, m.runs, m.replayed}
+}
