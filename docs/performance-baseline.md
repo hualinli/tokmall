@@ -311,10 +311,18 @@ make monitoring      # Prometheus(:9090) + Grafana(:3000)，看板已 provision
 
 - `observability/prometheus/prometheus.yml`：抓取应用自身（`tokmall-api` job）+ Prometheus；
 - `observability/prometheus/rules/tokmall.yml`：8 条记录规则（`level:metric:operations` 命名）
-  + 6 条告警（Outbox 积压/死信、对账差异、5xx 比例、连接池饱和、对象存储熔断）；
+  + 7 条告警（Outbox 积压/死信、对账差异、对账停摆、5xx 比例、连接池饱和、对象存储熔断）；
 - `observability/grafana/dashboards/tokmall-overview.json`：11 个面板（请求量与 P95、
   5xx、连接池、缓存命中率、Outbox 积压与延迟事件、投递失败率、对账、熔断、穿透防护、
   订单超时事件结果）——**面板 JSON 提交进仓库**，不是"去 grafana.com 导个 ID"。
+
+**两个从验证里发现的告警陷阱**（都已修）：
+1. `reconcile_last_run_ok` 的零值有歧义——0 既表示"发现差异"也表示"还没跑过"，
+   只看 `== 0` 会让**每次重启都误报对账不一致**。正确写法是叠加
+   `and reconcile_last_run_timestamp_seconds > 0`。
+2. 反过来的失效方式更隐蔽：对账**根本没跑**时指标没有数据，任何 `== 0` 类告警都不会触发。
+   因此补了一条 `TokMallReconcileStale`（30 分钟没有运行即告警）——
+   没有对账就没有"账实一致"的证据，比报差异更危险。
 
 **规则不是摆设**：`internal/observability/rules_test.go` 会把规则文件里引用的每个标识符
 与真实注册的指标集合对账，写错指标名（规则永远不会触发）会让测试直接失败。

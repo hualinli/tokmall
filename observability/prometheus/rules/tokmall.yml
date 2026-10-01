@@ -80,8 +80,11 @@ groups:
             `bin/outboxctl dlq list` 看事件与错误，修复后 `bin/outboxctl dlq requeue` 重放；
             重放后跑 `bin/reconcile` 确认投影追平（没有回执 ⟺ 投影没生效）。
 
+      # 注意 `reconcile_last_run_ok` 的零值有歧义：0 既表示"发现差异"也表示"还没跑过"
+      # （进程刚启动时指标是 0）。实测踩到过——只看 `== 0` 会让每次重启都误报对账不一致。
+      # 因此必须叠加"跑过至少一次"的条件（时间戳 > 0）。
       - alert: TokMallReconcileDrift
-        expr: reconcile_last_run_ok == 0
+        expr: reconcile_last_run_ok == 0 and reconcile_last_run_timestamp_seconds > 0
         for: 1m
         labels:
           severity: critical
@@ -91,6 +94,19 @@ groups:
             最近一次对账存在差异（`reconcile_differences > 0`）。排查：
             `bin/reconcile` 看是哪几项检查、差异明细，必要时
             `bin/reconcile --replay`（补投事件）或 `--rebuild`（重建读模型）。
+
+      # 另一面：对账"根本没跑"。指标没数据不会触发任何告警，是最隐蔽的失效方式。
+      - alert: TokMallReconcileStale
+        expr: time() - reconcile_last_run_timestamp_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "对账超过 30 分钟没有运行"
+          description: >-
+            `reconcile_last_run_timestamp_seconds` 长期不更新，说明对账 Worker 没在跑
+            （进程挂了、RECONCILE_ENABLED=false，或调度间隔被改得过大）。
+            没有对账就没有"账实一致"的证据，比对账报差异更危险。
 
       - alert: TokMallHighErrorRatio
         expr: job:tokmall_http_error_ratio:rate5m > 0.05

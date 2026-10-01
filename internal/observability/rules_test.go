@@ -40,6 +40,8 @@ func TestPrometheusRulesReferenceExistingMetrics(t *testing.T) {
 		"ignoring": true, "group_left": true, "group_right": true, "offset": true,
 		"bool": true, "and": true, "or": true, "unless": true, "clamp_min": true,
 		"clamp_max": true, "histogram_quantile": true, "le": true, "quantile": true,
+		// 时间函数：返回当前时间戳（不是指标）。
+		"time": true, "timestamp": true, "absent": true, "vector": true, "scalar": true,
 		"job": true, "instance": true, "env": true, "service": true,
 		// 本项目指标用到的标签名。
 		"route": true, "status": true, "method": true, "name": true, "result": true,
