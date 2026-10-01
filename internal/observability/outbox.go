@@ -16,6 +16,7 @@ type OutboxRelayMetrics struct {
 	failed    *prometheus.CounterVec
 	dead      *prometheus.CounterVec
 	pending   prometheus.Gauge
+	delayed   prometheus.Gauge
 	deadGauge prometheus.Gauge
 	oldest    prometheus.Gauge
 }
@@ -32,7 +33,10 @@ func NewOutboxRelayMetrics(reg prometheus.Registerer) *OutboxRelayMetrics {
 			Name: "outbox_dead_total", Help: "Total outbox events moved to the dead letter state",
 		}, []string{"event_type"}),
 		pending: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "outbox_pending_events", Help: "Outbox events waiting to be published",
+			Name: "outbox_pending_events", Help: "Outbox events that are due and waiting to be published",
+		}),
+		delayed: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "outbox_pending_delayed_events", Help: "Outbox events scheduled for the future (delayed events)",
 		}),
 		deadGauge: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "outbox_dead_events", Help: "Outbox events in DEAD state awaiting manual replay",
@@ -41,7 +45,7 @@ func NewOutboxRelayMetrics(reg prometheus.Registerer) *OutboxRelayMetrics {
 			Name: "outbox_oldest_pending_seconds", Help: "Age of the oldest pending outbox event",
 		}),
 	}
-	reg.MustRegister(m.published, m.failed, m.dead, m.pending, m.deadGauge, m.oldest)
+	reg.MustRegister(m.published, m.failed, m.dead, m.pending, m.delayed, m.deadGauge, m.oldest)
 	return m
 }
 
@@ -57,10 +61,33 @@ func (m *OutboxRelayMetrics) Dead(eventType string) {
 	m.dead.WithLabelValues(eventType).Inc()
 }
 
-func (m *OutboxRelayMetrics) Pending(pending, dead int64, oldestAge time.Duration) {
-	m.pending.Set(float64(pending))
+func (m *OutboxRelayMetrics) Pending(due, delayed, dead int64, oldestAge time.Duration) {
+	m.pending.Set(float64(due))
+	m.delayed.Set(float64(delayed))
 	m.deadGauge.Set(float64(dead))
 	m.oldest.Set(oldestAge.Seconds())
+}
+
+// OrderTimeoutMetrics 实现 order.TimeoutStats：
+// expired = 延迟事件真的关掉了一单；noop = 订单已被支付/取消/Worker 抢先处理。
+// 两者比例是"加速器是否有效"的直接证据：noop 远多于 expired 说明 Worker
+// 已经足够快（消息只是锦上添花），expired 占多数说明延迟事件在承担主责。
+type OrderTimeoutMetrics struct {
+	results *prometheus.CounterVec
+}
+
+func NewOrderTimeoutMetrics(reg prometheus.Registerer) *OrderTimeoutMetrics {
+	m := &OrderTimeoutMetrics{
+		results: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "order_timeout_event_total", Help: "Order timeout delayed events by outcome",
+		}, []string{"result"}),
+	}
+	reg.MustRegister(m.results)
+	return m
+}
+
+func (m *OrderTimeoutMetrics) TimeoutEvent(result string) {
+	m.results.WithLabelValues(result).Inc()
 }
 
 // OutboxConsumerMetrics 实现 outbox.ConsumerStats：消费进度与 DLQ。

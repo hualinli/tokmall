@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lihualin/tokmall/internal/outbox"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -272,10 +273,19 @@ func TestPostgresRefundProof(t *testing.T) {
 			Amount: pending.TotalAmount + 1,
 		})
 		require.ErrorIs(t, err, ErrPaymentAmountMismatch)
-		var pendingEvents int64
+		// 只统计"支付事件"：下单事务本身会写一条**超时事件**（延迟投递），
+		// 它属于订单创建的事实，不应该因为支付失败而消失。
+		var pendingPaidEvents int64
 		require.NoError(t, db.Raw(`SELECT count(*) FROM outbox_events
-			WHERE aggregate_id = ?`, pending.OrderID).Scan(&pendingEvents).Error)
-		require.Zero(t, pendingEvents, "回滚的支付不得留下事件")
+			WHERE aggregate_id = ? AND event_type = ?`, pending.OrderID, outbox.EventTypeOrderPaid).
+			Scan(&pendingPaidEvents).Error)
+		require.Zero(t, pendingPaidEvents, "回滚的支付不得留下支付事件")
+
+		var timeoutEvents int64
+		require.NoError(t, db.Raw(`SELECT count(*) FROM outbox_events
+			WHERE aggregate_id = ? AND event_type = ?`, pending.OrderID, outbox.EventTypeOrderTimeout).
+			Scan(&timeoutEvents).Error)
+		require.Equal(t, int64(1), timeoutEvents, "下单事务写入的超时事件必须保留（与支付是否成功无关）")
 
 		_, err = svc.RequestRefund(context.Background(), RequestRefundParams{UserID: buyers[0], OrderID: created.OrderID, Reason: "退款"})
 		require.NoError(t, err)
@@ -433,4 +443,93 @@ func seedRefundFixture(t *testing.T, db *gorm.DB, label string, buyers, stock in
 		VALUES (?, 'default', 1999, 'ACTIVE') RETURNING id`, productID).Scan(&skuID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO inventory (sku_id, quantity, version) VALUES (?, ?, 0)`, skuID, stock).Error)
 	return buyerIDs, merchantID, skuID
+}
+
+// TestPostgresDelayedTimeoutEvent 证明"延迟事件加速器"的三条性质：
+//  1. 事件与订单同事务写入，且 available_at = expires_at（到点前中继取不到）；
+//  2. 到点后事件被中继取到，消费者据此关单并回补库存；
+//  3. 订单已支付时事件成为 no-op（不重复关单、不重复回补）。
+//
+// 第 1 条是"延迟队列"的实现方式：延迟能力来自数据库字段 + 中继扫描条件，
+// 不需要额外的调度中间件；第 3 条是幂等的来源（条件更新）。
+func TestPostgresDelayedTimeoutEvent(t *testing.T) {
+	if os.Getenv(postgresIntegrationSwitch) != "1" {
+		t.Skip("set TOKMALL_RUN_PG_INTEGRATION=1 and TOKMALL_TEST_DATABASE_DSN to run")
+	}
+	dsn := strings.TrimSpace(os.Getenv("TOKMALL_TEST_DATABASE_DSN"))
+	db := newIsolatedPostgres(t, dsn)
+	repo := NewRepository(db)
+	svc := refundService(repo)
+	outboxRepo := outbox.NewRepository(db)
+
+	t.Run("event is invisible until expiry then closes the order", func(t *testing.T) {
+		buyers, _, skuID := seedRefundFixture(t, db, "timeout-event", 1, 3)
+		created, err := svc.Create(context.Background(), CreateParams{
+			UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "timeout-event",
+		})
+		require.NoError(t, err)
+
+		// 1) 事件已写入，且 available_at 等于订单过期时间
+		var availableAt, expiresAt time.Time
+		require.NoError(t, db.Raw(`SELECT available_at FROM outbox_events
+			WHERE aggregate_id = ? AND event_type = ?`, created.OrderID, outbox.EventTypeOrderTimeout).
+			Scan(&availableAt).Error)
+		require.NoError(t, db.Raw(`SELECT expires_at FROM orders WHERE id = ?`, created.OrderID).Scan(&expiresAt).Error)
+		require.WithinDuration(t, expiresAt, availableAt, time.Millisecond,
+			"延迟事件必须精确落在 expires_at，早投或晚投都会破坏语义")
+
+		// 2) 未到期时中继取不到它（这就是"延迟"）
+		events, err := outboxRepo.FetchPending(context.Background(), 100, time.Minute, time.Now())
+		require.NoError(t, err)
+		require.Empty(t, events, "未到期的事件不应被中继取到")
+
+		// 3) 把订单"变老"到期后，中继能取到并投递，消费者关单
+		require.NoError(t, db.Exec(`UPDATE orders SET created_at = now() - interval '2 minutes',
+			expires_at = now() - interval '1 second' WHERE id = ?`, created.OrderID).Error)
+		require.NoError(t, db.Exec(`UPDATE outbox_events SET available_at = now() - interval '1 second'
+			WHERE aggregate_id = ? AND event_type = ?`, created.OrderID, outbox.EventTypeOrderTimeout).Error)
+
+		events, err = outboxRepo.FetchPending(context.Background(), 100, time.Minute, time.Now())
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		require.Equal(t, outbox.EventTypeOrderTimeout, events[0].EventType)
+
+		handler := NewTimeoutHandler(db)
+		require.NoError(t, handler.Handle(context.Background(), db, events[0]))
+
+		var status Status
+		var stock int64
+		require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, created.OrderID).Scan(&status).Error)
+		require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+		require.Equal(t, StatusExpired, status)
+		require.Equal(t, int64(3), stock, "超时关单必须回补库存")
+	})
+
+	t.Run("paid order makes the delayed event a no-op", func(t *testing.T) {
+		buyers, _, skuID := seedRefundFixture(t, db, "timeout-paid", 1, 2)
+		created := mustCreatePaidOrder(t, svc, buyers[0], skuID, "timeout-paid", 1)
+
+		// 事件仍然会被投递（下单时就写好了），但订单已支付 → 必须无事发生
+		require.NoError(t, db.Exec(`UPDATE outbox_events SET available_at = now() - interval '1 second'
+			WHERE aggregate_id = ? AND event_type = ?`, created.OrderID, outbox.EventTypeOrderTimeout).Error)
+		events, err := outboxRepo.FetchPending(context.Background(), 100, time.Minute, time.Now())
+		require.NoError(t, err)
+		var timeoutEvent *outbox.Event
+		for i := range events {
+			if events[i].EventType == outbox.EventTypeOrderTimeout {
+				timeoutEvent = &events[i]
+			}
+		}
+		require.NotNil(t, timeoutEvent)
+
+		handler := NewTimeoutHandler(db)
+		require.NoError(t, handler.Handle(context.Background(), db, *timeoutEvent))
+
+		var status Status
+		var stock int64
+		require.NoError(t, db.Raw(`SELECT status FROM orders WHERE id = ?`, created.OrderID).Scan(&status).Error)
+		require.NoError(t, db.Raw(`SELECT quantity FROM inventory WHERE sku_id = ?`, skuID).Scan(&stock).Error)
+		require.Equal(t, StatusPaid, status, "已支付订单不能被超时事件改动")
+		require.Equal(t, int64(1), stock, "不得重复回补库存")
+	})
 }

@@ -55,6 +55,12 @@ const (
 	defaultReconcileOn          = true
 	defaultReconcileInterval    = 5 * time.Minute
 	defaultReconcileGrace       = time.Minute
+	defaultExistenceOn          = true
+	defaultExistenceExpected    = 1_000_000
+	defaultExistenceFPRate      = 0.01
+	defaultExistenceNegTTL      = 30 * time.Second
+	defaultExistenceNegJitter   = 15 * time.Second
+	defaultExistenceRebuildTick = 10 * time.Minute
 
 	// defaultMetricsAddr 默认只监听回环地址：/metrics 会暴露路由级 QPS/延迟、
 	// 连接池与运行时指标，属于容量指纹。生产如需 Prometheus 抓取，
@@ -112,7 +118,19 @@ type Config struct {
 	ReconcileEnabled  bool
 	ReconcileInterval time.Duration
 	// ReconcileGrace：事件发布后等待消费回执的宽限期，超过即视为可能丢失。
-	ReconcileGrace             time.Duration
+	ReconcileGrace time.Duration
+	// ExistenceEnabled：缓存穿透防护（布隆过滤器 + 负缓存）。
+	ExistenceEnabled bool
+	// ExistenceExpected 是每个命名空间的预期元素数，决定位数组大小与误判率。
+	ExistenceExpected uint64
+	// ExistenceFPRate 是目标误判率（假阳性；假阴性恒为 0）。
+	ExistenceFPRate float64
+	// ExistenceNegativeTTL/Jitter 是负缓存有效期与其随机抖动（防集中过期）。
+	ExistenceNegativeTTL    time.Duration
+	ExistenceNegativeJitter time.Duration
+	// ExistenceRebuildInterval 是全量重建布隆过滤器的周期（删除无法从过滤器移除，
+	// 靠重建把误判率拉回设计值）。
+	ExistenceRebuildInterval   time.Duration
 	OrderExpiryWorkerInterval  time.Duration
 	OrderExpiryWorkerBatchSize int
 }
@@ -284,6 +302,30 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	existenceEnabled, err := envBool("EXISTENCE_GUARD_ENABLED", defaultExistenceOn)
+	if err != nil {
+		return nil, err
+	}
+	existenceExpected, err := envInt64("EXISTENCE_EXPECTED_ITEMS", defaultExistenceExpected)
+	if err != nil {
+		return nil, err
+	}
+	existenceFPRate, err := envFloat("EXISTENCE_FP_RATE", defaultExistenceFPRate)
+	if err != nil {
+		return nil, err
+	}
+	existenceNegTTL, err := envDuration("EXISTENCE_NEGATIVE_TTL", defaultExistenceNegTTL)
+	if err != nil {
+		return nil, err
+	}
+	existenceNegJitter, err := envDuration("EXISTENCE_NEGATIVE_JITTER", defaultExistenceNegJitter)
+	if err != nil {
+		return nil, err
+	}
+	existenceRebuild, err := envDuration("EXISTENCE_REBUILD_INTERVAL", defaultExistenceRebuildTick)
+	if err != nil {
+		return nil, err
+	}
 	trustedProxies, err := parseTrustedProxies(envString("TRUSTED_PROXIES", ""))
 	if err != nil {
 		return nil, err
@@ -359,6 +401,13 @@ func Load() (*Config, error) {
 		ReconcileEnabled:  reconcileEnabled,
 		ReconcileInterval: reconcileInterval,
 		ReconcileGrace:    reconcileGrace,
+
+		ExistenceEnabled:         existenceEnabled,
+		ExistenceExpected:        uint64(existenceExpected),
+		ExistenceFPRate:          existenceFPRate,
+		ExistenceNegativeTTL:     existenceNegTTL,
+		ExistenceNegativeJitter:  existenceNegJitter,
+		ExistenceRebuildInterval: existenceRebuild,
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -402,6 +451,20 @@ func (c *Config) validate() error {
 	}
 	if c.ReconcileInterval <= 0 || c.ReconcileGrace <= 0 {
 		return errors.New("RECONCILE_INTERVAL and RECONCILE_GRACE must be positive")
+	}
+	if c.ExistenceEnabled {
+		if c.ExistenceExpected == 0 {
+			return errors.New("EXISTENCE_EXPECTED_ITEMS must be positive")
+		}
+		if c.ExistenceFPRate <= 0 || c.ExistenceFPRate >= 1 {
+			return errors.New("EXISTENCE_FP_RATE must be in (0,1)")
+		}
+		if c.ExistenceNegativeTTL <= 0 || c.ExistenceNegativeJitter < 0 {
+			return errors.New("EXISTENCE_NEGATIVE_TTL must be positive and jitter non-negative")
+		}
+		if c.ExistenceRebuildInterval <= 0 {
+			return errors.New("EXISTENCE_REBUILD_INTERVAL must be positive")
+		}
 	}
 	if host, port, err := net.SplitHostPort(c.MetricsAddr); err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
 		return errors.New("METRICS_ADDR must use host:port format")
@@ -551,6 +614,18 @@ func envInt64(key string, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("environment variable %s must be an integer", key)
 	}
 	return n, nil
+}
+
+func envFloat(key string, fallback float64) (float64, error) {
+	value := envString(key, "")
+	if value == "" {
+		return fallback, nil
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("environment variable %s must be a number", key)
+	}
+	return f, nil
 }
 
 func envBool(key string, fallback bool) (bool, error) {

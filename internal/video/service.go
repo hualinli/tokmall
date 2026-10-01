@@ -42,6 +42,17 @@ type Repository interface {
 	CreatePlayEvent(ctx context.Context, e *PlayEvent) (*PlayEventCreateResult, error)
 }
 
+// ExistenceGuard 是缓存穿透防护的消费侧接口（实现在 internal/existence）。
+// 定义在这里而不是实现里：service 只依赖"能不能问一句是否存在"这个能力。
+type ExistenceGuard interface {
+	MayExist(ctx context.Context, namespace string, id int64) (bool, error)
+	MarkMissing(ctx context.Context, namespace string, id int64)
+	Add(namespace string, id int64)
+}
+
+// existenceNamespace 必须与装配方注册的布隆过滤器命名空间一致。
+const existenceNamespace = "video"
+
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
 type Storage interface {
 	PresignPutURL(ctx context.Context, objectKey string) (string, error)
@@ -64,9 +75,13 @@ type Service struct {
 	expiry       time.Duration
 	feedCache    FeedCacheInvalidator
 	cursor       *codec
+	existence    ExistenceGuard
 }
 
 func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
+
+// SetExistenceGuard 由装配方注入缓存穿透防护（未注入时行为与现状一致）。
+func (s *Service) SetExistenceGuard(guard ExistenceGuard) { s.existence = guard }
 
 func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, cursorSecret string, feedCache FeedCacheInvalidator) *Service {
 	return &Service{
@@ -261,6 +276,11 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 		slog.Error("create video failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("create video: %w", err)
 	}
+	// 新视频立刻进布隆过滤器：否则"创建后马上看详情"会被判成一定不存在
+	// （过滤器是定期重建的，不加入就会有窗口期）。
+	if s.existence != nil {
+		s.existence.Add(existenceNamespace, v.ID)
+	}
 	return &CreateResult{VideoID: v.ID, Status: v.Status}, nil
 }
 
@@ -435,8 +455,16 @@ func (s *Service) Play(ctx context.Context, userID, videoID int64, eventID strin
 			return ErrInvalidParam
 		}
 	}
+	if s.existence != nil {
+		if ok, guardErr := s.existence.MayExist(ctx, existenceNamespace, videoID); guardErr == nil && !ok {
+			return ErrNotFound
+		}
+	}
 	v, err := s.repo.FindVideoByID(ctx, videoID)
 	if err != nil {
+		if s.existence != nil && errors.Is(err, ErrNotFound) {
+			s.existence.MarkMissing(ctx, existenceNamespace, videoID)
+		}
 		return err
 	}
 	if v.Status != StatusPublished {
@@ -603,8 +631,20 @@ func (s *Service) ValidateImage(ctx context.Context, userID int64, objectKey str
 // 不可见一律返回 ErrNotFound（不泄露存在性）。
 // viewerID=0（匿名）时 is_liked 恒 false。
 func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetail, error) {
+	// 缓存穿透防护第一层：布隆过滤器说"一定不存在"就直接 404，不查库。
+	if s.existence != nil {
+		if ok, guardErr := s.existence.MayExist(ctx, existenceNamespace, videoID); guardErr == nil && !ok {
+			return nil, ErrNotFound
+		}
+	}
 	v, err := s.repo.FindVideoByID(ctx, videoID)
 	if err != nil {
+		// 只有"记录确实不存在"才写负缓存。可见性拒绝（未发布、非作者）
+		// 也会走到这里，但它们对作者本人是可见的——把可见性拒绝写进
+		// 负缓存会让作者在 TTL 窗口内看不到自己的视频。
+		if s.existence != nil && errors.Is(err, ErrNotFound) {
+			s.existence.MarkMissing(ctx, existenceNamespace, videoID)
+		}
 		return nil, err
 	}
 	if v.Status == StatusDeleted {

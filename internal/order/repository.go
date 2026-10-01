@@ -130,6 +130,16 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 		if err := db.Create(&item).Error; err != nil {
 			return translateError(err)
 		}
+
+		// 超时事件与订单同事务写入，available_at = expires_at：
+		// 到点后中继才投递，消费者据此提前关单（轮询 Worker 仍是安全网）。
+		// 放在这里而不是 service 层，是为了保证"订单存在 ⟺ 超时事件存在"。
+		if err := outbox.EnqueueOrderTimeout(db, outbox.OrderTimeoutPayload{
+			OrderID: order.ID, OrderNo: order.OrderNo, ExpiresAt: order.ExpiresAt,
+		}); err != nil {
+			return err
+		}
+
 		result = &createRecord{Order: order, Item: item}
 		return nil
 	})

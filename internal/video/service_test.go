@@ -18,6 +18,7 @@ import (
 
 type fakeRepo struct {
 	videos      map[int64]*Video
+	findCalls   int
 	nextID      int64
 	tickets     map[string]*UploadTicket // key: objectKey
 	likes       map[string]bool          // key: "{userID}-{videoID}"
@@ -52,6 +53,7 @@ func (f *fakeRepo) CreateVideo(ctx context.Context, v *Video) error {
 }
 
 func (f *fakeRepo) FindVideoByID(ctx context.Context, id int64) (*Video, error) {
+	f.findCalls++
 	v, ok := f.videos[id]
 	if !ok {
 		return nil, ErrNotFound

@@ -61,6 +61,8 @@ func main() {
 		err = runner.runCommerce(ctx)
 	case "feed":
 		err = runner.runFeed(ctx)
+	case "penetration":
+		err = runner.runPenetration(ctx)
 	default:
 		err = fmt.Errorf("unknown scenario %q", cfg.scenario)
 	}
@@ -155,6 +157,47 @@ func (r *runner) runCommerce(ctx context.Context) error {
 				r.payOrder(ctx, buyer.AccessToken, orderID, amount, key)
 			}
 		}(i)
+	}
+	wg.Wait()
+	return nil
+}
+
+// runPenetration 压"缓存穿透"路径：反复请求**不存在**的详情 ID。
+//
+// 这是缓存穿透防护的验收场景：没有防护时每个请求都会打到数据库
+// （B+ 树查空），有防护时应该被布隆过滤器/负缓存挡在应用层。
+// 通过 /metrics 里的 existence_lookup_total 可以看到请求最终走到了哪一层。
+func (r *runner) runPenetration(ctx context.Context) error {
+	fmt.Printf("开始压测穿透路径（不存在的视频 ID）：并发=%d 时长=%s\n", r.cfg.concurrency, r.cfg.duration)
+	deadline := time.Now().Add(r.cfg.duration)
+	var wg sync.WaitGroup
+	for worker := range r.cfg.concurrency {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			sequence := 0
+			for time.Now().Before(deadline) {
+				// 高段位 ID 保证不存在，且每个请求都换一个（避免负缓存把同一 ID 的
+				// 重复请求挡掉后测不出布隆过滤器的效果）。
+				id := 900_000_000 + worker*1_000_000 + sequence
+				sequence++
+				started := time.Now()
+				response, err := r.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/videos/%d", id), "", nil)
+				latency := time.Since(started)
+				if err != nil {
+					r.record("network_error", latency, kindSystem)
+					continue
+				}
+				switch response.status {
+				case http.StatusNotFound:
+					r.record("not_found", latency, kindSuccess)
+				case http.StatusTooManyRequests:
+					r.record("rate_limited", latency, kindBusiness)
+				default:
+					r.record(fmt.Sprintf("penetration_%d", response.status), latency, kindSystem)
+				}
+			}
+		}(worker)
 	}
 	wg.Wait()
 	return nil

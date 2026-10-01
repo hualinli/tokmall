@@ -24,6 +24,7 @@ import (
 	"github.com/lihualin/tokmall/internal/cache"
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/database"
+	"github.com/lihualin/tokmall/internal/existence"
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/health"
 	"github.com/lihualin/tokmall/internal/interaction"
@@ -70,10 +71,13 @@ func run() error {
 		MaxAge:     10,
 		Compress:   true,
 	}
-	textHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	jsonHandler := slog.NewJSONHandler(logger, &slog.HandlerOptions{Level: slog.LevelDebug})
+	textHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	jsonHandler := slog.NewJSONHandler(logger, &slog.HandlerOptions{Level: slog.LevelInfo})
 	multiHandler := slog.NewMultiHandler(textHandler, jsonHandler)
-	slog.SetDefault(slog.New(multiHandler))
+	// ContextHandler 是"日志能串起来"的关键：它从 context 取
+	// request_id/trace_id/span_id/route/user_id 自动附加，并对敏感字段脱敏。
+	// 业务代码只要用 slog.*Context(ctx, ...) 就自动带上，不依赖自觉。
+	slog.SetDefault(slog.New(observability.NewContextHandler(multiHandler)))
 	hlog.SetLogger(hertzslog.NewLogger(
 		hertzslog.WithOutput(logger),
 		hertzslog.WithHandlerOptions(&slog.HandlerOptions{Level: slog.LevelDebug}),
@@ -116,6 +120,7 @@ func run() error {
 		TrustedCIDRs:    cfg.TrustedProxies,
 	}))
 	slog.Info("server starting", "port", cfg.ServerPort)
+	httpMetrics := observability.NewHTTPMetrics(metricsRegistry)
 	h.Use(
 		middleware.Recovery(),
 		requestid.New(
@@ -123,6 +128,10 @@ func run() error {
 				return uuid.Must(uuid.NewV7()).String()
 			}),
 		),
+		// 顺序：requestid → trace（需要 requestid 写入 context）→ 指标/访问日志
+		middleware.Trace(),
+		middleware.HTTPMetrics(httpMetrics),
+		middleware.AccessLog(),
 	)
 	storageClient, err := storage.New(cfg.MinIOConfig)
 	if err != nil {
@@ -144,8 +153,9 @@ func run() error {
 		rateLimiter = middleware.NewRedisLimiter(redisClient)
 	}
 	tokenManager := token.NewManager([]byte(cfg.JWTSecret))
+	videoRepository := video.NewRepository(db)
 	videoService := video.NewService(
-		video.NewRepository(db),
+		videoRepository,
 		storageClient,
 		cfg.UploadURLExpiry,
 		cfg.CursorSecret,
@@ -177,11 +187,31 @@ func run() error {
 		cfg.CursorSecret,
 		followingFeedInvalidator,
 	))
-	productHandler := product.NewHandler(product.NewService(
-		product.NewRepository(db),
+	productRepository := product.NewRepository(db)
+	productService := product.NewService(
+		productRepository,
 		storageClient,
 		videoService, // ImageTicketValidator：封面防伪造复用视频模块的凭证核销
-	))
+	)
+	productHandler := product.NewHandler(productService)
+	// 缓存穿透防护：布隆过滤器（进程内）+ 负缓存（Redis）。
+	// 装配在这里而不是模块内部：video/product 只依赖"能否问一句是否存在"的接口。
+	var existenceGuard *existence.Guard
+	var existenceMetrics *observability.ExistenceMetrics
+	if cfg.ExistenceEnabled {
+		existenceMetrics = observability.NewExistenceMetrics(metricsRegistry)
+		existenceGuard = existence.NewGuard(
+			map[string]uint64{"video": cfg.ExistenceExpected, "product": cfg.ExistenceExpected},
+			existence.NewRedisMissingMarker(redisClient),
+			cfg.ExistenceFPRate,
+			existence.WithTTL(cfg.ExistenceNegativeTTL),
+			existence.WithJitter(cfg.ExistenceNegativeJitter),
+			existence.WithStats(existenceMetrics),
+		)
+		videoService.SetExistenceGuard(existenceGuard)
+		productService.SetExistenceGuard(existenceGuard)
+	}
+
 	inventoryHandler := inventory.NewHandler(inventory.NewService(
 		inventory.NewRepository(db),
 	))
@@ -193,7 +223,7 @@ func run() error {
 	orderHandler := order.NewHandler(orderService)
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
-	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry)
+	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -286,8 +316,28 @@ func stopWorker(name string, cancel context.CancelFunc, done <-chan struct{}, ti
 
 // startWorkers 装配并启动后台任务。顺序刻意是"中继先于消费者"：
 // 消费组可以先建立，事件随后到达，不会出现"事件已在流里但没有消费者"。
-func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisClient *redis.Client, orderRepo *order.GormRepository, registry *prometheus.Registry) *backgroundWorkers {
+func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisClient *redis.Client,
+	orderRepo *order.GormRepository, registry *prometheus.Registry,
+	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
+	videoRepo *video.GormRepository, productRepo *product.GormRepository) *backgroundWorkers {
 	workers := &backgroundWorkers{}
+	if guard != nil {
+		worker := existence.NewRebuildWorker(guard, cfg.ExistenceRebuildInterval,
+			map[string]existence.LoaderFunc{
+				"video": func(ctx context.Context, add func(int64) error) error { return videoRepo.EachVideoID(ctx, 1000, add) },
+				"product": func(ctx context.Context, add func(int64) error) error {
+					return productRepo.EachProductID(ctx, 1000, add)
+				},
+			},
+			observability.NewExistenceMetricsObserver(existenceMetrics))
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "existence rebuild worker")
+		go func() {
+			defer close(done)
+			worker.Run(workerCtx)
+		}()
+	}
 	if cfg.OrderExpiryWorkerEnabled {
 		expiryWorker := order.NewExpiryWorker(orderRepo, cfg.OrderExpiryWorkerInterval, cfg.OrderExpiryWorkerBatchSize)
 		workerCtx, cancel := context.WithCancel(ctx)
@@ -329,8 +379,13 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 		}()
 	}
 	if cfg.OutboxConsumerEnabled {
+		handlers := []outbox.Handler{
+			attribution.NewProjector(db),
+			// 订单超时延迟事件：加速器（轮询 Worker 仍是安全网）。
+			order.NewTimeoutHandler(db, order.WithTimeoutStats(observability.NewOrderTimeoutMetrics(registry))),
+		}
 		consumer := outbox.NewConsumer(db, redisClient, cfg.OutboxStream, cfg.OutboxConsumerGroup,
-			cfg.OutboxDLQStream, consumerName(), []outbox.Handler{attribution.NewProjector(db)},
+			cfg.OutboxDLQStream, consumerName(), handlers,
 			outbox.WithConsumerStats(observability.NewOutboxConsumerMetrics(registry)))
 		consumerCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})

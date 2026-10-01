@@ -525,6 +525,38 @@ cache-aside：先写库、再删缓存，TTL 兜底；singleflight 防击穿；
 
 ---
 
+## 15.5 从同类开源项目借鉴了什么（DomTok 对比）
+
+我完整读过 west2-online/DomTok（字节青训营第一名的分布式电商后端：Kitex 微服务 +
+RocketMQ + Kafka + ES + OTel 全家桶），对比结论与落地清单见
+[`docs/domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md)。
+这里只讲面试时最值得说的三件事：
+
+**（1）借了它的延迟消息，但把事实源放回数据库。**
+DomTok 用 RocketMQ 的 `DelayLevel` 做订单超时（10 分钟后回滚库存），思路是对的，
+但它把消息当成了事实源：broker 单主 ASYNC_FLUSH、消息没有幂等键、DLQ 无人消费——
+丢一条消息就是一笔订单的库存永久泄漏。TokMall 用 Outbox 的 `available_at`
+实现同样的延迟语义（不新增任何组件），消费者回查订单状态并做条件更新，
+**消息全丢系统仍在轮询间隔内收敛**（ADR-021）。这是"引入中间件不等于提升可靠性"的具体例子。
+
+**（2）借了它的布隆过滤器思路，但补上了它缺的三件事。**
+DomTok 的网关布隆过滤器是纯内存态、启动不预热（漏判会让封禁用户继续访问）。
+TokMall 的实现（`internal/existence`）补上：双缓冲轮换（删除无法从过滤器移除）、
+warmup 保护（装载完成前一律放行，空过滤器会把真实数据判成不存在）、
+以及"只对记录不存在写负缓存"（可见性拒绝不能写，否则作者看不到自己的视频）。
+实测：不存在的 ID 压测从 2,996 req/s（每次都查库）提升到 5,086 req/s 且数据库零查询（ADR-022）。
+
+**（3）它的交易内核一条都没抄。**
+它的"预扣库存"不校验库存（只判 `lock_stock < 0`，真正的校验在支付之后）、
+支付状态存在 Redis 里当判据（写路径有 bug，导致已支付订单被延迟消息误回滚）、
+金额用 float64 贯穿全链路（`int64(9.99) == 9`）、订单状态更新没有 `WHERE status=from`。
+这四条恰好是 TokMall 用条件更新 + CHECK 约束 + Outbox + 对账已经解决的问题——
+**读同类项目的价值，一半在于知道哪些不能抄。**
+
+顺带借过来的工程细节：GORM 的 `ParameterizedQueries`（SQL 日志不带参数值）+
+`IgnoreRecordNotFoundError` + 慢查询阈值（穿透压测下日志 I/O 曾是瓶颈，改完吞吐提升 10 倍）；
+CI 的 `go mod tidy` 漂移检查、"自动修复后比 diff"、CodeQL 与 govulncheck。
+
 ## 16. 现场演示动线（10 分钟）
 
 面试时不要从"我做了哪些功能"开始，而是**按一条链走一遍，每一步都给一个可验证的结论**。

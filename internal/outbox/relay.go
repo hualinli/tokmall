@@ -29,15 +29,15 @@ type RelayStats interface {
 	Published(eventType string, count int)
 	Failed(eventType string)
 	Dead(eventType string)
-	Pending(pending, dead int64, oldestAge time.Duration)
+	Pending(due, delayed, dead int64, oldestAge time.Duration)
 }
 
 type NopRelayStats struct{}
 
-func (NopRelayStats) Published(string, int)               {}
-func (NopRelayStats) Failed(string)                       {}
-func (NopRelayStats) Dead(string)                         {}
-func (NopRelayStats) Pending(int64, int64, time.Duration) {}
+func (NopRelayStats) Published(string, int)                      {}
+func (NopRelayStats) Failed(string)                              {}
+func (NopRelayStats) Dead(string)                                {}
+func (NopRelayStats) Pending(int64, int64, int64, time.Duration) {}
 
 type RelayOption func(*Relay)
 
@@ -172,9 +172,11 @@ func (r *Relay) reportStats(ctx context.Context) {
 		slog.Warn("outbox stats failed", "err", err)
 		return
 	}
-	r.stats.Pending(stats.Pending, stats.Dead, stats.OldestPendingAge)
-	if stats.Pending > 0 {
-		slog.Warn("outbox backlog", "pending", stats.Pending, "dead", stats.Dead,
+	r.stats.Pending(stats.PendingDue, stats.PendingDelayed, stats.Dead, stats.OldestPendingAge)
+	// 只对"已到期仍未投递"告警：未到期的是延迟事件（如订单超时），属正常状态。
+	if stats.PendingDue > 0 {
+		slog.Warn("outbox backlog", "pending_due", stats.PendingDue,
+			"pending_delayed", stats.PendingDelayed, "dead", stats.Dead,
 			"oldest_pending_age", stats.OldestPendingAge)
 	}
 }

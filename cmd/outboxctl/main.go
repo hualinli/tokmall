@@ -74,8 +74,8 @@ func status(ctx context.Context, repo *outbox.GormRepository) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pending=%d dead=%d oldest_pending_age=%s\n",
-		stats.Pending, stats.Dead, stats.OldestPendingAge.Round(time.Second))
+	fmt.Printf("pending_due=%d pending_delayed=%d dead=%d oldest_pending_age=%s\n",
+		stats.PendingDue, stats.PendingDelayed, stats.Dead, stats.OldestPendingAge.Round(time.Second))
 	if stats.Dead > 0 {
 		fmt.Println("存在死信事件：用 `outboxctl dlq list` 查看，确认后可 `dlq requeue`")
 	}
@@ -167,7 +167,8 @@ func drain(ctx context.Context, cfg *config.Config, repo *outbox.GormRepository)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("processed=%d pending=%d dead=%d\n", processed, stats.Pending, stats.Dead)
+	fmt.Printf("processed=%d pending_due=%d pending_delayed=%d dead=%d\n",
+		processed, stats.PendingDue, stats.PendingDelayed, stats.Dead)
 	return nil
 }
 

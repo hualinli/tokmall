@@ -14,6 +14,11 @@
   幂等消费（回执与投影同事务）、DLQ 与人工重放、作者日销投影、`cmd/outboxctl`。
 - **对账与可证明性**（`1436fd5`、`68192ea`）：六项对账检查、对账驱动重放、
   读模型重建、契约 schema 级校验、CI 四个 job、压测客户端与故障演练脚本。
+- **对照同类项目的借鉴**（2026-10）：读完 west2-online/DomTok 后落地四项——
+  缓存穿透防护（布隆过滤器 + 负缓存）、超时关单双触发（延迟事件 + 轮询安全网）、
+  请求级可观测性（关联 ID 自动贯穿 + traceparent + 路由模板指标）、CI 门禁增强
+  （CodeQL/govulncheck/fmt 与 tidy 漂移检查）。详见
+  [`domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md)。
 - 仍未实现：真实支付渠道、部分退款/退货入库、佣金结算、秒杀、跨商家带货授权、
   Agent 客服、生产级物流、告警规则与链路追踪。边界清单见
   [`interview-walkthrough.md`](interview-walkthrough.md) §15。
@@ -23,6 +28,7 @@
 | 需要了解 | 看哪里 | 说明 |
 |---|---|---|
 | **面试讲解主文档（先看这个）** | [`interview-walkthrough.md`](interview-walkthrough.md) | 问题导向的十个故事 + 问答速查 + 边界清单 |
+| 同类开源项目对比与借鉴 | [`domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md) | 与 DomTok（Kitex 微服务电商）逐模块对比：借鉴清单 + 避坑清单 + 本轮落地的四项 |
 | 审核结论与修复计划 | [`project-audit-2026-10.md`](project-audit-2026-10.md)、[`remediation-plan.md`](remediation-plan.md) | 审计发现（编号 BE-*/FE-*/CT-*）与分阶段计划 |
 | 项目结构、里程碑、开发命令 | [`AGENTS.md`](../AGENTS.md) | 项目工作记忆 |
 | 当前模块边界和数据所有权 | [`backend-architecture.md`](backend-architecture.md) | 对照 `cmd/api/main.go` 更新 |

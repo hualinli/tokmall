@@ -24,9 +24,14 @@ type Repository interface {
 }
 
 type Stats struct {
-	Pending int64
-	Dead    int64
-	// OldestPendingAge 是最早一条待投递事件的年龄，直接对应"事件积压了多久"。
+	// PendingDue 是"已到期、等着被投递"的事件数——它才是真正的积压。
+	PendingDue int64
+	// PendingDelayed 是"还没到期"的事件数（例如订单超时事件，available_at
+	// 设在 expires_at）。把它和积压分开统计，否则每次下单都会让监控报"积压"，
+	// 真积压反而被淹没。
+	PendingDelayed int64
+	Dead           int64
+	// OldestPendingAge 是最早一条**已到期**事件的年龄，对应"积压了多久"。
 	OldestPendingAge time.Duration
 }
 
@@ -107,12 +112,13 @@ func (r *GormRepository) Stats(ctx context.Context) (*Stats, error) {
 	stats := &Stats{}
 	row := r.db.WithContext(ctx).Raw(`
 		SELECT
-			count(*) FILTER (WHERE status = 'PENDING') AS pending,
+			count(*) FILTER (WHERE status = 'PENDING' AND available_at <= now()) AS pending_due,
+			count(*) FILTER (WHERE status = 'PENDING' AND available_at > now()) AS pending_delayed,
 			count(*) FILTER (WHERE status = 'DEAD') AS dead,
-			COALESCE(EXTRACT(EPOCH FROM now() - min(available_at) FILTER (WHERE status = 'PENDING')), 0) AS oldest_age
+			COALESCE(EXTRACT(EPOCH FROM now() - min(available_at) FILTER (WHERE status = 'PENDING' AND available_at <= now())), 0) AS oldest_age
 		FROM outbox_events`).Row()
 	var oldest float64
-	if err := row.Scan(&stats.Pending, &stats.Dead, &oldest); err != nil {
+	if err := row.Scan(&stats.PendingDue, &stats.PendingDelayed, &stats.Dead, &oldest); err != nil {
 		return nil, err
 	}
 	if oldest > 0 {
@@ -174,6 +180,19 @@ func EnqueueOrderPaid(tx *gorm.DB, payload OrderPaidPayload) error {
 		partition = "author:" + strconv.FormatInt(*payload.SourceAuthorID, 10)
 	}
 	event, err := newEvent(EventTypeOrderPaid, AggregateTypeOrder, payload.OrderID, partition, payload)
+	if err != nil {
+		return err
+	}
+	return Enqueue(tx, event)
+}
+
+// EnqueueOrderTimeout 在订单创建事务里写入超时事件（延迟到 expires_at 才投递）。
+//
+// 与"提交订单后再注册定时任务"的区别：事件与订单在同一事务里，进程崩溃
+// 不会导致"订单存在但没有超时事件"；反过来订单回滚时事件也一起消失。
+func EnqueueOrderTimeout(tx *gorm.DB, payload OrderTimeoutPayload) error {
+	event, err := newDelayedEvent(EventTypeOrderTimeout, AggregateTypeOrder, payload.OrderID,
+		"order:"+strconv.FormatInt(payload.OrderID, 10), payload.ExpiresAt, payload)
 	if err != nil {
 		return err
 	}

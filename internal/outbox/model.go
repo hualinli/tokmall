@@ -21,6 +21,11 @@ import (
 const (
 	EventTypeOrderPaid     = "commerce.order.paid.v1"
 	EventTypeOrderRefunded = "commerce.order.refunded.v1"
+	// EventTypeOrderTimeout 是"延迟事件"：它在订单创建时写入，
+	// 但 available_at 被设成 expires_at，因此中继要等到超时那一刻才会投递。
+	// 它只是**加速器**——订单是否超时最终以数据库状态为准（条件更新），
+	// 轮询 Worker 仍然是安全网。见 ADR-021。
+	EventTypeOrderTimeout = "commerce.order.timeout.v1"
 
 	AggregateTypeOrder = "order"
 )
@@ -70,6 +75,14 @@ type OrderPaidPayload struct {
 	SourceProductID *int64    `json:"source_product_id,omitempty"`
 }
 
+// OrderTimeoutPayload 是订单超时事件。载荷只带定位信息：
+// 消费侧必须回查订单事实（状态、过期时间、订单项），不能凭事件内容关单。
+type OrderTimeoutPayload struct {
+	OrderID   int64     `json:"order_id"`
+	OrderNo   string    `json:"order_no"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // OrderRefundedPayload 描述退款成功。它同时承载"退了多少钱"和"是否回补了
 // 库存"两个事实，投影与对账都需要，不能靠消费者自己推断。
 type OrderRefundedPayload struct {
@@ -84,6 +97,18 @@ type OrderRefundedPayload struct {
 	RefundedAt     time.Time `json:"refunded_at"`
 	SourceAuthorID *int64    `json:"source_author_id,omitempty"`
 	SourceVideoID  *int64    `json:"source_video_id,omitempty"`
+}
+
+// newDelayedEvent 组装一条"到点才可见"的事件：available_at 决定中继最早
+// 何时能取到它。这就是用 Outbox 实现延迟队列的方式——延迟能力来自数据库
+// 字段与中继的扫描条件，不需要额外的调度中间件。
+func newDelayedEvent(eventType, aggregateType string, aggregateID int64, partitionKey string, availableAt time.Time, payload any) (Event, error) {
+	event, err := newEvent(eventType, aggregateType, aggregateID, partitionKey, payload)
+	if err != nil {
+		return Event{}, err
+	}
+	event.AvailableAt = availableAt.UTC()
+	return event, nil
 }
 
 // newEvent 组装一条待投递事件。event_id 在写入时生成，之后重试、重放

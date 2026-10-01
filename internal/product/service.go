@@ -28,6 +28,15 @@ const (
 	maxKeywordLength            = 64
 )
 
+// ExistenceGuard 是缓存穿透防护的消费侧接口（实现在 internal/existence）。
+type ExistenceGuard interface {
+	MayExist(ctx context.Context, namespace string, id int64) (bool, error)
+	MarkMissing(ctx context.Context, namespace string, id int64)
+	Add(namespace string, id int64)
+}
+
+const existenceNamespace = "product"
+
 // Repository 由 service 定义，GormRepository 隐式满足。
 type Repository interface {
 	CreateProduct(ctx context.Context, p *Product) error
@@ -56,7 +65,11 @@ type Service struct {
 	repo      Repository
 	storage   CoverURLProvider
 	validator ImageTicketValidator
+	existence ExistenceGuard
 }
+
+// SetExistenceGuard 由装配方注入缓存穿透防护（未注入时行为与现状一致）。
+func (s *Service) SetExistenceGuard(guard ExistenceGuard) { s.existence = guard }
 
 func NewService(repo Repository, storage CoverURLProvider, validator ImageTicketValidator) *Service {
 	return &Service{repo: repo, storage: storage, validator: validator}
@@ -151,6 +164,12 @@ func (s *Service) CreateProduct(ctx context.Context, p CreateProductParams) (*Pr
 	if err != nil {
 		return nil, err
 	}
+	// 新建商品必须立刻进布隆过滤器：过滤器是定期全量重建的，不在这里登记
+	// 就会出现"刚创建的商品在下次重建前被判成一定不存在"——实测过这个 bug
+	// （商品创建成功，紧接着查详情 404）。视频模块同理。
+	if s.existence != nil {
+		s.existence.Add(existenceNamespace, product.ID)
+	}
 	return s.toProductItem(ctx, &product)
 }
 
@@ -166,9 +185,21 @@ func (s *Service) GetProduct(ctx context.Context, id int64) (*ProductDetail, err
 	if id <= 0 {
 		return nil, ErrInvalidParam
 	}
+	if s.existence != nil {
+		if ok, guardErr := s.existence.MayExist(ctx, existenceNamespace, id); guardErr == nil && !ok {
+			return nil, ErrNotFound
+		}
+	}
 	product, err := s.repo.FindProductByID(ctx, id)
 	if err != nil {
-		return nil, err // repo包装过not found的err了，但是后续还有改进空间
+		// 只有记录不存在才写负缓存：DELETED 商品也会返回 ErrNotFound，
+		// 但那是"存在但不可见"，写负缓存本身没问题（对外确实 404），
+		// 因此这里统一标记；真正要避免的是把"可见性拒绝"当成不存在来缓存
+		// ——商品详情没有按调用者变化的可见性，故不存在这个问题。
+		if s.existence != nil && errors.Is(err, ErrNotFound) {
+			s.existence.MarkMissing(ctx, existenceNamespace, id)
+		}
+		return nil, err
 	}
 	if product.Status == ProductStatusDeleted {
 		return nil, ErrNotFound

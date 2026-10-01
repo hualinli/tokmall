@@ -50,17 +50,20 @@ internal/
   outbox/                Transactional Outbox：仓储(SKIP LOCKED+租约)、中继(退避/DLQ)、
                          传输抽象(Redis Streams)、消费组消费者(回执+投影同事务)、重放
   reconcile/             六项对账检查 + 对账驱动重放 + 读模型重建
+  existence/             缓存穿透防护：自研布隆过滤器（双缓冲轮换）+ Redis 负缓存 + 重建任务
+  tracing/               W3C traceparent 解析/生成/透传（零依赖，可平滑升级到 OTel）
   testsupport/           跨模块集成测试脚手架（隔离 schema + 迁移 + Redis 开关）
-  observability/         db_pool / feed_cache / outbox / reconcile 指标 collector
+  observability/         db_pool / feed_cache / outbox / reconcile / existence / http 指标、
+                         ContextHandler（日志自动注入 request_id/trace_id/route + 脱敏）
 migrations/             版本化 SQL 迁移（000001～000018；商域从 000007 起，退款在 000015，
                          不变量加固在 000016，Outbox 与投影在 000017，users.status 在 000018）
 cmd/outboxctl/          Outbox 运维命令：status / dlq list / dlq requeue / drain
 cmd/reconcile/          对账命令：--json / --replay / --rebuild，退出码 0=一致 1=有差异 2=失败
-cmd/loadgen/            压测客户端：commerce（注册→建品→补库存→下单→支付）与 feed 两个场景
+cmd/loadgen/            压测客户端：commerce / feed / penetration（缓存穿透）三个场景
 web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
 scripts/                seed_perf.sql 造数、drill_commerce_loop.sh 端到端演练、
                         drill_failure_modes.sh 故障演练
-.github/workflows/      CI：后端/契约/前端/e2e 四个 job
+.github/workflows/      CI：后端/契约/前端/e2e 四个 job；security.yml：CodeQL + govulncheck
 docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR + 性能基线（git 跟踪）
 ```
 
@@ -89,6 +92,10 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
 | 对账与可证明性 | ✅ | 六项检查、对账驱动重放、读模型重建、契约 schema 校验、CI 四 job、压测与故障演练；`1436fd5` `68192ea` |
 | M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
 | Outbox + Kafka | 部分 | Outbox 与可靠投递已完成（默认 Redis Streams，见 ADR-014）；Kafka 仅保留为可替换的 Publisher 实现，未接入（与已搁置的播放事件异步化是不同决策） |
+| 缓存穿透防护 | ✅ | 自研布隆过滤器（双缓冲轮换 + warmup 保护）+ Redis 负缓存（TTL 抖动）+ 重建任务；实测不存在的 ID 从 2,996→5,086 req/s 且数据库零查询；ADR-022 |
+| 超时关单双触发 | ✅ | Outbox `available_at` 实现延迟事件（加速器）+ 轮询 Worker（安全网），数据库为唯一事实源；ADR-021 |
+| 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
+| 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck；`make verify/coverage/vulncheck/help`；`scripts/preflight.sh` |
 
 > 注：M4+ 三行不在原里程碑规划内（按"出现可测量问题再引入技术"的原则，这些是 M4 的
 > 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
@@ -117,6 +124,14 @@ docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR
   改投影口径必须同步改 reconcile 检查，否则对账本身成为噪音源
 - **签名密钥**：JWT_SECRET / FEED_CURSOR_SECRET 在所有环境必填（无内置默认值）；
   TRUSTED_PROXIES 默认空 = 不信任任何转发头（不要配 0.0.0.0/0）
+- **超时关单双触发**：下单事务写 `commerce.order.timeout.v1`（available_at = expires_at）
+  作为加速器，轮询 Worker 是安全网；**数据库是唯一事实源**，消息只负责"更早发生"（ADR-021）
+- **缓存穿透防护**：布隆过滤器说"不存在"才直接 404；只对"记录确实不存在"写负缓存，
+  可见性拒绝（未发布视频对非作者）**不能写**（否则作者在 TTL 内看不到自己的视频）（ADR-022）
+- **日志关联**：一律用 `slog.*Context(ctx, ...)`；ContextHandler 自动附加
+  request_id/trace_id/span_id/route/user_id，并按字段名黑名单脱敏。
+  指标标签只用路由模板（`/api/v1/videos/:id`），禁止 user_id/order_no 等高基数字段
+- **GORM 日志**：ParameterizedQueries + IgnoreRecordNotFoundError + SlowThreshold=200ms
 
 ## 常用命令
 
@@ -133,6 +148,10 @@ make drill-failure                          # 故障演练（Redis 停机 / 事�
 make reconcile [REPLAY=1] [REBUILD=1]       # 对账 / 重放 / 重建读模型
 make outbox-status                          # Outbox 积压与死信
 make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关闭）
+./bin/loadgen -scenario penetration -concurrency 30 -duration 10s   # 缓存穿透压测
+make verify                                 # 本地一次跑完 CI 门禁（fmt/vet/test/tidy-check）
+make coverage / make vulncheck / make help   # 覆盖率 / 漏洞扫描 / 目标说明
+scripts/preflight.sh                        # 提交前自检（含前端 tsc）
 wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # Feed 压测（基线见 docs/performance-baseline.md）
 ```
 

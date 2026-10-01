@@ -84,7 +84,8 @@ sleep 2  # 给中继与消费者一个投递周期
 
 say "7/9 校验 Outbox 状态与作者日销投影"
 $PSQL -c "SELECT 'outbox_published=' || count(*) FROM outbox_events WHERE status='PUBLISHED' AND aggregate_id=$ORDER_ID"
-$PSQL -c "SELECT 'outbox_pending=' || count(*) FROM outbox_events WHERE status='PENDING'"
+$PSQL -c "SELECT 'outbox_pending_due=' || count(*) FROM outbox_events WHERE status='PENDING' AND available_at <= now()"
+$PSQL -c "SELECT 'outbox_pending_delayed=' || count(*) || '（超时事件，到 expires_at 才投递）' FROM outbox_events WHERE status='PENDING' AND available_at > now()"
 $PSQL -c "SELECT 'projection_gmv=' || coalesce(sum(gmv),0) FROM author_sales_daily WHERE author_id=$MERCHANT_ID"
 $PSQL -c "SELECT 'receipts=' || count(*) FROM consumed_events WHERE aggregate_id=$ORDER_ID"
 
