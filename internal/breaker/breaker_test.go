@@ -243,6 +243,10 @@ func (f *fakeStorage) PresignGetURLWithExpiry(context.Context, string, time.Dura
 }
 func (f *fakeStorage) StatObject(context.Context, string) (int64, error) { return 0, f.err }
 func (f *fakeStorage) DeleteObject(context.Context, string) error        { return f.err }
+func (f *fakeStorage) DownloadToFile(context.Context, string, string) error {
+	return f.err
+}
+func (f *fakeStorage) UploadFromFile(context.Context, string, string, int64) error { return f.err }
 
 // TestBusinessErrorsDoNotTripBreaker 锁死一个实测踩到的坑：
 // StatObject 返回"对象不存在"是健康依赖的正常答复，若计成失败，

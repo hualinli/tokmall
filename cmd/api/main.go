@@ -286,7 +286,17 @@ func run() error {
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	couponHandler := coupon.NewHandler(coupon.NewService(coupon.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
-	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed)
+	// 媒体校验 worker：只在开启时构造（未开启时视频保持 PENDING，不影响其他链路）。
+	var mediaProbeWorker *video.ProbeWorker
+	if cfg.MediaProbeEnabled {
+		mediaProbeWorker = video.NewProbeWorker(videoRepository, storageClient,
+			video.WithProbePolicy(video.MediaProbePolicy(cfg)),
+			video.WithProbeStats(observability.NewMediaProbeMetrics(metricsRegistry)),
+			video.WithProbeInterval(cfg.MediaProbeInterval),
+			video.WithProbeBatch(cfg.MediaProbeBatch),
+		)
+	}
+	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -384,8 +394,19 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 	orderRepo *order.GormRepository, registry *prometheus.Registry,
 	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
 	videoRepo *video.GormRepository, productRepo *product.GormRepository,
-	hotFeed *feed.RedisHotFeed) *backgroundWorkers {
+	hotFeed *feed.RedisHotFeed, mediaProbe *video.ProbeWorker) *backgroundWorkers {
 	workers := &backgroundWorkers{}
+	if mediaProbe != nil {
+		// 媒体校验 worker：异步 ffprobe 校验 + faststart remux。
+		// 放在异步侧的原因见 internal/video/probe_worker.go 顶部注释。
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "media probe worker")
+		go func() {
+			defer close(done)
+			mediaProbe.Run(workerCtx)
+		}()
+	}
 	if hotFeed != nil {
 		// 热榜窗口后台物化：每分钟把 60 个分钟桶合并成冻结窗口。
 		// 读路径因此只读不算（窗口缺失时才 singleflight 回源），

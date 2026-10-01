@@ -34,6 +34,11 @@ const (
 	defaultFeedL1Capacity       = 512
 	defaultFeedVersionInterval  = time.Second
 	defaultHotFeedEnabled       = true
+	defaultMediaProbeEnabled    = true
+	defaultMediaProbeInterval   = 15 * time.Second
+	defaultMediaProbeBatch      = 4
+	defaultMediaMaxDuration     = 3600.0
+	defaultMediaMaxDimension    = 4096
 	defaultFeedCacheOn          = true
 	defaultFollowingCacheOn     = true
 	defaultRankStrategy         = "time"
@@ -165,6 +170,14 @@ type RedisConfig struct {
 	FeedVersionInterval time.Duration
 	// HotFeedEnabled：热榜（分钟桶 + 冻结窗口）。关闭时 /feed/hot 降级为时间流。
 	HotFeedEnabled bool
+	// MediaProbe*：上传视频的异步媒体校验（ffprobe + faststart remux）。
+	// 关闭时视频停在 PENDING，不影响其他链路。
+	MediaProbeEnabled  bool
+	MediaProbeInterval time.Duration
+	MediaProbeBatch    int
+	MediaMaxDuration   float64
+	MediaMaxDimension  int
+	MediaAllowedCodecs []string
 	// FeedCacheTTL 是 feed 首页缓存的过期时间：TTL 兜底防删缓存失败导致
 	// 脏数据永久存活（先写库再删缓存的 Cache-Aside 策略依赖它）。
 	FeedCacheTTL time.Duration
@@ -218,6 +231,27 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	mediaProbeEnabled, err := envBool("MEDIA_PROBE_ENABLED", defaultMediaProbeEnabled)
+	if err != nil {
+		return nil, err
+	}
+	mediaProbeInterval, err := envDuration("MEDIA_PROBE_INTERVAL", defaultMediaProbeInterval)
+	if err != nil {
+		return nil, err
+	}
+	mediaProbeBatch, err := envInt("MEDIA_PROBE_BATCH", defaultMediaProbeBatch)
+	if err != nil {
+		return nil, err
+	}
+	mediaMaxDuration, err := envFloat("MEDIA_MAX_DURATION_SECONDS", defaultMediaMaxDuration)
+	if err != nil {
+		return nil, err
+	}
+	mediaMaxDimension, err := envInt("MEDIA_MAX_DIMENSION", defaultMediaMaxDimension)
+	if err != nil {
+		return nil, err
+	}
+	mediaAllowedCodecs := envList("MEDIA_ALLOWED_CODECS", []string{"h264", "hevc", "av1", "vp8", "vp9"})
 	feedL1Enabled, err := envBool("FEED_L1_ENABLED", defaultFeedL1Enabled)
 	if err != nil {
 		return nil, err
@@ -434,6 +468,12 @@ func Load() (*Config, error) {
 			UseTLS:                redisUseTLS,
 			FeedCacheTTL:          feedCacheTTL,
 			HotFeedEnabled:        hotFeedEnabled,
+			MediaProbeEnabled:     mediaProbeEnabled,
+			MediaProbeInterval:    mediaProbeInterval,
+			MediaProbeBatch:       mediaProbeBatch,
+			MediaMaxDuration:      mediaMaxDuration,
+			MediaMaxDimension:     mediaMaxDimension,
+			MediaAllowedCodecs:    mediaAllowedCodecs,
 			FeedL1Enabled:         feedL1Enabled,
 			FeedL1TTL:             feedL1TTL,
 			FeedL1Capacity:        feedL1Capacity,
@@ -702,6 +742,25 @@ func envInt64(key string, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("environment variable %s must be an integer", key)
 	}
 	return n, nil
+}
+
+// envList 解析逗号分隔的列表（如编码器白名单）。空值返回默认值。
+func envList(key string, fallback []string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	if len(values) == 0 {
+		return fallback
+	}
+	return values
 }
 
 func envFloat(key string, fallback float64) (float64, error) {

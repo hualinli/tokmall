@@ -153,3 +153,52 @@ func (m *HotFeedMetrics) HotFeedDegraded(reason string) {
 func (m *HotFeedMetrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.scoreUpdates, m.rebuilds, m.windowSize, m.sources, m.degraded}
 }
+
+// MediaProbeMetrics 暴露媒体校验 worker 的结果：
+//
+//	media_probe_result_total{status}     校验结论（passed/rejected）
+//	media_probe_skipped_total{reason}    跳过原因（tool_missing 等）
+//	media_probe_duration_seconds         实测时长分布（发现超长视频）
+//	media_faststart_applied_total        moov 前置处理次数
+//
+// rejected 增长说明有用户在传非视频/超长文件——这正是这条链路要挡的东西。
+type MediaProbeMetrics struct {
+	results   *prometheus.CounterVec
+	skipped   *prometheus.CounterVec
+	duration  prometheus.Histogram
+	faststart prometheus.Counter
+}
+
+func NewMediaProbeMetrics(reg prometheus.Registerer) *MediaProbeMetrics {
+	m := &MediaProbeMetrics{
+		results: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "media_probe_result_total", Help: "Media probe outcomes by status",
+		}, []string{"status"}),
+		skipped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "media_probe_skipped_total", Help: "Media probes skipped by reason",
+		}, []string{"reason"}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "media_probe_duration_seconds",
+			Help:    "Probed media duration in seconds",
+			Buckets: []float64{1, 5, 15, 30, 60, 180, 600, 1800, 3600},
+		}),
+		faststart: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "media_faststart_applied_total", Help: "Objects rewritten with moov at the front",
+		}),
+	}
+	reg.MustRegister(m.results, m.skipped, m.duration, m.faststart)
+	return m
+}
+
+func (m *MediaProbeMetrics) ProbeResult(status string)  { m.results.WithLabelValues(status).Inc() }
+func (m *MediaProbeMetrics) ProbeSkipped(reason string) { m.skipped.WithLabelValues(reason).Inc() }
+func (m *MediaProbeMetrics) ProbeDuration(seconds float64) {
+	if seconds > 0 {
+		m.duration.Observe(seconds)
+	}
+}
+func (m *MediaProbeMetrics) FaststartApplied() { m.faststart.Inc() }
+
+func (m *MediaProbeMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.results, m.skipped, m.duration, m.faststart}
+}

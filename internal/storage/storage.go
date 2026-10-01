@@ -113,3 +113,28 @@ func (c *Client) StatObject(ctx context.Context, objectKey string) (int64, error
 func (c *Client) DeleteObject(ctx context.Context, objectKey string) error {
 	return c.mc.RemoveObject(ctx, c.bucket, objectKey, minio.RemoveObjectOptions{})
 }
+
+// DownloadToFile 把对象下载到本地文件（媒体校验 worker 用：ffprobe 需要本地路径）。
+//
+// 走 FGetObject 而不是预签名 GET：worker 在服务端、有凭证，
+// 不需要绕一圈 HTTP 签名，也避免把内部对象暴露成 URL。
+func (c *Client) DownloadToFile(ctx context.Context, objectKey, path string) error {
+	if err := c.mc.FGetObject(ctx, c.bucket, objectKey, path, minio.GetObjectOptions{}); err != nil {
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return ErrObjectNotFound
+		}
+		return fmt.Errorf("download object %s: %w", objectKey, err)
+	}
+	return nil
+}
+
+// UploadFromFile 用本地文件覆盖对象（faststart remux 后回写）。
+func (c *Client) UploadFromFile(ctx context.Context, objectKey, path string, size int64) error {
+	_, err := c.mc.FPutObject(ctx, c.bucket, objectKey, path, minio.PutObjectOptions{
+		ContentType: "video/mp4",
+	})
+	if err != nil {
+		return fmt.Errorf("upload object %s: %w", objectKey, err)
+	}
+	return nil
+}

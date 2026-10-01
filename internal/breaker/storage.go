@@ -16,6 +16,9 @@ type StorageClient interface {
 	PresignGetURLWithExpiry(ctx context.Context, objectKey string, expiry time.Duration) (string, error)
 	StatObject(ctx context.Context, objectKey string) (int64, error)
 	DeleteObject(ctx context.Context, objectKey string) error
+	// DownloadToFile / UploadFromFile：媒体校验 worker 用（下载→探测→回写）。
+	DownloadToFile(ctx context.Context, objectKey, path string) error
+	UploadFromFile(ctx context.Context, objectKey, path string, size int64) error
 }
 
 // Storage 是带熔断的对象存储装饰器。
@@ -67,6 +70,20 @@ func (s *Storage) StatObject(ctx context.Context, objectKey string) (int64, erro
 func (s *Storage) DeleteObject(ctx context.Context, objectKey string) error {
 	return s.breaker.Do(ctx, func(ctx context.Context) error {
 		return s.next.DeleteObject(ctx, objectKey)
+	})
+}
+
+// DownloadToFile / UploadFromFile 同样受熔断保护：媒体校验 worker 批量下载时
+// 如果对象存储已经不可用，快速失败比每个文件都等一次超时好得多。
+func (s *Storage) DownloadToFile(ctx context.Context, objectKey, path string) error {
+	return s.breaker.Do(ctx, func(ctx context.Context) error {
+		return s.next.DownloadToFile(ctx, objectKey, path)
+	})
+}
+
+func (s *Storage) UploadFromFile(ctx context.Context, objectKey, path string, size int64) error {
+	return s.breaker.Do(ctx, func(ctx context.Context) error {
+		return s.next.UploadFromFile(ctx, objectKey, path, size)
 	})
 }
 
