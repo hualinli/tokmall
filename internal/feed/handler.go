@@ -23,6 +23,7 @@ func NewHandler(service *Service) *Handler {
 // RegisterRoutes 挂公开路由：Feed 匿名可看，不要求登录。
 func (h *Handler) RegisterRoutes(g *route.RouterGroup) {
 	g.GET("/feed", h.list)
+	g.GET("/feed/hot", h.listHot)
 	g.GET("/users/:id/videos", h.listByAuthor)
 }
 
@@ -33,6 +34,24 @@ func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {
 
 func (h *Handler) list(ctx context.Context, c *app.RequestContext) {
 	result, err := h.service.List(ctx, queryLimit(c), c.Query("cursor"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidLimit):
+			response.Error(c, response.ErrInvalidArgument)
+		case errors.Is(err, ErrInvalidCursor):
+			response.Error(c, response.ErrInvalidCursor)
+		default:
+			response.Error(c, response.ErrInternal)
+		}
+		return
+	}
+	response.OK(c, result)
+}
+
+// listHot 热榜：物化滑动窗口 + 冻结窗口游标。匿名可看。
+// 数据源不可用时降级为时间流（响应结构不变，只是 hot_score 为 0）。
+func (h *Handler) listHot(ctx context.Context, c *app.RequestContext) {
+	result, err := h.service.ListHot(ctx, queryLimit(c), c.Query("cursor"))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidLimit):

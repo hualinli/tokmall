@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 var ErrInvalidParam = errors.New("invalid param")
@@ -15,8 +16,8 @@ type Repository interface {
 	// VideoIsInteractable 只返回对互动可见的视频：存在且处于 PUBLISHED。
 	// 这是 interaction 对 videos 表的最小 read model，不依赖 video 模块类型。
 	VideoIsInteractable(ctx context.Context, videoID int64) (bool, error)
-	AddLike(ctx context.Context, userID, videoID int64) error
-	RemoveLike(ctx context.Context, userID, videoID int64) error
+	AddLike(ctx context.Context, userID, videoID int64) (bool, error)
+	RemoveLike(ctx context.Context, userID, videoID int64) (bool, error)
 	AddFollow(ctx context.Context, followerID, followeeID int64) error
 	RemoveFollow(ctx context.Context, followerID, followeeID int64) error
 	UserExists(ctx context.Context, userID int64) (bool, error)
@@ -37,11 +38,21 @@ type FollowingFeedInvalidator interface {
 	InvalidateFollowingFeed(ctx context.Context, followerID int64) error
 }
 
+// HotScoreRecorder 是热榜计分接口（使用方定义，main 注入 feed 的实现）。
+//
+// 注意参数是**动作名**而不是分值：权重属于排序模型（feed 决定一次点赞值多少分），
+// 互动模块只上报"发生了什么"。计分失败不影响点赞结果——热度是派生数据，
+// 点赞事实才是业务。
+type HotScoreRecorder interface {
+	AddHotScore(ctx context.Context, videoID int64, action string, at time.Time) error
+}
+
 type Service struct {
 	repo                     Repository
 	avatar                   AvatarURLProvider
 	cursor                   *codec
 	followingFeedInvalidator FollowingFeedInvalidator
+	hotScore                 HotScoreRecorder
 }
 
 // NewService 构造 interaction 服务。invalidator 可选：缓存关闭时传 nil，
@@ -74,12 +85,17 @@ func (s *Service) Like(ctx context.Context, userID, videoID int64) (*LikeResult,
 	if err := s.ensureInteractableVideo(ctx, videoID); err != nil {
 		return nil, err
 	}
-	if err := s.repo.AddLike(ctx, userID, videoID); err != nil {
+	changed, err := s.repo.AddLike(ctx, userID, videoID)
+	if err != nil {
 		if errors.Is(err, ErrVideoNotFound) {
 			return nil, ErrVideoNotFound
 		}
 		slog.Error("add like failed", "user_id", userID, "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("add like: %w", err)
+	}
+	// 只有真的新增点赞才加热度：重复点赞是幂等命中，重复计分会让热榜可被刷。
+	if changed {
+		s.recordHotScore(ctx, videoID, "like")
 	}
 	return &LikeResult{VideoID: videoID, Liked: true}, nil
 }
@@ -89,14 +105,34 @@ func (s *Service) Unlike(ctx context.Context, userID, videoID int64) (*LikeResul
 	if err := s.ensureInteractableVideo(ctx, videoID); err != nil {
 		return nil, err
 	}
-	if err := s.repo.RemoveLike(ctx, userID, videoID); err != nil {
+	changed, err := s.repo.RemoveLike(ctx, userID, videoID)
+	if err != nil {
 		if errors.Is(err, ErrVideoNotFound) {
 			return nil, ErrVideoNotFound
 		}
 		slog.Error("remove like failed", "user_id", userID, "video_id", videoID, "err", err)
 		return nil, fmt.Errorf("remove like: %w", err)
 	}
+	if changed {
+		// 取消点赞记负分（权重由 feed 决定）：热度是"净热度"，
+		// 点赞又取消不应在榜上留下僵尸条目。
+		s.recordHotScore(ctx, videoID, "unlike")
+	}
 	return &LikeResult{VideoID: videoID, Liked: false}, nil
+}
+
+// SetHotScoreRecorder 注入热榜计分器（main 装配）。未注入时计分是空操作。
+func (s *Service) SetHotScoreRecorder(recorder HotScoreRecorder) { s.hotScore = recorder }
+
+// recordHotScore 记一次热度。失败只记日志：热榜是派生数据，
+// 不能因为它写失败而让点赞接口报错。
+func (s *Service) recordHotScore(ctx context.Context, videoID int64, action string) {
+	if s.hotScore == nil {
+		return
+	}
+	if err := s.hotScore.AddHotScore(ctx, videoID, action, time.Now()); err != nil {
+		slog.Warn("record hot score failed", "video_id", videoID, "action", action, "err", err)
+	}
 }
 
 func (s *Service) ensureInteractableVideo(ctx context.Context, videoID int64) error {

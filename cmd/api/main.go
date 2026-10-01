@@ -101,6 +101,12 @@ func run() error {
 	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("database migrate: %w", err)
 	}
+	// 热榜：分钟桶 + 冻结窗口。读路径只读（后台 worker 每分钟物化一次），
+	// 窗口缺失时才由 singleflight 合并回源（见 internal/feed/hot_cache.go）。
+	// 计分器在这里就绪：interaction（点赞）与 video（播放）都要用它。
+	var hotFeed *feed.RedisHotFeed
+	var hotScoreRecorder feed.HotScoreRecorder
+	var hotMetrics *observability.HotFeedMetrics
 	redisClient, err := cache.NewClient(cfg.RedisConfig,
 		// 慢命令日志：缓存命中后瓶颈就在 Redis 读上（见 performance-baseline），
 		// 没有这层日志就只能看到"命中率"，看不到"哪条命令慢"。
@@ -109,6 +115,11 @@ func run() error {
 		return fmt.Errorf("connect redis: %w", err)
 	}
 	defer func() { _ = redisClient.Close() }()
+	if cfg.HotFeedEnabled {
+		hotMetrics = observability.NewHotFeedMetrics(metricsRegistry)
+		hotFeed = feed.NewRedisHotFeed(redisClient, hotMetrics)
+		hotScoreRecorder = hotFeed
+	}
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	h := server.New(
 		server.WithHostPorts(addr),
@@ -219,14 +230,25 @@ func run() error {
 		ranker,
 	)
 	feedService.SetProductCardReader(feed.NewProductCardReader(db))
+	if hotScoreRecorder != nil {
+		videoService.SetHotScoreRecorder(hotScoreRecorder)
+	}
+	if hotFeed != nil {
+		feedService.SetHotFeed(hotFeed, hotMetrics)
+	}
 	feedHandler := feed.NewHandler(feedService)
 	videoHandler := video.NewHandler(videoService)
-	interactionHandler := interaction.NewHandler(interaction.NewService(
+	interactionService := interaction.NewService(
 		interaction.NewRepository(db),
 		storageClient,
 		cfg.CursorSecret,
 		followingFeedInvalidator,
-	))
+	)
+	if hotScoreRecorder != nil {
+		// 点赞/取消点赞计分（只有"状态真的变化"时才计，见 interaction.Service.Like）。
+		interactionService.SetHotScoreRecorder(hotScoreRecorder)
+	}
+	interactionHandler := interaction.NewHandler(interactionService)
 	productRepository := product.NewRepository(db)
 	productService := product.NewService(
 		productRepository,
@@ -264,7 +286,7 @@ func run() error {
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	couponHandler := coupon.NewHandler(coupon.NewService(coupon.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
-	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository)
+	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -361,8 +383,22 @@ func stopWorker(name string, cancel context.CancelFunc, done <-chan struct{}, ti
 func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisClient *redis.Client,
 	orderRepo *order.GormRepository, registry *prometheus.Registry,
 	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
-	videoRepo *video.GormRepository, productRepo *product.GormRepository) *backgroundWorkers {
+	videoRepo *video.GormRepository, productRepo *product.GormRepository,
+	hotFeed *feed.RedisHotFeed) *backgroundWorkers {
 	workers := &backgroundWorkers{}
+	if hotFeed != nil {
+		// 热榜窗口后台物化：每分钟把 60 个分钟桶合并成冻结窗口。
+		// 读路径因此只读不算（窗口缺失时才 singleflight 回源），
+		// 避免"窗口刚过期的那一瞬间每个请求都做一次 60-key 合并"。
+		worker := feed.NewHotWindowWorker(hotFeed, time.Minute)
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "hot window worker")
+		go func() {
+			defer close(done)
+			worker.Run(workerCtx)
+		}()
+	}
 	if guard != nil {
 		worker := existence.NewRebuildWorker(guard, cfg.ExistenceRebuildInterval,
 			map[string]existence.LoaderFunc{

@@ -99,3 +99,57 @@ func (m *RedisMetrics) RedisSlowCommand(command string) {
 func (m *RedisMetrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.slowCommands}
 }
+
+// HotFeedMetrics 暴露热榜的健康度：
+//
+//	hot_feed_score_updates_total{action}  计分写入（按互动类型）
+//	hot_feed_window_rebuild_total{source} 窗口物化次数（scheduled=后台，on_demand=读路径回源）
+//	hot_feed_window_entries               当前窗口条目数
+//	hot_feed_source_total{source}         读路径数据来源（window=热榜窗口，timeline=降级）
+//	hot_feed_degraded_total{reason}       降级次数与原因
+//
+// on_demand 重建次数是最值得盯的一条：它理想情况接近 0（窗口由后台每分钟物化）。
+// 持续增长说明后台 worker 没在跑或窗口 TTL 太短，读路径在替它干活。
+type HotFeedMetrics struct {
+	scoreUpdates *prometheus.CounterVec
+	rebuilds     *prometheus.CounterVec
+	windowSize   prometheus.Gauge
+	sources      *prometheus.CounterVec
+	degraded     *prometheus.CounterVec
+}
+
+func NewHotFeedMetrics(reg prometheus.Registerer) *HotFeedMetrics {
+	m := &HotFeedMetrics{
+		scoreUpdates: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "hot_feed_score_updates_total", Help: "Hot score increments by action type",
+		}, []string{"action"}),
+		rebuilds: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "hot_feed_window_rebuild_total", Help: "Hot window materializations by trigger",
+		}, []string{"source"}),
+		windowSize: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "hot_feed_window_entries", Help: "Entries in the materialized hot window",
+		}),
+		sources: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "hot_feed_source_total", Help: "Hot feed reads by data source",
+		}, []string{"source"}),
+		degraded: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "hot_feed_degraded_total", Help: "Hot feed degradations by reason",
+		}, []string{"reason"}),
+	}
+	reg.MustRegister(m.scoreUpdates, m.rebuilds, m.windowSize, m.sources, m.degraded)
+	return m
+}
+
+func (m *HotFeedMetrics) HotScoreUpdate(action string) { m.scoreUpdates.WithLabelValues(action).Inc() }
+func (m *HotFeedMetrics) HotWindowRebuild(source string) {
+	m.rebuilds.WithLabelValues(source).Inc()
+}
+func (m *HotFeedMetrics) HotWindowSize(size int)      { m.windowSize.Set(float64(size)) }
+func (m *HotFeedMetrics) HotFeedSource(source string) { m.sources.WithLabelValues(source).Inc() }
+func (m *HotFeedMetrics) HotFeedDegraded(reason string) {
+	m.degraded.WithLabelValues(reason).Inc()
+}
+
+func (m *HotFeedMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.scoreUpdates, m.rebuilds, m.windowSize, m.sources, m.degraded}
+}

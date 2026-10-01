@@ -180,6 +180,32 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /api/v1/feed/hot:
+    get:
+      tags: [feed]
+      summary: 热榜（物化滑动窗口）
+      description: >-
+        热度按分钟桶累加（点赞 +3 / 取消点赞 -3 / 播放 +1，权重在服务端），
+        读取时把最近 60 个分钟桶合并成一个**冻结窗口**再分页。
+        游标同时携带 window_end 与 (hot_score, video_id)：窗口冻结保证同一段翻页
+        看到同一份榜单，分数游标保证即使窗口被后台重新物化也不会重复返回已翻过的条目。
+        窗口为空（近期无互动）或 Redis 不可用时**降级为时间流**（items 结构与时间流一致，
+        仅 hot_score 为 0），不会返回错误。
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 热榜页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedResult"
+        "400":
+          $ref: "#/components/responses/InvalidArgument"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /api/v1/feed/following:
     get:
       tags: [feed]
@@ -1885,6 +1911,10 @@ components:
           type: integer
           format: int64
           description: 点赞数（现查，准实时）
+        hot_score:
+          type: integer
+          format: int64
+          description: 仅热榜场景返回：窗口内累计热度
         product_cards:
           type: array
           maxItems: 5

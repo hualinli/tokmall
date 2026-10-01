@@ -38,7 +38,11 @@ func (r *GormRepository) VideoIsInteractable(ctx context.Context, videoID int64)
 
 // AddLike 幂等点赞：service 已做可见性检查，这里再用 EXISTS 把 PUBLISHED
 // 条件放进写入语句，缩小 check-then-write 的 TOCTOU 窗口。
-func (r *GormRepository) AddLike(ctx context.Context, userID, videoID int64) error {
+// AddLike 返回 (changed, error)：changed 表示本次调用真的插入了点赞行。
+//
+// 为什么要把这个信息返回出来：热榜按"状态变化"计分，重复点赞（幂等命中）
+// 不能重复加热度。仓储是唯一知道 RowsAffected 的地方，所以由它上报。
+func (r *GormRepository) AddLike(ctx context.Context, userID, videoID int64) (bool, error) {
 	result := r.db.WithContext(ctx).Exec(`
 		INSERT INTO likes (user_id, video_id)
 		SELECT ?, ?
@@ -49,24 +53,25 @@ func (r *GormRepository) AddLike(ctx context.Context, userID, videoID int64) err
 		ON CONFLICT (user_id, video_id) DO NOTHING
 	`, userID, videoID, videoID)
 	if result.Error != nil {
-		return result.Error
+		return false, result.Error
 	}
 	if result.RowsAffected > 0 {
-		return nil
+		return true, nil
 	}
 	// RowsAffected=0 既可能是重复点赞，也可能是视频在 service 检查后变得不可见。
 	visible, err := r.VideoIsInteractable(ctx, videoID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !visible {
-		return ErrVideoNotFound
+		return false, ErrVideoNotFound
 	}
-	return nil
+	return false, nil
 }
 
 // RemoveLike 幂等取消：只有 PUBLISHED 视频允许改变关系；行不存在仍视为成功。
-func (r *GormRepository) RemoveLike(ctx context.Context, userID, videoID int64) error {
+// RemoveLike 返回 (changed, error)：changed 表示本次调用真的删除了点赞行。
+func (r *GormRepository) RemoveLike(ctx context.Context, userID, videoID int64) (bool, error) {
 	result := r.db.WithContext(ctx).Exec(`
 		DELETE FROM likes l
 		USING videos v
@@ -74,19 +79,19 @@ func (r *GormRepository) RemoveLike(ctx context.Context, userID, videoID int64) 
 		  AND v.id = ? AND v.status = 'PUBLISHED'
 	`, userID, videoID)
 	if result.Error != nil {
-		return result.Error
+		return false, result.Error
 	}
 	if result.RowsAffected > 0 {
-		return nil
+		return true, nil
 	}
 	visible, err := r.VideoIsInteractable(ctx, videoID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !visible {
-		return ErrVideoNotFound
+		return false, ErrVideoNotFound
 	}
-	return nil
+	return false, nil
 }
 
 // AddFollow 幂等关注：目标用户必须在写入时仍处于 ACTIVE 且未软删；

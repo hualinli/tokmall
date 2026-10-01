@@ -33,6 +33,7 @@ const (
 	defaultFeedL1TTL            = 5 * time.Second
 	defaultFeedL1Capacity       = 512
 	defaultFeedVersionInterval  = time.Second
+	defaultHotFeedEnabled       = true
 	defaultFeedCacheOn          = true
 	defaultFollowingCacheOn     = true
 	defaultRankStrategy         = "time"
@@ -162,6 +163,8 @@ type RedisConfig struct {
 	FeedL1Capacity int
 	// FeedVersionInterval 是版本号探测间隔：L1 失效延迟的上界（见 feed.VersionStamp）。
 	FeedVersionInterval time.Duration
+	// HotFeedEnabled：热榜（分钟桶 + 冻结窗口）。关闭时 /feed/hot 降级为时间流。
+	HotFeedEnabled bool
 	// FeedCacheTTL 是 feed 首页缓存的过期时间：TTL 兜底防删缓存失败导致
 	// 脏数据永久存活（先写库再删缓存的 Cache-Aside 策略依赖它）。
 	FeedCacheTTL time.Duration
@@ -208,6 +211,10 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	redisDB, err := envInt("REDIS_DB", defaultRedisDB)
+	if err != nil {
+		return nil, err
+	}
+	hotFeedEnabled, err := envBool("HOT_FEED_ENABLED", defaultHotFeedEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -426,6 +433,7 @@ func Load() (*Config, error) {
 			DB:                    redisDB,
 			UseTLS:                redisUseTLS,
 			FeedCacheTTL:          feedCacheTTL,
+			HotFeedEnabled:        hotFeedEnabled,
 			FeedL1Enabled:         feedL1Enabled,
 			FeedL1TTL:             feedL1TTL,
 			FeedL1Capacity:        feedL1Capacity,

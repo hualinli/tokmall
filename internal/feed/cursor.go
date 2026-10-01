@@ -25,6 +25,16 @@ type Cursor struct {
 	PublishedAt time.Time
 	VideoID     int64
 	RankVersion string
+
+	// 热榜游标字段（仅 hot-window-v1 使用）。
+	//
+	// 为什么热榜需要额外的字段：时间流的排序键 (published_at, id) 是**不可变**的，
+	// 游标只要带这两个值就能稳定翻页；而热榜的排序键是"窗口内累计热度"，
+	// 它随时在变。解法是把排序键**冻结**：WindowEnd 锁定一个物化窗口快照，
+	// (HotScore, VideoID) 表示快照内的位置。三者一起进签名游标，
+	// 因此翻页期间即使后台重新物化了窗口，也不会重复返回已翻过的条目。
+	WindowEnd time.Time `json:",omitempty"`
+	HotScore  int64     `json:",omitempty"`
 }
 
 type codec struct {
@@ -66,7 +76,12 @@ func (c *codec) Decode(s string) (*Cursor, error) {
 	if err := json.Unmarshal(payload, &cur); err != nil {
 		return nil, ErrInvalidCursor
 	}
-	if cur.PublishedAt.IsZero() || cur.VideoID <= 0 {
+	if cur.VideoID <= 0 {
+		return nil, ErrInvalidCursor
+	}
+	// 两种游标形态：时间流需要 published_at；热榜需要 window_end。
+	// 由调用方按排序版本判断该用哪一种（codec 不感知排序策略）。
+	if cur.PublishedAt.IsZero() && cur.WindowEnd.IsZero() {
 		return nil, ErrInvalidCursor
 	}
 	return &cur, nil

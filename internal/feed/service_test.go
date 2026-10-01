@@ -103,6 +103,21 @@ func (f *blockingLikeRepo) LikeCounts(ctx context.Context, videoIDs []int64) (ma
 	return f.fakeRepo.LikeCounts(ctx, videoIDs)
 }
 
+// ListByIDs 供热榜场景使用：按 ID 返回，顺序无关（调用方按榜单顺序重排）。
+func (f *fakeRepo) ListByIDs(_ context.Context, ids []int64) ([]Video, error) {
+	wanted := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	out := make([]Video, 0, len(ids))
+	for _, v := range f.videos {
+		if _, ok := wanted[v.ID]; ok {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeRepo) list(ctx context.Context, videos []Video, before *Cursor, limit int) []Video {
 	out := make([]Video, 0, limit+1)
 	for _, v := range videos {

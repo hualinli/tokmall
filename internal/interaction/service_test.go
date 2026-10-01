@@ -37,19 +37,28 @@ func (f *fakeRepo) VideoIsInteractable(ctx context.Context, videoID int64) (bool
 	return f.visibleVideos[videoID], nil
 }
 
-// 幂等语义用 map 模拟：重复写入不报错。
-func (f *fakeRepo) AddLike(ctx context.Context, userID, videoID int64) error {
+// 幂等语义用 map 模拟：重复写入不报错，但 changed 要如实反映"这次有没有改状态"
+// （热榜计分依赖它：重复点赞不能重复加热度）。
+func (f *fakeRepo) AddLike(ctx context.Context, userID, videoID int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.likes[[2]int64{userID, videoID}] = true
-	return nil
+	key := [2]int64{userID, videoID}
+	if f.likes[key] {
+		return false, nil
+	}
+	f.likes[key] = true
+	return true, nil
 }
 
-func (f *fakeRepo) RemoveLike(ctx context.Context, userID, videoID int64) error {
+func (f *fakeRepo) RemoveLike(ctx context.Context, userID, videoID int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.likes, [2]int64{userID, videoID})
-	return nil
+	key := [2]int64{userID, videoID}
+	if !f.likes[key] {
+		return false, nil
+	}
+	delete(f.likes, key)
+	return true, nil
 }
 
 func (f *fakeRepo) AddFollow(ctx context.Context, followerID, followeeID int64) error {

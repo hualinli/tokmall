@@ -29,6 +29,8 @@ type Repository interface {
 	ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error)
 	ListPublishedByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
 	ListFollowingPublished(ctx context.Context, userID int64, before *Cursor, limit int) ([]Video, error)
+	// ListByIDs 按 ID 批量取已发布视频（热榜等"先有 ID 列表再补全"的场景）。
+	ListByIDs(ctx context.Context, ids []int64) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 	PlayCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 }
@@ -50,9 +52,20 @@ type Service struct {
 	stats          CacheStats
 	group          singleflight.Group
 	ranker         Ranker
+	// hot / hotStats：热榜数据源与指标。hot 为 nil 时热榜端点降级为时间流。
+	hot      HotFeed
+	hotStats HotWindowStats
 }
 
 func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
+
+// SetHotFeed 注入热榜数据源（main 装配）。不注入时 /feed/hot 降级为时间流。
+func (s *Service) SetHotFeed(hot HotFeed, stats HotWindowStats) {
+	s.hot = hot
+	if stats != nil {
+		s.hotStats = stats
+	}
+}
 
 // NewService 构造 feed 服务。cache/followingCache 可为 nil（缓存禁用时降级直查）；
 // ranker 可选（variadic）：缺省 TimeRanker（当前生产语义）。
@@ -66,6 +79,7 @@ func NewService(repo Repository, codec *codec, storage PlayURLProvider, cache Fi
 		ranker = rankers[0]
 	}
 	return &Service{
+		hotStats:       nopHotStats{},
 		repo:           repo,
 		cursor:         codec,
 		storage:        storage,
@@ -94,6 +108,8 @@ type FeedItem struct {
 	Author          AuthorRef     `json:"author"`
 	LikeCount       int64         `json:"like_count"`
 	ProductCards    []ProductCard `json:"product_cards"`
+	// HotScore 只在热榜场景返回：窗口内累计热度。时间流场景恒为 0（omitempty）。
+	HotScore int64 `json:"hot_score,omitempty"`
 }
 
 type FeedResult struct {
@@ -465,6 +481,47 @@ func (s *Service) loadAuthorPage(ctx context.Context, authorID int64, before *Cu
 	return s.assemble(ctx, videos, limit, CurrentRankVersion)
 }
 
+// buildFeedItem 把一行视频拼成 FeedItem（预签名 URL + 作者信息）。
+// 抽出来是为了让时间流与热榜共用同一套拼装逻辑——两处各写一份必然漂移
+// （同类项目就出现过"热榜返回的字段与时间流不一致"的问题）。
+func (s *Service) buildFeedItem(ctx context.Context, v Video) (FeedItem, error) {
+	item := FeedItem{
+		VideoID:         v.ID,
+		AuthorID:        v.AuthorID,
+		Title:           v.Title,
+		DurationSeconds: v.DurationSeconds,
+		PublishedAt:     v.PublishedAt,
+		Author: AuthorRef{
+			UserID:   v.AuthorID,
+			Username: v.Username,
+		},
+	}
+	if v.CoverKey != nil {
+		cover, err := s.storage.PresignGetURL(ctx, *v.CoverKey)
+		if err != nil {
+			slog.Error("presign cover url failed", "err", err)
+			return FeedItem{}, fmt.Errorf("presign cover url: %w", err)
+		}
+		item.CoverURL = &cover
+	}
+	videoURL, err := s.storage.PresignGetURL(ctx, v.ObjectKey)
+	if err != nil {
+		slog.Error("presign video url failed", "err", err)
+		return FeedItem{}, fmt.Errorf("presign video url: %w", err)
+	}
+	item.VideoURL = videoURL
+	if v.AvatarKey != nil {
+		// 头像签名失败降级为 null（装饰性字段）
+		avatar, err := s.storage.PresignAvatarURL(ctx, *v.AvatarKey)
+		if err != nil {
+			slog.Warn("presign avatar url failed", "err", err)
+		} else {
+			item.Author.AvatarURL = &avatar
+		}
+	}
+	return item, nil
+}
+
 // assemble 视频行 -> FeedItem（拼预签名 URL + 作者信息）+ 游标。
 // rankVersion 由调用方传入：当前各在线端点均使用 time-v1。
 func (s *Service) assemble(ctx context.Context, videos []Video, limit int, rankVersion string) (*FeedResult, error) {
@@ -474,39 +531,9 @@ func (s *Service) assemble(ctx context.Context, videos []Video, limit int, rankV
 		videos = videos[:limit]
 	}
 	for _, v := range videos {
-		item := FeedItem{
-			VideoID:         v.ID,
-			AuthorID:        v.AuthorID,
-			Title:           v.Title,
-			DurationSeconds: v.DurationSeconds,
-			PublishedAt:     v.PublishedAt,
-			Author: AuthorRef{
-				UserID:   v.AuthorID,
-				Username: v.Username,
-			},
-		}
-		if v.CoverKey != nil {
-			cover, err := s.storage.PresignGetURL(ctx, *v.CoverKey)
-			if err != nil {
-				slog.Error("presign cover url failed", "err", err)
-				return nil, fmt.Errorf("presign cover url: %w", err)
-			}
-			item.CoverURL = &cover
-		}
-		videoURL, err := s.storage.PresignGetURL(ctx, v.ObjectKey)
+		item, err := s.buildFeedItem(ctx, v)
 		if err != nil {
-			slog.Error("presign video url failed", "err", err)
-			return nil, fmt.Errorf("presign video url: %w", err)
-		}
-		item.VideoURL = videoURL
-		if v.AvatarKey != nil {
-			// 头像签名失败降级为 null（装饰性字段）
-			avatar, err := s.storage.PresignAvatarURL(ctx, *v.AvatarKey)
-			if err != nil {
-				slog.Warn("presign avatar url failed", "err", err)
-			} else {
-				item.Author.AvatarURL = &avatar
-			}
+			return nil, err
 		}
 		result.Items = append(result.Items, item)
 	}

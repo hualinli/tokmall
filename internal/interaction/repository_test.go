@@ -55,9 +55,9 @@ func TestLikeWritesKeepPublishedGuard(t *testing.T) {
 	log := &interactionSQLLogger{Interface: logger.Discard}
 	repo := dryRunInteractionRepo(t, log)
 
-	err := repo.AddLike(context.Background(), 1, 123)
+	_, err := repo.AddLike(context.Background(), 1, 123)
 	require.ErrorIs(t, err, ErrVideoNotFound)
-	err = repo.RemoveLike(context.Background(), 1, 123)
+	_, err = repo.RemoveLike(context.Background(), 1, 123)
 	require.ErrorIs(t, err, ErrVideoNotFound)
 
 	var guardedWrites []string

@@ -41,6 +41,21 @@ func (r *GormRepository) ListPublishedByAuthor(ctx context.Context, authorID int
 	return r.findFeed(ctx, q, limit)
 }
 
+// ListByIDs 按 ID 批量取已发布视频。热榜的场景是"Redis 给出 ID 列表，
+// 再补全卡片信息"，因此这里必须保持输入顺序无关（顺序由调用方决定），
+// 并且过滤掉已删除/未发布的视频（物化快照里的条目可能已失效）。
+func (r *GormRepository) ListByIDs(ctx context.Context, ids []int64) ([]Video, error) {
+	if len(ids) == 0 {
+		return []Video{}, nil
+	}
+	var videos []Video
+	err := r.feedQuery(ctx).Where("videos.id IN ?", ids).Find(&videos).Error
+	if err != nil {
+		return nil, err
+	}
+	return videos, nil
+}
+
 // feedQuery 基座：已发布视频 + 作者信息（LEFT JOIN users，公开 read model）。
 func (r *GormRepository) feedQuery(ctx context.Context) *gorm.DB {
 	return r.db.WithContext(ctx).Table("videos").

@@ -82,12 +82,33 @@ type Service struct {
 	feedCache    FeedCacheInvalidator
 	cursor       *codec
 	existence    ExistenceGuard
+	hotScore     HotScoreRecorder
 }
 
 func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
 
 // SetExistenceGuard 由装配方注入缓存穿透防护（未注入时行为与现状一致）。
 func (s *Service) SetExistenceGuard(guard ExistenceGuard) { s.existence = guard }
+
+// HotScoreRecorder 是热榜计分接口（使用方定义，main 注入 feed 的实现）。
+// 参数是动作名而不是分值：权重属于排序模型（feed 决定一次播放值多少分）。
+type HotScoreRecorder interface {
+	AddHotScore(ctx context.Context, videoID int64, action string, at time.Time) error
+}
+
+// SetHotScoreRecorder 注入热榜计分器（main 装配）。未注入时计分是空操作。
+func (s *Service) SetHotScoreRecorder(recorder HotScoreRecorder) { s.hotScore = recorder }
+
+// recordHotScore 记一次热度。失败只记日志：热榜是派生数据，
+// 不能因为它写失败而让播放接口报错。
+func (s *Service) recordHotScore(ctx context.Context, videoID int64, action string) {
+	if s.hotScore == nil {
+		return
+	}
+	if err := s.hotScore.AddHotScore(ctx, videoID, action, time.Now()); err != nil {
+		slog.Warn("record hot score failed", "video_id", videoID, "action", action, "err", err)
+	}
+}
 
 func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, cursorSecret string, feedCache FeedCacheInvalidator) *Service {
 	return &Service{
@@ -524,6 +545,9 @@ func (s *Service) Play(ctx context.Context, userID, videoID int64, eventID strin
 		return errors.New("create play event: repository returned nil result")
 	}
 	if result.Inserted {
+		// 只有真的插入了新播放事件才加热度：重放同一个 event_id 是幂等命中，
+		// 重复计分会让"刷播放接口"直接刷出热榜排名。
+		s.recordHotScore(ctx, videoID, "play")
 		return nil
 	}
 	if result.Existing == nil {
