@@ -178,6 +178,20 @@ func (c *Consumer) ConsumeOnce(ctx context.Context) (int, error) {
 // ClaimOnce 认领并处理"投递出去但超过 claimIdle 没有 ACK"的消息，
 // 返回处理条数。这是消费者崩溃（进程被杀、机器宕机）后事件不永久卡住的保证。
 func (c *Consumer) ClaimOnce(ctx context.Context) (int, error) {
+	// 先读投递次数，读不到就整轮放弃。
+	//
+	// 这里不能用"读不到就当 0"糊过去：判定式是 `deliveries[id] > maxDeliveries`，
+	// map 未命中得 0，毒丸消息于是永远达不到阈值 → DLQ 安全网被静默关闭，
+	// 一条稳定失败的消息会无限重投。也不能反过来把未知当作超限，否则 Redis
+	// 抖一下就会把健康消息批量误杀。
+	//
+	// 正确的做法是“不做判定、也不动消息”：消息本来就在 PEL 里，下一个 tick
+	// 会再试；Redis 恢复后投递次数就正确了，死信逻辑照常生效。
+	// 顺序也重要——XAUTOCLAIM 本身会把投递次数 +1，读不到就先认领会白白让计数失真。
+	deliveries, err := c.pendingDeliveries(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read pending deliveries: %w", err)
+	}
 	res, _, err := c.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream: c.stream, Group: c.group, Consumer: c.name,
 		MinIdle: c.claimIdle, Start: "0-0", Count: int64(c.batch),
@@ -191,7 +205,6 @@ func (c *Consumer) ClaimOnce(ctx context.Context) (int, error) {
 	if len(res) == 0 {
 		return 0, nil
 	}
-	deliveries := c.pendingDeliveries(ctx)
 	processed := 0
 	for _, msg := range res {
 		if deliveries[msg.ID] > c.maxDeliveries {
@@ -206,18 +219,21 @@ func (c *Consumer) ClaimOnce(ctx context.Context) (int, error) {
 	return processed, nil
 }
 
-func (c *Consumer) pendingDeliveries(ctx context.Context) map[string]int64 {
-	counts := map[string]int64{}
+// pendingDeliveries 读 PEL 里的投递次数。**出错必须返回 error**：
+// 静默返回空 map 与“没有待确认消息”无法区分，会让调用方把投递次数当成 0，
+// 从而静默关闭 DLQ 上限。
+func (c *Consumer) pendingDeliveries(ctx context.Context) (map[string]int64, error) {
 	pending, err := c.client.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: c.stream, Group: c.group, Start: "-", End: "+", Count: 256,
 	}).Result()
 	if err != nil {
-		return counts
+		return nil, err
 	}
+	counts := make(map[string]int64, len(pending))
 	for _, entry := range pending {
 		counts[entry.ID] = entry.RetryCount
 	}
-	return counts
+	return counts, nil
 }
 
 // process 是幂等消费的核心：
