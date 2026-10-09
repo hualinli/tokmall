@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 /**
  * E2E：覆盖核心产品链路（认证/Feed/互动/上传）。
- * 前置条件：后端已在 8080 运行（Vite 代理转发），Redis/MinIO 就绪。
+ * 前置条件：后端已在 8080 运行（Vite 代理转发），Redis/RustFS 就绪。
  *
  * 串行执行：上传测试会发布视频进公共 Feed，共享时间线状态。
  */

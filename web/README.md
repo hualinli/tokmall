@@ -20,7 +20,7 @@ pnpm typecheck              # gen + tsc
 pnpm lint
 pnpm exec vitest run
 pnpm build                  # gen + tsc + Vite
-pnpm test:e2e               # 后端与PG/Redis/MinIO需已运行
+pnpm test:e2e               # 后端与PG/Redis/RustFS需已运行
 ```
 
 生成物`src/api/types.ts`与`src/routeTree.gen.ts`提交到仓库，CI重新生成并检查漂移。根目录Go测试检查路由/schema契约，不验证浏览器交互。

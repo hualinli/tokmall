@@ -1,6 +1,6 @@
-# 架构决策记录（ADR-001～029）
+# 架构决策记录（ADR-001～030）
 
-> 更新于 2026-10-07。保留稳定编号供源码与其他文档引用。本文记录仍有解释价值的决策及其当前实现；历史实验、当时的故障故事和旧性能数字不作为现状依据。实现以代码和 [migrations](../migrations/) 为准，系统边界见 [后端架构](backend-architecture.md)。
+> 更新于 2026-10-09。保留稳定编号供源码与其他文档引用。本文记录仍有解释价值的决策及其当前实现；历史实验、当时的故障故事和旧性能数字不作为现状依据。实现以代码和 [migrations](../migrations/) 为准，系统边界见 [后端架构](backend-architecture.md)。
 
 ### ADR-001：JWT 认证，不采用服务端 Session
 
@@ -64,7 +64,7 @@ Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access toke
 
 ### ADR-016：用本地事务、Outbox 和对账替代分布式事务
 
-交易写入在 PostgreSQL 本地事务提交；跨模块副作用通过 Outbox 至少一次投递和幂等消费者完成，周期对账发现缺少回执时可重放。当前不引入 2PC，也没有跨 PostgreSQL、Redis、MinIO 的原子事务。见 [outbox](../internal/outbox/) 和 [reconcile](../internal/reconcile/) 实现。
+交易写入在 PostgreSQL 本地事务提交；跨模块副作用通过 Outbox 至少一次投递和幂等消费者完成，周期对账发现缺少回执时可重放。当前不引入 2PC，也没有跨 PostgreSQL、Redis、S3对象存储 的原子事务。见 [outbox](../internal/outbox/) 和 [reconcile](../internal/reconcile/) 实现。
 
 ### ADR-017：作者销售投影保留毛额并单列退款
 
@@ -92,7 +92,7 @@ Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access toke
 
 ### ADR-023：对象存储通过三态熔断装饰器隔离故障
 
-熔断器采用 closed/open/half-open 与受限探测；对象不存在和无效大小等业务答复不计为依赖故障，熔断打开映射为可重试的 503。bucket 启动检查失败会记录警告并继续启动。当前 [storage 装饰器](../internal/breaker/storage.go) 将预签名和对象读写都放在同一个熔断器内；预签名通常可基于已缓存的 bucket region 本地签名，但首次 region 未命中可能向 MinIO 查询。上传票证仅在预签名成功后写入数据库；因此预签名失败或熔断打开时不会留下新票证，而 region 已缓存时 MinIO 不可用也可能仍能签出 URL。具体边界由 MinIO 客户端版本及 region 缓存状态决定。
+熔断器采用 closed/open/half-open 与受限探测；对象不存在和无效大小等业务答复不计为依赖故障，熔断打开映射为可重试的 503。bucket 启动检查失败会记录警告并继续启动。当前 [storage 装饰器](../internal/breaker/storage.go) 将预签名和对象读写都放在同一个熔断器内；预签名通常可基于已缓存的 bucket region 本地签名，但首次 region 未命中可能向 S3对象存储 查询。上传票证仅在预签名成功后写入数据库；因此预签名失败或熔断打开时不会留下新票证，而 region 已缓存时 S3对象存储 不可用也可能仍能签出 URL。具体边界由 S3对象存储 客户端版本及 region 缓存状态决定。
 
 ### ADR-024：优惠券 v1 为商家范围满减券
 
@@ -117,9 +117,15 @@ Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access toke
 ### ADR-029：上传封存、对象清理补偿与订单资源释放
 
 - 预签名 PUT 只写 `staging/`，绑定声明长度和 Content-Type；视频上限 512 MiB、图片上限 5 MiB。服务端 StatObject 校验真实大小后按源 ETag 条件复制到最终 key，避免并发重传替换已校验字节。见 [storage.go](../internal/storage/storage.go) 和 [video/service.go](../internal/video/service.go)。
-- 票证核销持有数据库行锁；封存、视频/封面票证核销和视频创建在同一数据库事务中。MinIO 封存失败会回滚票证核销和视频创建，仍有效的票证可重试；MinIO 复制不是事务性回滚的一部分，复制成功而后续数据库步骤失败时可能留下无引用最终对象。封存期间对象存储调用使用 30 秒 deadline。事务与行锁见 [video/repository.go](../internal/video/repository.go)。
+- 票证核销持有数据库行锁；封存、视频/封面票证核销和视频创建在同一数据库事务中。S3对象存储 封存失败会回滚票证核销和视频创建，仍有效的票证可重试；S3对象存储 复制不是事务性回滚的一部分，复制成功而后续数据库步骤失败时可能留下无引用最终对象。封存期间对象存储调用使用 30 秒 deadline。事务与行锁见 [video/repository.go](../internal/video/repository.go)。
 - 删除状态和 `object_delete_jobs` 同事务写入；API 进程内 worker 每 10 秒取任务，删除失败延迟 1 分钟重试。未使用票证和 staging 对象等原 PUT 过期后清理；媒体回写与删除共用视频行锁。旧部署发出的、目标为最终 key 的 PUT URL 不能被新代码撤销，升级时须等待其最长有效期结束。见 [cleanup_worker.go](../internal/video/cleanup_worker.go) 和 [迁移 000023](../migrations/000023_object_cleanup.up.sql)。
 - 取消、轮询超时、延迟事件超时、支付时 lazy expiry 和退款成功都释放订单占用券；有效券回到 `UNUSED`，过期券记为 `EXPIRED`，订单继续保留历史引用。唯一索引排除 `REFUNDED/CANCELED/EXPIRED` 订单。实现见 [order/repository.go](../internal/order/repository.go)、[refund_repository.go](../internal/order/refund_repository.go) 和 [迁移 000024](../migrations/000024_closed_order_coupon.up.sql)。
 - 退款成功事件和作者日销投影继续使用毛额加单列退款口径（ADR-017）；退款申请本身不改变已支付成交事实。
 
 对应的约束与升级修复位于 migrations 000020～000024：媒体状态/发布门禁、退券后的券重用、对象清理任务和历史数据修复。当前没有累计存储配额、每日上传配额或外部支付渠道结算。
+
+### ADR-030：默认对象存储改用RustFS，应用依赖S3协议
+
+MinIO服务端归档后，开发环境与CI统一使用固定版本RustFS 1.0.1；应用保留minio-go作为S3客户端，不引入RustFS专有管理API。配置改为 `S3_*` / `S3Config`，熔断指标标识为 `s3`，服务端部署参数使用 `RUSTFS_*`。业务模块继续通过消费侧接口调用上传签名、对象检查、ETag封存、读写和删除，不修改订单、库存或视频表结构。
+
+新部署使用独立的 `rustfs-data` 卷，不把旧MinIO卷直接交给RustFS，不包含历史对象搬迁；已有 `MINIO_*` 环境变量须显式改名。浏览器直传和Range播放仍走预签名S3 URL。签名长度/类型、源ETag条件复制、CORS、URL到期、删除幂等性由真实存储契约测试约束；CI backend与E2E都运行RustFS。历史压测源码包、环境和数据保留原样，旧MinIO上的吞吐不自动成为RustFS容量结论。参见 [storage](../internal/storage/storage.go)、[契约测试](../internal/storage/upload_integration_test.go)、[Compose](../docker-compose.yml) 和 [运维](development-and-operations.md)。

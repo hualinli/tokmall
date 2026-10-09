@@ -146,9 +146,9 @@ func TestLoadProductionRejectsInsecureTransports(t *testing.T) {
 	})
 	t.Run("object storage TLS disabled", func(t *testing.T) {
 		setValidProductionEnv(t)
-		t.Setenv("MINIO_USE_SSL", "false")
+		t.Setenv("S3_USE_SSL", "false")
 		_, err := Load()
-		require.EqualError(t, err, "production configuration invalid: MINIO_USE_SSL must be true")
+		require.EqualError(t, err, "production configuration invalid: S3_USE_SSL must be true")
 	})
 	t.Run("redis TLS disabled", func(t *testing.T) {
 		setValidProductionEnv(t)
@@ -163,7 +163,7 @@ func TestLoadRejectsExplicitMalformedValuesInEveryEnvironment(t *testing.T) {
 		{"REDIS_DB", "one", "environment variable REDIS_DB must be an integer"},
 		{"FEED_CACHE_TTL", "soon", "environment variable FEED_CACHE_TTL must be a valid duration"},
 		{"FEED_CACHE_ENABLED", "sometimes", "environment variable FEED_CACHE_ENABLED must be a boolean"},
-		{"MINIO_USE_SSL", "yes-please", "environment variable MINIO_USE_SSL must be a boolean"},
+		{"S3_USE_SSL", "yes-please", "environment variable S3_USE_SSL must be a boolean"},
 		{"ORDER_EXPIRY_WORKER_ENABLED", "sometimes", "environment variable ORDER_EXPIRY_WORKER_ENABLED must be a boolean"},
 		{"ORDER_EXPIRY_WORKER_INTERVAL", "soon", "environment variable ORDER_EXPIRY_WORKER_INTERVAL must be a valid duration"},
 		{"ORDER_EXPIRY_WORKER_BATCH_SIZE", "many", "environment variable ORDER_EXPIRY_WORKER_BATCH_SIZE must be an integer"},
@@ -228,9 +228,9 @@ func setValidProductionEnv(t *testing.T) {
 		"APP_ENV": EnvironmentProduction, "JWT_SECRET": strings.Repeat("j", 40),
 		"FEED_CURSOR_SECRET": strings.Repeat("c", 40), "DB_HOST": "postgres.internal",
 		"DB_PORT": "5432", "DB_USER": "tokmall_app", "DB_PASSWORD": "database-password",
-		"DB_DATABASE": "tokmall", "DB_SSL_MODE": "verify-full", "MINIO_ENDPOINT": "objects.internal:9000",
-		"MINIO_ACCESS_KEY": "object-access-key", "MINIO_SECRET_KEY": "object-secret-key",
-		"MINIO_BUCKET": "tokmall-production", "MINIO_USE_SSL": "true",
+		"DB_DATABASE": "tokmall", "DB_SSL_MODE": "verify-full", "S3_ENDPOINT": "objects.internal:9000",
+		"S3_ACCESS_KEY": "object-access-key", "S3_SECRET_KEY": "object-secret-key",
+		"S3_BUCKET": "tokmall-production", "S3_USE_SSL": "true",
 		"REDIS_ADDR": "redis.internal:6379", "REDIS_PASSWORD": "redis-password", "REDIS_USE_TLS": "true",
 	}
 	for key, value := range values {
@@ -252,8 +252,8 @@ func clearConfigEnv(t *testing.T) {
 		"APP_ENV", "SERVER_PORT", "JWT_SECRET", "FEED_CURSOR_SECRET",
 		"METRICS_ADDR", "TRUSTED_PROXIES",
 		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE", "DB_SSL_MODE",
-		"MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET", "MINIO_USE_SSL",
-		"MINIO_UPLOAD_EXPIRY", "MINIO_DOWNLOAD_EXPIRY", "MINIO_AVATAR_EXPIRY",
+		"S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_BUCKET", "S3_USE_SSL",
+		"S3_UPLOAD_EXPIRY", "S3_DOWNLOAD_EXPIRY", "S3_AVATAR_EXPIRY",
 		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB", "REDIS_USE_TLS", "FEED_CACHE_TTL", "FEED_CACHE_ENABLED",
 		"FEED_FOLLOWING_CACHE_ENABLED", "FEED_RANK_STRATEGY", "RATE_LIMIT_ENABLED",
 		"RATE_LIMIT_AUTH_ACCOUNT", "RATE_LIMIT_AUTH_IP", "RATE_LIMIT_WRITE", "RATE_LIMIT_READ",

@@ -90,7 +90,7 @@ def environment(db, bucket, cache='C'):
     return dict(os.environ, APP_ENV='development', SERVER_PORT='18080',
                 METRICS_ADDR='127.0.0.1:19091', DB_DATABASE=db, REDIS_DB='15',
                 JWT_SECRET='benchmark-local-jwt-only', FEED_CURSOR_SECRET='benchmark-local-cursor-only',
-                MINIO_BUCKET=bucket, RATE_LIMIT_ENABLED='false',
+                S3_BUCKET=bucket, RATE_LIMIT_ENABLED='false',
                 FEED_CACHE_ENABLED=str(cache != 'A').lower(),
                 FEED_L1_ENABLED=str(cache == 'C').lower(),
                 OUTBOX_STREAM='tokmall:benchmark:events', RECONCILE_ENABLED='true')
@@ -138,7 +138,7 @@ def run_case(output, db, bucket, workroot, name, scenario, duration, concurrency
     call(['docker', 'exec', 'tokmall-redis', 'redis-cli', '-n', '15', 'FLUSHDB'])
     env = environment(db, bucket, cache)
     safe = {k: v for k, v in env.items() if k in ['APP_ENV','SERVER_PORT','METRICS_ADDR',
-          'DB_DATABASE','REDIS_DB','MINIO_BUCKET','RATE_LIMIT_ENABLED','FEED_CACHE_ENABLED',
+          'DB_DATABASE','REDIS_DB','S3_BUCKET','RATE_LIMIT_ENABLED','FEED_CACHE_ENABLED',
           'FEED_L1_ENABLED','OUTBOX_STREAM','RECONCILE_ENABLED']}
     (folder / 'configuration.json').write_text(json.dumps(safe, indent=2))
     api = start_api(env, workroot / name, folder / 'api-stderr.log')
@@ -192,7 +192,7 @@ def run_case(output, db, bucket, workroot, name, scenario, duration, concurrency
                         print('PROGRESS', name, f'{now-began:.0f}s',
                               'db_wait=', current.get('db_pool_wait_count_total{db="tokmall"}', 'n/a'), flush=True)
                         item['containers'] = call(['docker', 'stats', '--no-stream', '--format',
-                            '{{.Name}} {{.CPUPerc}} {{.MemUsage}}', 'tokmall-postgres','tokmall-redis','tokmall-minio'])
+                            '{{.Name}} {{.CPUPerc}} {{.MemUsage}}', 'tokmall-postgres','tokmall-redis','tokmall-rustfs'])
                         (folder / f'containers-{int(now-began)}.txt').write_text(item['containers'])
                         next_note = now + 30
                     time.sleep(5)

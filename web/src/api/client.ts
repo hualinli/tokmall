@@ -54,5 +54,5 @@ client.use({
   },
 })
 
-// 重试 body 缓存：请求对象 → body 字节。仅小 JSON（上传直传 MinIO 不走此通道），内存可忽略。
+// 重试 body 缓存：请求对象 → body 字节。仅小 JSON（上传直传 S3 不走此通道），内存可忽略。
 const requestRetryBodies = new WeakMap<Request, ArrayBuffer>()

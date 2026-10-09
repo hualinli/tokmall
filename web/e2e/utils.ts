@@ -48,7 +48,7 @@ export async function expectPlaying(page: Page, index: number) {
  *
  * 为什么 e2e 必须自己造数：Feed 的分页与"滚动切换播放"用例需要
  *   1) 至少两页数据（否则无限滚动永远到底），
- *   2) 视频对象真实存在且可解码（开发库里历史种子数据的 MinIO 对象可能已被删除，
+ *   2) 视频对象真实存在且可解码（开发库里历史种子数据的 RustFS 对象可能已被删除，
  *      浏览器会报 MEDIA_ERR_SRC_NOT_SUPPORTED）。
  * 依赖"上一个 spec 恰好发布过视频"是隐式顺序依赖，单跑本文件必挂。
  */

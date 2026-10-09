@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// StorageClient 是 MinIO 客户端的接口面（消费侧接口的并集）。
+// StorageClient 是 S3 对象存储 客户端的接口面（消费侧接口的并集）。
 // 用装饰器包住它，业务代码一行都不用改：main 装配时把原始 client 换成
 // 带熔断的 client 即可。
 type StorageClient interface {
@@ -25,7 +25,7 @@ type StorageClient interface {
 // Storage 是带熔断的对象存储装饰器。
 //
 // 为什么对象存储值得熔断：预签名与 StatObject 都是**网络调用**，
-// MinIO 不可用时每个请求都要等到底层超时（秒级），而连接池会被这些
+// S3 对象存储 不可用时每个请求都要等到底层超时（秒级），而连接池会被这些
 // 挂住的调用占满——一次下游故障会放大成整个服务不可用。
 // 熔断后这些调用立即失败，业务侧按"取不到 URL"降级（Feed 卡片无封面、
 // 详情页无视频地址），而不是整页 500。

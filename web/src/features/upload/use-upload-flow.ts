@@ -68,7 +68,7 @@ export function readVideoDuration(file: File): Promise<number> {
 /**
  * 预签名 PUT 上传（带进度）。
  * 关键：Content-Type 必须与票证声明的类型一致——
- * 不设 header 时 MinIO 存 application/x-www-form-urlencoded，
+ * 不设 header 时 S3 存 application/x-www-form-urlencoded，
  * 浏览器 ORB 会拦截跨源播放（F2 已验证的真实事故）。
  */
 export function putWithProgress(
@@ -91,7 +91,7 @@ export function putWithProgress(
         onProgress(100)
         resolve()
       } else {
-        // 预签名过期/伪造 → MinIO 返回 4xx（常见 403）
+        // 预签名过期/伪造 → S3 返回 4xx（常见 403）
         reject(new Error(`上传被拒绝（HTTP ${xhr.status}），上传地址可能已过期，请重试`))
       }
     }

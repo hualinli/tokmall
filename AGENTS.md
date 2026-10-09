@@ -10,13 +10,13 @@ TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreS
 |---|---|
 | 当前架构与数据边界 | [backend-architecture](docs/backend-architecture.md)、[main](cmd/api/main.go) |
 | 业务规则与交易实现 | [业务](docs/commerce-business.md)、[技术设计](docs/commerce-v1-technical-design.md) |
-| 设计取舍 | [ADR-001～029](docs/architecture-decisions.md) |
+| 设计取舍 | [ADR-001～030](docs/architecture-decisions.md) |
 | 运行／测试／迁移／排障 | [开发运维](docs/development-and-operations.md) |
 | 历史数字与未来工作 | [性能证据](docs/performance-baseline.md)、[roadmap](docs/roadmap.md) |
 | API / schema / 配置 | [OpenAPI](internal/api/openapi.yaml)、[migrations](migrations/)、[config](internal/config/config.go) |
 | 面试解释与证据 | [walkthrough](docs/interview-walkthrough.md) |
 
-技术栈：Hertz/GORM/PostgreSQL/golang-migrate；Redis 缓存、限流与 Streams；MinIO；JWT；slog/Prometheus/Grafana；React/TanStack Router/Query/Vite/Tailwind。版本以 go.mod、web/package.json、锁文件与 CI 为准。schema 仅由迁移管理，**禁止 AutoMigrate**。
+技术栈：Hertz/GORM/PostgreSQL/golang-migrate；Redis 缓存、限流与 Streams；RustFS；JWT；slog/Prometheus/Grafana；React/TanStack Router/Query/Vite/Tailwind。版本以 go.mod、web/package.json、锁文件与 CI 为准。schema 仅由迁移管理，**禁止 AutoMigrate**。
 
 当前后端已有商品/库存/订单/退款/券、Outbox/日销投影/九项对账、全局/关注/热榜 Feed、媒体校验、对象清理、两级缓存/穿透防护、熔断、告警规则与 traceparent。Kafka、真实支付物流、完整 OTel、累计上传配额及部分前端接入尚未实现，详情见 roadmap。当前迁移到 000024；目录入口见根 README，避免另一份易过期的目录树。
 
@@ -52,7 +52,7 @@ TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreS
 - **穿透**：布隆过滤器仅“确定不存在”才短路，首次加载前放行，双缓冲轮换。
   负缓存只记录真实 DB miss，不能把不可见的未发布视频缓存为不存在。
 - **上传与清理**：PUT只授权 `staging/`，签名绑定长度/类型；封存检查实际大小并按源ETag复制最终key。
-  票证锁行；视频/封面核销与创建同事务。MinIO副作用不能随PG回滚，final孤儿仍是已知边界。
+  票证锁行；视频/封面核销与创建同事务。RustFS副作用不能随PG回滚，final孤儿仍是已知边界。
   删除状态与 `object_delete_jobs` 同事务，后台失败重试，staging等原PUT到期后清理。
   媒体回写持视频行锁，不复活已删除对象；升级旧PUT需等原有效期过后再恢复服务。
 - **媒体**：PENDING/PASSED/REJECTED/SKIPPED 区分；坏文件 REJECTED，工具缺失/关闭探测 SKIPPED。
@@ -64,11 +64,11 @@ TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreS
   改Prometheus规则后跑`go test ./internal/observability/`，记录规则遵循`level:metric:operations`。
   对象不存在/无效大小不计熔断故障，open对外503；存储不可用不阻塞启动。
 - **门禁**：提交前 `make lint`；errorlint/nilerr/forcetypeassert是护栏，必要nolint须写理由。
-  CI包括后端/契约/前端/E2E与独立Security，但不把未开启的MinIO集成或完整迁移回滚描述为已覆盖。
+  CI包括后端/契约/前端/E2E与独立Security，但默认测试须显式开启真实依赖开关；不把完整迁移回滚描述为已覆盖。
 
 ## 开发环境要点
 
-- 标准端口PG5432、Redis6380、MinIO9000/9001；6379是本机其他项目，禁止额外创建5433实例。
+- 标准端口PG5432、Redis6380、RustFS9000/9001；6379是本机其他项目，禁止额外创建5433实例。
 - Docker凭证助手异常：用`DOCKER_CONFIG=$PWD/.docker-anon`，配置中的cliPluginsExtraDirs需指向本机Docker插件目录。
   `.docker-anon`已忽略；Redis使用compose固定的redis:7.4-alpine。
 - `make dev`启动；`make stop`只匹配bin/api与Vite但会强制终止；优雅停机需给明确PID发SIGTERM。
@@ -76,7 +76,7 @@ TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreS
 - 沙箱Go缓存：`GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache GOSUMDB=off`。
 - `/metrics`默认监听127.0.0.1:9091；启动会主动探测，出现`metrics endpoint is not reachable`要查监听与日志。
 - docs/和AGENTS.md由Git跟踪。旧计划和面试笔记已合并，历史全文从Git查看；不要再创建重复状态表。
-- 真实PG/Redis/MinIO测试需显式环境开关，见开发运维。默认Go测试跳过它们；历史QPS也不是当前容量承诺。
+- 真实PG/Redis/RustFS测试需显式环境开关，见开发运维。默认Go测试跳过它们；历史QPS也不是当前容量承诺。
 
 ## 工作方式（Mentor模式）
 

@@ -151,16 +151,16 @@ func run() error {
 		middleware.HTTPMetrics(httpMetrics),
 		middleware.AccessLog(),
 	)
-	rawStorage, err := storage.New(cfg.MinIOConfig)
+	rawStorage, err := storage.New(cfg.S3Config)
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
 	}
-	// 对象存储的熔断装饰器：MinIO 不可用时快速失败，业务侧降级
+	// 对象存储的熔断装饰器：S3 对象存储不可用时快速失败，业务侧降级
 	// （卡片无封面/详情无播放地址），而不是让每个请求都等到底层超时。
 	var storageClient breaker.StorageClient = rawStorage
 	if cfg.BreakerEnabled {
 		storageClient = breaker.NewStorage(rawStorage, breaker.New(breaker.Config{
-			Name:             "minio",
+			Name:             "s3",
 			FailureThreshold: cfg.BreakerFailureThreshold,
 			OpenDuration:     cfg.BreakerOpenDuration,
 			MaxOpenDuration:  cfg.BreakerMaxOpen,

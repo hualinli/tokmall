@@ -5,7 +5,7 @@
 # 它和 Playwright e2e 的区别：这个脚本只用 curl + psql，任何一步失败都会
 # 打印响应原文，便于在面试现场或故障演练时"当场看到链路"。
 #
-# 前置：make dev（后端 :8080、PostgreSQL :5432、Redis :6380、MinIO :9000）
+# 前置：make dev（后端 :8080、PostgreSQL :5432、Redis :6380、RustFS :9000）
 # 用法：scripts/drill_commerce_loop.sh
 set -euo pipefail
 trap 'echo "[drill] 命令失败于第 $LINENO 行" >&2' ERR
@@ -57,7 +57,7 @@ SKU_ID=$(json "['sku_id']" <<<"$SKU")
 api POST "/api/v1/products/$PRODUCT_ID/skus/$SKU_ID/stock" "$MERCHANT_TOKEN" '{"change":5,"idempotency_key":"drill-stock-'"$SUFFIX"'"}' >/dev/null
 echo "product=$PRODUCT_ID sku=$SKU_ID stock=5"
 
-say "3/9 申请预签名上传 URL 并直传 MinIO"
+say "3/9 申请预签名上传 URL 并直传 RustFS"
 UPLOAD=$(api POST /api/v1/videos/upload-url "$MERCHANT_TOKEN" '{"filename":"drill.mp4","file_size":1048576,"content_type":"video/mp4"}')
 OBJECT_KEY=$(json "['object_key']" <<<"$UPLOAD")
 PUT_URL=$(json "['upload_url']" <<<"$UPLOAD")

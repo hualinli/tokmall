@@ -2655,7 +2655,7 @@ export interface components {
             email: string;
             username: string;
             bio: string;
-            /** @description MinIO key，仅用于 PATCH /me 回传 */
+            /** @description S3 对象 key，仅用于 PATCH /me 回传 */
             avatar_key: string | null;
             /** @description 可显示的预签名 URL（7 天有效），导航栏/个人页直接用 */
             avatar_url: string | null;
@@ -2816,7 +2816,7 @@ export interface components {
         CreateProductRequest: {
             title: string;
             description?: string;
-            /** @description MinIO key，来自图片上传凭证 */
+            /** @description S3 对象 key，来自图片上传凭证 */
             cover_key?: string | null;
         };
         ChangeStatusRequest: {

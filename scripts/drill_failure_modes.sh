@@ -8,7 +8,7 @@
 #   4. 消费者崩溃：未 ACK 的消息是否被 XAUTOCLAIM 认领？
 #   5. 事件丢失（模拟无 AOF 重启）：对账是否能发现并重放？
 #
-# 前置：make dev（后端 + PG + Redis + MinIO 都在跑），且已跑过一次
+# 前置：make dev（后端 + PG + Redis + RustFS 都在跑），且已跑过一次
 # scripts/drill_commerce_loop.sh 产生数据。
 set -euo pipefail
 
@@ -76,9 +76,9 @@ note "对账应把它报成 outbox_delivery 差异，并在 --replay 时重新�
 note "结论：事件丢失不是靠"相信 broker"兜住的，而是靠对账发现 + 幂等重放修复。"
 
 say "6/6 熔断降级（对象存储不可用时快速失败）"
-note "停掉 MinIO，连续请求一个会真正访问 MinIO 的接口（创建视频会 StatObject）："
+note "停掉 RustFS，连续请求一个会真正访问 RustFS 的接口（创建视频会 StatObject）："
 note "注意延迟变化——前几次是真实超时（秒级），阈值之后熔断打开，变成毫秒级快速失败。"
-docker stop tokmall-minio >/dev/null
+docker stop tokmall-rustfs >/dev/null
 BREAKER_SUFFIX=$(date +%s | tail -c 7)
 TOKEN=$(curl -sS -X POST localhost:8080/api/v1/auth/register -H 'Content-Type: application/json' \
   -d "{\"email\":\"drill-breaker-$BREAKER_SUFFIX@example.com\",\"username\":\"dbk$BREAKER_SUFFIX\",\"password\":\"password123\"}" \
@@ -97,9 +97,9 @@ fi
 note "结论：依赖故障时不再让每个请求都等到底层超时（连接池会被拖满），"
 note "而是快速失败并对外返回 503（可重试语义）；依赖恢复后 half-open 探测自动闭合。"
 
-docker start tokmall-minio >/dev/null
+docker start tokmall-rustfs >/dev/null
 sleep 6
-note "MinIO 已恢复，等待冷却期后探测自动闭合："
+note "RustFS 已恢复，等待冷却期后探测自动闭合："
 curl -sS -o /dev/null -w "   probe -> HTTP %{http_code}  %{time_total}s\n" \
   -X POST localhost:8080/api/v1/videos -H 'Content-Type: application/json' \
   -H "Authorization: Bearer ${TOKEN:-}" \
