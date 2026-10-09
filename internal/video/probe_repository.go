@@ -10,6 +10,13 @@ import (
 )
 
 // 待校验队列排除已删除视频；失败记录延后重试，让后续上传得到处理。
+//
+// 时间比较必须用**数据库时钟**（now()），不能把 Go 进程的 time.Now() 作为参数传进来：
+// videos.probe_retry_at 首次写入走的是迁移里的 DEFAULT now()（PostgreSQL 时钟），
+// 只有 DeferProbe 才会用 Go 时钟覆写它——这一列本来就在两个时钟域之间摇摆。
+// 若这里拿应用主机时钟去比，两台机器只要有时钟偏差（容器、VM 休眠恢复、未校时的
+// 开发机），新建视频就会对探测 worker 不可见，可见性延迟等于偏差量。
+// 用同一个时钟源比较就从根上消掉了这个依赖。
 func (r *GormRepository) ListPendingProbe(ctx context.Context, limit int) ([]ProbeCandidate, error) {
 	if limit <= 0 {
 		limit = 1
@@ -21,7 +28,7 @@ func (r *GormRepository) ListPendingProbe(ctx context.Context, limit int) ([]Pro
 	}
 	err := r.db.WithContext(ctx).Model(&Video{}).
 		Select("id, object_key, duration_seconds").
-		Where("media_probe_status = ? AND status <> ? AND probe_retry_at <= ?", string(ProbePending), string(StatusDeleted), time.Now().UTC()).
+		Where("media_probe_status = ? AND status <> ? AND probe_retry_at <= now()", string(ProbePending), string(StatusDeleted)).
 		Order("probe_retry_at ASC, id ASC").Limit(limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err
