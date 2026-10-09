@@ -26,7 +26,7 @@ const (
 	defaultUploadExpiry         = 15 * time.Minute
 	defaultDownloadExpiry       = 2 * time.Hour
 	defaultAvatarExpiry         = 7 * 24 * time.Hour
-	defaultRedisAddr            = "localhost:6380"
+	defaultRedisAddr            = "localhost:6379"
 	defaultRedisDB              = 0
 	defaultFeedCacheTTL         = 60 * time.Second
 	defaultFeedL1Enabled        = true

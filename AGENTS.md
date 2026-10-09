@@ -68,9 +68,9 @@ TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreS
 
 ## 开发环境要点
 
-- 标准端口PG5432、Redis6380、RustFS9000/9001；6379是本机其他项目，禁止额外创建5433实例。
+- 标准端口PG5432、Redis6379、RustFS9000/9001；禁止额外创建5433实例。
 - Docker凭证助手异常：用`DOCKER_CONFIG=$PWD/.docker-anon`，配置中的cliPluginsExtraDirs需指向本机Docker插件目录。
-  `.docker-anon`已忽略；Redis使用compose固定的redis:7.4-alpine。
+  `.docker-anon`已忽略；Redis使用compose固定的redis:8-alpine（Streams/XAUTOCLAIM/XPENDING 语义与7.4一致，已实测）。
 - `make dev`启动；`make stop`只匹配bin/api与Vite但会强制终止；优雅停机需给明确PID发SIGTERM。
   不要`lsof -ti :8080 | xargs kill -9`，可能误杀其他应用。macOS无setsid，后台用nohup；压测用编译的`./bin/api`。
 - 沙箱Go缓存：`GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache GOSUMDB=off`。

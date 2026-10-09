@@ -26,7 +26,7 @@ const (
 	// 不依赖 PostgreSQL 的开关状态。
 	RedisSwitch      = "TOKMALL_RUN_REDIS_INTEGRATION"
 	RedisAddrEnv     = "TOKMALL_TEST_REDIS_ADDR"
-	DefaultRedisAddr = "127.0.0.1:6380"
+	DefaultRedisAddr = "127.0.0.1:6379"
 )
 
 // RequireDSN 返回集成测试用的 PostgreSQL DSN，未开启时跳过测试。

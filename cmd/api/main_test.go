@@ -164,7 +164,7 @@ func TestOpenAPISync(t *testing.T) {
 }
 
 func TestAssembleFollowingFeedCacheInjectsSameImplementation(t *testing.T) {
-	client := redis.NewClient(&redis.Options{Addr: "localhost:6380"})
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	cfg := config.RedisConfig{FollowingCacheEnabled: true, FeedCacheTTL: time.Minute}
 

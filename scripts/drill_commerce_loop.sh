@@ -5,7 +5,7 @@
 # 它和 Playwright e2e 的区别：这个脚本只用 curl + psql，任何一步失败都会
 # 打印响应原文，便于在面试现场或故障演练时"当场看到链路"。
 #
-# 前置：make dev（后端 :8080、PostgreSQL :5432、Redis :6380、RustFS :9000）
+# 前置：make dev（后端 :8080、PostgreSQL :5432、Redis :6379、RustFS :9000）
 # 用法：scripts/drill_commerce_loop.sh
 set -euo pipefail
 trap 'echo "[drill] 命令失败于第 $LINENO 行" >&2' ERR

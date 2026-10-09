@@ -4,7 +4,7 @@
 
 ## 环境与启动
 
-Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Compose 提供 PostgreSQL `localhost:5432`、Redis `localhost:6380`、RustFS `:9000`（控制台 `:9001`），服务名分别为 postgres/redis/rustfs。不要另建 5433 实例。
+Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Compose 提供 PostgreSQL `localhost:5432`、Redis `localhost:6379`、RustFS `:9000`（控制台 `:9001`），服务名分别为 postgres/redis/rustfs。不要另建 5433 实例。
 
 对象存储默认使用固定版本 `rustfs/rustfs:1.0.1`，应用通过通用 `S3_*` 配置访问，客户端库仍是 `minio-go`（S3 SDK，不要求MinIO服务端）。原 `MINIO_*` 环境变量须改名为对应 `S3_*`，包括三个URL有效期；生产校验也使用新变量。RustFS开发端口仅映射到回环，浏览器CORS允许localhost/127.0.0.1的5173端口，部署到其他域名时显式更新 `RUSTFS_CORS_ALLOWED_ORIGINS`。新卷为 `rustfs-data`；不复用或转换旧 `minio-data`，本次迁移不包含历史对象数据。
 
@@ -67,13 +67,15 @@ TOKMALL_RUN_PG_INTEGRATION=1 \
 TOKMALL_RUN_REDIS_INTEGRATION=1 \
 TOKMALL_RUN_S3_INTEGRATION=1 \
 TOKMALL_TEST_DATABASE_DSN='postgres://tokmall:tokmall@localhost:5432/tokmall?sslmode=disable' \
-TOKMALL_TEST_REDIS_ADDR=localhost:6380 \
+TOKMALL_TEST_REDIS_ADDR=localhost:6379 \
 go test ./... -count=1
 ```
 
 PG 测试用隔离 schema；Redis 测试用自己的 key/stream，不要在共享实例盲目 FLUSHDB。S3 测试开关覆盖 [真实存储契约](../internal/storage/upload_integration_test.go)：上传长度/类型签名、ETag封存、防覆盖、下载/回写、Range、CORS、签名到期与幂等删除。默认连接本地RustFS开发凭证，可用 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY` 覆盖；每次建临时bucket并清理自身对象。各测试的依赖条件以测试源文件为准。
 
 2026-10-09迁移验收在RustFS 1.0.1、PostgreSQL 18.4、Redis 7.4的独立测试环境执行：显式开启三个真实依赖开关的全量Go测试通过，storage/config/observability竞态检查、lint、tidy一致性通过；前端类型、构建、30项单测及17项Chromium E2E通过。E2E关闭限流与媒体探测，验证真实直传、发布和Feed播放；媒体工具实测不属于本次迁移验收。CI使用PostgreSQL16，仍需以远端运行结果确认该平台门禁，不把本地结果标为远端CI已通过。
+
+2026-10-09 Redis 7.4→8.10.2 与端口6380→6379复验在RustFS 1.0.1、PostgreSQL 18.6、Redis 8.10.2执行：三个真实依赖开关的全量 `go test ./... -count=1` 通过。重点核对了项目实际使用的Redis 命令面——`SET NX PX` 原子Claim、`INCR` 版本号、限流Lua（INCR+EXPIRE 首次置窗）、`EXPIRE` 分钟桶，以及 Streams 侧 `XGroupCreateMkStream` 的 BUSYGROUP 幂等、`XReadGroup` 阻塞读与 `redis.Nil` 超时识别、`XInfoGroups` 的 pending/lag 解析、`XPendingExt` 的 RetryCount 与认领递增、`XAutoClaim` 三返回值、`XAck`；行为与 7.4 一致，未发现版本差异。outbox 集成测试覆盖了 XAUTOCLAIM 重认领、DLQ 与幂等消费。性能数字仍属历史条件，不因本次版本变更重算。
 
 并发检查示例：`go test -race ./internal/order ./internal/video ./internal/feed ./internal/outbox ./internal/user`。启用上述环境变量后也会运行相应真实依赖分支；全量 race 不是每次改文档都需要运行。
 

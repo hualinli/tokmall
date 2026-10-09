@@ -21,8 +21,8 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_CORS_ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
     ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - rustfs-data:/data
     healthcheck:
@@ -32,11 +32,11 @@ services:
       retries: 30
 
   redis:
-    # 本机 6379 已被其他项目占用，映射到 6380；镜像固定小版本避免隐式升级。
-    image: redis:7.4-alpine
+    # 固定小版本避免隐式升级；8.x 的 Streams / XAUTOCLAIM / XPENDING 语义与 7.4 一致。
+    image: redis:8-alpine
     container_name: tokmall-redis
     ports:
-      - "6380:6379"
+      - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
 
   # 观测栈：默认不启动（profile: monitoring），用 `make monitoring` 起。
