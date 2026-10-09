@@ -239,8 +239,18 @@ func checks(grace time.Duration) []check {
 // Repository 是对账用的只读查询入口（定义在消费侧）。
 type Repository interface {
 	RunCheck(ctx context.Context, name, description, query string, args []any) (CheckResult, error)
-	// MissingReceipts 返回"已发布但没有消费回执且已超过宽限期"的事件 ID。
-	MissingReceipts(ctx context.Context, grace time.Duration) ([]string, error)
+	// MissingReceipts 返回"已发布但没有消费回执且已超过宽限期"的事件。
+	//
+	// consumer 必须显式传入，且要填**应用实际使用的那个消费组名**。
+	// consumed_events 的主键是 (consumer, event_id)，所以“有没有回执”本质上是
+	// 针对某个消费组而言的：组 A 处理过的事件，对组 B 仍然是缺失的。早先的
+	// 实现只按 event_id 关联、不带 consumer，于是任何一个组的回执都会把其他组
+	// 的缺失一并掩盖——多一个消费组（或改过 OUTBOX_CONSUMER_GROUP）之后，
+	// 对账对落后那个组完全失明，而它恰恰是发现问题的那个工具。
+	//
+	// consumer 为空时退化为“不限定消费组”（任何组有回执即视为已消费），
+	// 仅供只想看全局情况的场景使用；生产装配必须传具体组名。
+	MissingReceipts(ctx context.Context, consumer string, grace time.Duration) ([]string, error)
 	// RequeueEvents 把指定事件重新放回待投递（重放，event_id 不变）。
 	RequeueEvents(ctx context.Context, eventIDs []string, now time.Time) (int, error)
 	// RebuildProjection 从事实（orders/order_items/refunds）重建作者日销投影。
@@ -297,17 +307,30 @@ func normalizeValue(value any) any {
 	return value
 }
 
-func (r *GormRepository) MissingReceipts(ctx context.Context, grace time.Duration) ([]string, error) {
+func (r *GormRepository) MissingReceipts(ctx context.Context, consumer string, grace time.Duration) ([]string, error) {
+	// 关联条件必须带上 consumer，且必须写在 ON 子句里而不是 WHERE：
+	// LEFT JOIN 后右表无匹配时 c.* 全是 NULL，把 c.consumer = ? 放到 WHERE
+	// 会把 LEFT JOIN 隐式降级为 INNER JOIN（NULL = 'x' 求值为 NULL），
+	// 恰好把"该组确实没有回执"的行——也正是我们要报出来的行——全部滤掉。
+	// 空 consumer 时不限定消费组，保持"任何组有回执即视为已消费"的旧语义。
+	join := "c.event_id = e.event_id"
+	args := []any{}
+	if consumer != "" {
+		join += " AND c.consumer = ?"
+		args = append(args, consumer)
+	}
+	args = append(args, int(grace.Seconds()))
+
 	var ids []string
-	err := r.db.WithContext(ctx).Raw(`
+	query := `
 		SELECT e.event_id::text
 		FROM outbox_events e
-		LEFT JOIN consumed_events c ON c.event_id = e.event_id
+		LEFT JOIN consumed_events c ON ` + join + `
 		WHERE e.status = 'PUBLISHED'
 			AND c.event_id IS NULL
-			AND e.published_at < now() - (? * interval '1 second')`,
-		int(grace.Seconds())).Scan(&ids).Error
-	if err != nil {
+			AND e.published_at < now() - (? * interval '1 second')`
+
+	if err := r.db.WithContext(ctx).Raw(query, args...).Scan(&ids).Error; err != nil {
 		return nil, err
 	}
 	return ids, nil

@@ -52,7 +52,10 @@ func run() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	runner := reconcile.NewRunner(reconcile.NewRepository(db), reconcile.WithGrace(*grace))
+	runner := reconcile.NewRunner(reconcile.NewRepository(db),
+		reconcile.WithGrace(*grace),
+		// 回执按 (consumer, event_id) 存，必须指明要核对哪个消费组。
+		reconcile.WithConsumer(cfg.OutboxConsumerGroup))
 	if *rebuild {
 		rows, err := runner.RebuildProjection(ctx)
 		if err != nil {

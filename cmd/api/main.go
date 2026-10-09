@@ -473,6 +473,9 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 	if cfg.ReconcileEnabled {
 		runner := reconcile.NewRunner(reconcile.NewRepository(db),
 			reconcile.WithGrace(cfg.ReconcileGrace),
+			// 回执按 (consumer, event_id) 存，不告诉对账用哪个组，它就无法判断
+			// “有没有回执”——必须与消费者实际使用的组名一致。
+			reconcile.WithConsumer(cfg.OutboxConsumerGroup),
 			reconcile.WithStats(observability.NewReconcileMetrics(registry)))
 		worker := reconcile.NewWorker(runner, cfg.ReconcileInterval, true)
 		workerCtx, cancel := context.WithCancel(ctx)

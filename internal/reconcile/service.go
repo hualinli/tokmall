@@ -12,8 +12,12 @@ type Runner struct {
 	// grace 是"事件已发布但还没被消费"的容忍时间：正常投递 + 消费是秒级，
 	// 超过它还没有回执，才值得怀疑事件真的丢了。
 	grace time.Duration
-	stats Stats
-	now   func() time.Time
+	// consumer 是要核对回执的消费组名。它是**部署事实**而非库内细节：
+	// consumed_events 主键是 (consumer, event_id)，不指明组名就无法判断
+	// "有没有回执"。生产装配必须传应用实际使用的组名；空值退化为不限定。
+	consumer string
+	stats    Stats
+	now      func() time.Time
 }
 
 // Stats 是对账指标接口（实现在 observability，避免本包依赖 prometheus）。
@@ -37,6 +41,11 @@ func WithStats(stats Stats) Option {
 
 func WithGrace(grace time.Duration) Option {
 	return func(r *Runner) { r.grace = grace }
+}
+
+// WithConsumer 指定要核对回执的消费组名（通常来自 cfg.OutboxConsumerGroup）。
+func WithConsumer(consumer string) Option {
+	return func(r *Runner) { r.consumer = consumer }
 }
 
 func NewRunner(repo Repository, opts ...Option) *Runner {
@@ -88,7 +97,7 @@ func (r *Runner) Run(ctx context.Context) (*Report, error) {
 // 这条路径覆盖的是 broker 侧真的丢数据（例如 Redis 未开 AOF 就重启）——
 // 我们不用"相信 broker 不丢"来保证最终一致。
 func (r *Runner) ReplayMissingReceipts(ctx context.Context) (int, error) {
-	ids, err := r.repo.MissingReceipts(ctx, r.grace)
+	ids, err := r.repo.MissingReceipts(ctx, r.consumer, r.grace)
 	if err != nil {
 		return 0, err
 	}
@@ -100,7 +109,7 @@ func (r *Runner) ReplayMissingReceipts(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	r.stats.Replayed(replayed)
-	slog.Warn("replayed events missing consumer receipts", "count", replayed)
+	slog.Warn("replayed events missing consumer receipts", "count", replayed, "consumer", r.consumer)
 	return replayed, nil
 }
 
