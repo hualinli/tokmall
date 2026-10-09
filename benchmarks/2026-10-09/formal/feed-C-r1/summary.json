@@ -1,0 +1,71 @@
+{
+  "scenario": "feed",
+  "concurrency": 50,
+  "sku_count": 1,
+  "started_at": "2026-10-09T10:22:31.748464+08:00",
+  "ended_at": "2026-10-09T10:25:31.758594+08:00",
+  "elapsed_seconds": 180.010075083,
+  "configured_seconds": 180,
+  "requests": 1599186,
+  "success": 1599186,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 8883.869412657257,
+  "request_rps": 8883.869412657257,
+  "successful_transactions": 0,
+  "successful_orders_per_second": 0,
+  "statuses": {
+    "200": 1599186
+  },
+  "request_latency": {
+    "count": 1599186,
+    "p50_ms": 5.108083,
+    "p95_ms": 9.401,
+    "p99_ms": 16.551583,
+    "max_ms": 207.055375
+  },
+  "successful_transaction_latency": {
+    "count": 0,
+    "p50_ms": 0,
+    "p95_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "stages": {
+    "request": {
+      "success": 1599186,
+      "failures": 0,
+      "latency": {
+        "count": 1599186,
+        "p50_ms": 5.108083,
+        "p95_ms": 9.401,
+        "p99_ms": 16.551583,
+        "max_ms": 207.055375
+      }
+    }
+  },
+  "metric_deltas": {
+    "cache_l1_eviction_total": 0.0,
+    "cache_l1_hit_total": 1598493.0,
+    "cache_l1_miss_total": 696.0,
+    "cache_l1_stale_total": 0.0,
+    "db_pool_wait_count_total{db=\"tokmall\"}": 3155663.0,
+    "db_pool_wait_duration_seconds{db=\"tokmall\"}": 3324.172216298,
+    "feed_cache_hit_total": 3198074.0,
+    "feed_cache_miss_total": 301.0,
+    "go_memstats_alloc_bytes_total": 117095683584.0,
+    "go_memstats_frees_total": 773780563.0,
+    "go_memstats_lookups_total": 0.0,
+    "go_memstats_mallocs_total": 773907893.0,
+    "hot_feed_window_rebuild_total{source=\"scheduled\"}": 3.0,
+    "media_faststart_applied_total": 0.0,
+    "reconcile_replayed_events_total": 0.0,
+    "redis_slow_commands_total{command=\"get\"}": 2.0
+  },
+  "api_cpu_seconds": 703.4,
+  "api_cpu_percent_average": 390.75590612118384,
+  "api_peak_rss_mib": 92.78125,
+  "client_cpu_percent_sampled": 90.95741937486399,
+  "client_peak_rss_mib": 94.109375,
+  "cache_group": "C"
+}

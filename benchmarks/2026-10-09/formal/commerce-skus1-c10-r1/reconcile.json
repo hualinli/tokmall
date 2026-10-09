@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-10-09T10:49:00.586537+08:00",
+  "duration_ms": 187930875,
+  "checks": [
+    {
+      "name": "inventory_balance",
+      "description": "库存余额必须等于流水累计变更（期初为 0，所有变更都有流水）",
+      "differences": []
+    },
+    {
+      "name": "order_stock_ledger",
+      "description": "每个非待支付订单恰好有一条下单流水，且回补流水条数与终态匹配",
+      "differences": []
+    },
+    {
+      "name": "refund_order_consistency",
+      "description": "订单的售后状态必须与退款单一致，且退款金额等于订单金额与成功支付金额",
+      "differences": []
+    },
+    {
+      "name": "order_payment_consistency",
+      "description": "已支付订单必须有且仅有一笔成功支付，未支付订单不得有成功支付",
+      "differences": []
+    },
+    {
+      "name": "author_sales_projection",
+      "description": "事件驱动投影必须与订单事实一致（毛额与退款分列口径）",
+      "differences": []
+    },
+    {
+      "name": "coupon_issuance",
+      "description": "券的发行量必须等于实际持券数，且不超发行上限",
+      "differences": []
+    },
+    {
+      "name": "coupon_usage",
+      "description": "已核销的券必须对应订单，且订单优惠金额等于券面额",
+      "differences": []
+    },
+    {
+      "name": "order_amount_split",
+      "description": "订单金额必须满足 实付 = 原价 - 优惠，且用券订单必须引用持券",
+      "differences": []
+    },
+    {
+      "name": "outbox_delivery",
+      "description": "已发布事件必须在宽限期内拿到消费回执，否则说明事件可能已丢失",
+      "differences": []
+    }
+  ]
+}

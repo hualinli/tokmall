@@ -1,0 +1,80 @@
+START feed-A-r1 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-A-r1 30s db_wait= 587367.0
+PROGRESS feed-A-r1 62s db_wait= 1225628.0
+PROGRESS feed-A-r1 95s db_wait= 1818992.0
+PROGRESS feed-A-r1 127s db_wait= 2375735.0
+PROGRESS feed-A-r1 159s db_wait= 2862724.0
+DONE feed-A-r1 success_rps= 5866.6 orders_s= 0 p99_ms= 21.25 errors= 0
+START feed-B-r1 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-B-r1 30s db_wait= 497177.0
+PROGRESS feed-B-r1 62s db_wait= 986959.0
+PROGRESS feed-B-r1 95s db_wait= 1408846.0
+PROGRESS feed-B-r1 127s db_wait= 1786297.0
+PROGRESS feed-B-r1 159s db_wait= 2178111.0
+DONE feed-B-r1 success_rps= 7247.5 orders_s= 0 p99_ms= 20.82 errors= 0
+START feed-C-r1 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-C-r1 30s db_wait= 508254.0
+PROGRESS feed-C-r1 62s db_wait= 1109985.0
+PROGRESS feed-C-r1 94s db_wait= 1689952.0
+PROGRESS feed-C-r1 127s db_wait= 2236042.0
+PROGRESS feed-C-r1 159s db_wait= 2786547.0
+DONE feed-C-r1 success_rps= 8883.9 orders_s= 0 p99_ms= 16.55 errors= 0
+START feed-C-r2 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-C-r2 30s db_wait= 625697.0
+PROGRESS feed-C-r2 62s db_wait= 1305361.0
+PROGRESS feed-C-r2 94s db_wait= 1793962.0
+PROGRESS feed-C-r2 127s db_wait= 2209237.0
+PROGRESS feed-C-r2 159s db_wait= 2640804.0
+DONE feed-C-r2 success_rps= 8234.6 orders_s= 0 p99_ms= 17.21 errors= 0
+START feed-B-r2 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-B-r2 30s db_wait= 429230.0
+PROGRESS feed-B-r2 62s db_wait= 908065.0
+PROGRESS feed-B-r2 94s db_wait= 1284683.0
+PROGRESS feed-B-r2 127s db_wait= 1632265.0
+PROGRESS feed-B-r2 159s db_wait= 1997349.0
+DONE feed-B-r2 success_rps= 6742.5 orders_s= 0 p99_ms= 22.34 errors= 0
+START feed-A-r2 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-A-r2 30s db_wait= 464641.0
+PROGRESS feed-A-r2 62s db_wait= 923664.0
+PROGRESS feed-A-r2 95s db_wait= 1287870.0
+PROGRESS feed-A-r2 127s db_wait= 1618253.0
+PROGRESS feed-A-r2 159s db_wait= 1966783.0
+DONE feed-A-r2 success_rps= 4138.4 orders_s= 0 p99_ms= 28.6 errors= 0
+START feed-A-r3 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-A-r3 30s db_wait= 478685.0
+PROGRESS feed-A-r3 62s db_wait= 951158.0
+PROGRESS feed-A-r3 94s db_wait= 1327747.0
+PROGRESS feed-A-r3 127s db_wait= 1663745.0
+PROGRESS feed-A-r3 159s db_wait= 2017737.0
+DONE feed-A-r3 success_rps= 4262.8 orders_s= 0 p99_ms= 26.78 errors= 0
+START feed-B-r3 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-B-r3 30s db_wait= 478795.0
+PROGRESS feed-B-r3 62s db_wait= 970781.0
+PROGRESS feed-B-r3 94s db_wait= 1376231.0
+PROGRESS feed-B-r3 127s db_wait= 1744228.0
+PROGRESS feed-B-r3 159s db_wait= 2117862.0
+DONE feed-B-r3 success_rps= 7111.6 orders_s= 0 p99_ms= 20.26 errors= 0
+START feed-C-r3 seconds= 180 clients= 50 skus= 1
+PROGRESS feed-C-r3 30s db_wait= 580633.0
+PROGRESS feed-C-r3 62s db_wait= 1200807.0
+PROGRESS feed-C-r3 95s db_wait= 1689643.0
+PROGRESS feed-C-r3 127s db_wait= 2118651.0
+PROGRESS feed-C-r3 159s db_wait= 2620098.0
+DONE feed-C-r3 success_rps= 8327.2 orders_s= 0 p99_ms= 17.36 errors= 0
+START commerce-skus1-c10-r1 seconds= 120 clients= 10 skus= 1
+PROGRESS commerce-skus1-c10-r1 30s db_wait= 0.0
+PROGRESS commerce-skus1-c10-r1 63s db_wait= 0.0
+PROGRESS commerce-skus1-c10-r1 95s db_wait= 0.0
+DONE commerce-skus1-c10-r1 success_rps= 646.7 orders_s= 323.3 p99_ms= 86.61 errors= 0
+START commerce-skus100-c10-r1 seconds= 120 clients= 10 skus= 100
+PROGRESS commerce-skus100-c10-r1 30s db_wait= 0.0
+PROGRESS commerce-skus100-c10-r1 62s db_wait= 0.0
+PROGRESS commerce-skus100-c10-r1 95s db_wait= 0.0
+Traceback (most recent call last):
+  File "/Users/benchmark/Projects/TokMall/scripts/benchmark_backend.py", line 343, in <module>
+    main()
+  File "/Users/benchmark/Projects/TokMall/scripts/benchmark_backend.py", line 335, in main
+    run_case(output,db,bucket,workroot,
+  File "/Users/benchmark/Projects/TokMall/scripts/benchmark_backend.py", line 257, in run_case
+    raise RuntimeError('post-load reconciliation did not converge')
+RuntimeError: post-load reconciliation did not converge

@@ -1,0 +1,97 @@
+{
+  "scenario": "commerce",
+  "concurrency": 10,
+  "sku_count": 1,
+  "started_at": "2026-10-09T10:46:57.932535+08:00",
+  "ended_at": "2026-10-09T10:48:57.966145+08:00",
+  "elapsed_seconds": 120.033501834,
+  "configured_seconds": 120,
+  "requests": 77620,
+  "success": 77620,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 646.6527995437837,
+  "request_rps": 646.6527995437837,
+  "successful_transactions": 38810,
+  "successful_orders_per_second": 323.32639977189183,
+  "statuses": {
+    "order_created": 38810,
+    "order_paid": 38810
+  },
+  "request_latency": {
+    "count": 77620,
+    "p50_ms": 6.799041,
+    "p95_ms": 51.518791,
+    "p99_ms": 86.609917,
+    "max_ms": 448.5115
+  },
+  "successful_transaction_latency": {
+    "count": 38810,
+    "p50_ms": 24.571541,
+    "p95_ms": 71.1965,
+    "p99_ms": 106.993583,
+    "max_ms": 458.021167
+  },
+  "stages": {
+    "create": {
+      "success": 38810,
+      "failures": 0,
+      "latency": {
+        "count": 38810,
+        "p50_ms": 19.713791,
+        "p95_ms": 65.94825,
+        "p99_ms": 101.365459,
+        "max_ms": 448.5115
+      }
+    },
+    "pay": {
+      "success": 38810,
+      "failures": 0,
+      "latency": {
+        "count": 38810,
+        "p50_ms": 4.677834,
+        "p95_ms": 6.681667,
+        "p99_ms": 8.614542,
+        "max_ms": 235.419542
+      }
+    }
+  },
+  "metric_deltas": {
+    "cache_l1_eviction_total": 0.0,
+    "cache_l1_hit_total": 0.0,
+    "cache_l1_miss_total": 0.0,
+    "cache_l1_stale_total": 0.0,
+    "db_pool_wait_count_total{db=\"tokmall\"}": 0.0,
+    "db_pool_wait_duration_seconds{db=\"tokmall\"}": 0.0,
+    "feed_cache_hit_total": 0.0,
+    "feed_cache_miss_total": 0.0,
+    "go_memstats_alloc_bytes_total": 8065291544.0,
+    "go_memstats_frees_total": 68862134.0,
+    "go_memstats_lookups_total": 0.0,
+    "go_memstats_mallocs_total": 68878140.0,
+    "hot_feed_window_rebuild_total{source=\"scheduled\"}": 2.0,
+    "media_faststart_applied_total": 0.0,
+    "outbox_consumer_processed_total{event_type=\"commerce.order.paid.v1\"}": 38810.0,
+    "outbox_published_total{event_type=\"commerce.order.paid.v1\"}": 38810.0,
+    "reconcile_replayed_events_total": 0.0,
+    "redis_slow_commands_total{command=\"xadd\"}": 2.0
+  },
+  "api_cpu_seconds": 85.15,
+  "api_cpu_percent_average": 70.93852857659519,
+  "api_peak_rss_mib": 105.515625,
+  "client_cpu_percent_sampled": 10.729727164210782,
+  "client_peak_rss_mib": 20.671875,
+  "cache_group": "C",
+  "database_facts": {
+    "orders": 38810,
+    "paid_orders": 38810,
+    "payment_rows": 38810,
+    "inventory_quantity": 961190,
+    "inventory_ledger_sum": 961190,
+    "inventory_negative": 0,
+    "outbox_due": 0,
+    "outbox_delayed": 38810,
+    "outbox_dead": 0
+  },
+  "reconcile_exit_code": 0
+}

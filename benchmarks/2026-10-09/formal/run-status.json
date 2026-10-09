@@ -1,0 +1,22 @@
+{
+  "planned_feed_cases": 9,
+  "completed_valid_feed_cases": 9,
+  "planned_commerce_cases": 18,
+  "completed_valid_commerce_cases": 1,
+  "failed_commerce_cases": 1,
+  "remaining_commerce_cases_not_run": 16,
+  "reason": "Stopped on outbox receipt drift; subsequent explicit replay recovered. No valid three-round commerce baseline.",
+  "failure_stream": {
+    "maxlen_configured": 10000,
+    "length_observed": 10009,
+    "pending": 0,
+    "lag": 0,
+    "entries_read": 66351,
+    "receipts": 38366,
+    "missing_receipts": 27985,
+    "earliest_retained_order_id": 56343
+  },
+  "resources_cleaned": true,
+  "recovery_missing_receipts": 0,
+  "recovery_reconcile_exit_code": 0
+}

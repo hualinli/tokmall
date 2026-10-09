@@ -1,0 +1,1 @@
+{"orders" : 66351, "paid_orders" : 66351, "payments" : 66351, "inventory_quantity" : 933649, "inventory_ledger_sum" : 933649, "negative" : 0, "missing_receipts" : 27985, "outbox_due" : 0, "outbox_delayed" : 66351}

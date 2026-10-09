@@ -1,0 +1,19 @@
+INSERT 0 30000
+INSERT 0 1000000
+ANALYZE
+ANALYZE
+  ?column?   
+-------------
+ users=30000
+(1 row)
+
+    ?column?    
+----------------
+ videos=1000000
+(1 row)
+
+     ?column?      
+-------------------
+ published=1000000
+(1 row)
+

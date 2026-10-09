@@ -1,0 +1,70 @@
+{
+  "scenario": "feed",
+  "concurrency": 50,
+  "sku_count": 1,
+  "started_at": "2026-10-09T10:33:10.569929+08:00",
+  "ended_at": "2026-10-09T10:36:10.586284+08:00",
+  "elapsed_seconds": 180.012455416,
+  "configured_seconds": 180,
+  "requests": 744959,
+  "success": 744959,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 4138.374749005207,
+  "request_rps": 4138.374749005207,
+  "successful_transactions": 0,
+  "successful_orders_per_second": 0,
+  "statuses": {
+    "200": 744959
+  },
+  "request_latency": {
+    "count": 744959,
+    "p50_ms": 11.203875,
+    "p95_ms": 19.909709,
+    "p99_ms": 28.597792,
+    "max_ms": 113.507125
+  },
+  "successful_transaction_latency": {
+    "count": 0,
+    "p50_ms": 0,
+    "p95_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "stages": {
+    "request": {
+      "success": 744959,
+      "failures": 0,
+      "latency": {
+        "count": 744959,
+        "p50_ms": 11.203875,
+        "p95_ms": 19.909709,
+        "p99_ms": 28.597792,
+        "max_ms": 113.507125
+      }
+    }
+  },
+  "metric_deltas": {
+    "cache_l1_eviction_total": 0.0,
+    "cache_l1_hit_total": 0.0,
+    "cache_l1_miss_total": 0.0,
+    "cache_l1_stale_total": 0.0,
+    "db_pool_wait_count_total{db=\"tokmall\"}": 2204709.0,
+    "db_pool_wait_duration_seconds{db=\"tokmall\"}": 3435.353850541,
+    "feed_cache_hit_total": 0.0,
+    "feed_cache_miss_total": 0.0,
+    "go_memstats_alloc_bytes_total": 186520684664.0,
+    "go_memstats_frees_total": 2175182385.0,
+    "go_memstats_lookups_total": 0.0,
+    "go_memstats_mallocs_total": 2175194606.0,
+    "hot_feed_window_rebuild_total{source=\"scheduled\"}": 3.0,
+    "media_faststart_applied_total": 0.0,
+    "reconcile_replayed_events_total": 0.0
+  },
+  "api_cpu_seconds": 739.55,
+  "api_cpu_percent_average": 410.8326828223836,
+  "api_peak_rss_mib": 102.25,
+  "client_cpu_percent_sampled": 51.415317561743336,
+  "client_peak_rss_mib": 55.34375,
+  "cache_group": "A"
+}

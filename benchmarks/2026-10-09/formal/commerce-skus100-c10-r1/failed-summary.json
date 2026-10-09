@@ -1,0 +1,72 @@
+{
+  "scenario": "commerce",
+  "concurrency": 10,
+  "sku_count": 100,
+  "started_at": "2026-10-09T10:49:08.992648+08:00",
+  "ended_at": "2026-10-09T10:51:09.01235+08:00",
+  "elapsed_seconds": 120.016312292,
+  "configured_seconds": 120,
+  "requests": 132702,
+  "success": 132702,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 1105.6996958641396,
+  "request_rps": 1105.6996958641396,
+  "successful_transactions": 66351,
+  "successful_orders_per_second": 552.8498479320698,
+  "request_latency": {
+    "count": 132702,
+    "p50_ms": 8.405666,
+    "p95_ms": 13.687541,
+    "p99_ms": 25.393584,
+    "max_ms": 165.542209
+  },
+  "successful_transaction_latency": {
+    "count": 66351,
+    "p50_ms": 16.971916,
+    "p95_ms": 27.122125,
+    "p99_ms": 43.513041,
+    "max_ms": 231.568959
+  },
+  "stages": {
+    "create": {
+      "success": 66351,
+      "failures": 0,
+      "latency": {
+        "count": 66351,
+        "p50_ms": 8.796792,
+        "p95_ms": 14.538667,
+        "p99_ms": 26.573583,
+        "max_ms": 165.542209
+      }
+    },
+    "pay": {
+      "success": 66351,
+      "failures": 0,
+      "latency": {
+        "count": 66351,
+        "p50_ms": 7.998042,
+        "p95_ms": 12.757958,
+        "p99_ms": 23.894375,
+        "max_ms": 151.418042
+      }
+    }
+  },
+  "statuses": {
+    "order_created": 66351,
+    "order_paid": 66351
+  },
+  "database_facts": {
+    "orders": 66351,
+    "paid_orders": 66351,
+    "payments": 66351,
+    "inventory_quantity": 933649,
+    "inventory_ledger_sum": 933649,
+    "negative": 0,
+    "missing_receipts": 27985,
+    "outbox_due": 0,
+    "outbox_delayed": 66351
+  },
+  "reconcile_exit_code": 1,
+  "exclusion_reason": "HTTP succeeded, but 27985 published events had no receipt after post-load wait. Excluded from valid throughput baseline; separately recovered with explicit replay."
+}

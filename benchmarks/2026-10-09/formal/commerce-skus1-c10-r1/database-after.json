@@ -1,0 +1,216 @@
+{
+  "database": {
+    "xact_commit": 25049966,
+    "xact_rollback": 0,
+    "blks_read": 275199,
+    "blks_hit": 423967259,
+    "tup_returned": 271965950,
+    "tup_fetched": 234203985,
+    "tup_inserted": 1304327,
+    "tup_updated": 155506,
+    "tup_deleted": 67,
+    "deadlocks": 0,
+    "blk_read_time": 744.467,
+    "blk_write_time": 613.192
+  },
+  "tables": [
+    {
+      "relname": "author_sales_daily",
+      "seq_scan": 2,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "consumed_events",
+      "seq_scan": 4,
+      "idx_scan": 38787,
+      "n_tup_ins": 38787,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 38980
+    },
+    {
+      "relname": "coupons",
+      "seq_scan": 6,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "follows",
+      "seq_scan": 2,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "inventory",
+      "seq_scan": 3,
+      "idx_scan": 38802,
+      "n_tup_ins": 1,
+      "n_tup_upd": 38801,
+      "n_tup_del": 0,
+      "n_live_tup": 1
+    },
+    {
+      "relname": "inventory_transactions",
+      "seq_scan": 8,
+      "idx_scan": 1,
+      "n_tup_ins": 38801,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 38841
+    },
+    {
+      "relname": "likes",
+      "seq_scan": 2,
+      "idx_scan": 10953377,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "object_delete_jobs",
+      "seq_scan": 4,
+      "idx_scan": 211,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "order_items",
+      "seq_scan": 6,
+      "idx_scan": 38800,
+      "n_tup_ins": 38800,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 39001
+    },
+    {
+      "relname": "orders",
+      "seq_scan": 31,
+      "idx_scan": 233215,
+      "n_tup_ins": 38800,
+      "n_tup_upd": 38800,
+      "n_tup_del": 0,
+      "n_live_tup": 38929
+    },
+    {
+      "relname": "outbox_events",
+      "seq_scan": 2130,
+      "idx_scan": 4651,
+      "n_tup_ins": 77600,
+      "n_tup_upd": 77316,
+      "n_tup_del": 0,
+      "n_live_tup": 77723
+    },
+    {
+      "relname": "payments",
+      "seq_scan": 5046,
+      "idx_scan": 67524,
+      "n_tup_ins": 38800,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 38886
+    },
+    {
+      "relname": "play_events",
+      "seq_scan": 2,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "products",
+      "seq_scan": 18,
+      "idx_scan": 77604,
+      "n_tup_ins": 1,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 1
+    },
+    {
+      "relname": "refunds",
+      "seq_scan": 10,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "schema_migrations",
+      "seq_scan": 60,
+      "idx_scan": 0,
+      "n_tup_ins": 48,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 1
+    },
+    {
+      "relname": "skus",
+      "seq_scan": 7,
+      "idx_scan": 116404,
+      "n_tup_ins": 1,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 1
+    },
+    {
+      "relname": "upload_tickets",
+      "seq_scan": 214,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "user_coupons",
+      "seq_scan": 6,
+      "idx_scan": 0,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "users",
+      "seq_scan": 14,
+      "idx_scan": 60217947,
+      "n_tup_ins": 30011,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 30011
+    },
+    {
+      "relname": "video_products",
+      "seq_scan": 8,
+      "idx_scan": 10953377,
+      "n_tup_ins": 0,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 0
+    },
+    {
+      "relname": "videos",
+      "seq_scan": 26,
+      "idx_scan": 7761941,
+      "n_tup_ins": 1000000,
+      "n_tup_upd": 0,
+      "n_tup_del": 0,
+      "n_live_tup": 1000000
+    }
+  ]
+}

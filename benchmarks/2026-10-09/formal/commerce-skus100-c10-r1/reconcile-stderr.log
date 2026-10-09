@@ -1,0 +1,2 @@
+2026/10/09 10:51:43 ERROR reconcile drift detected check=outbox_delivery differences=50 sample="map[aggregate_id:32690 event_id:01a11e91-5bda-76ce-8a17-0ae0b910ed3b event_type:commerce.order.paid.v1 published_at:2026-10-09 10:50:06.739806 +0800 CST]"
+2026/10/09 10:51:43 ERROR reconcile found differences checks=9 differences=50

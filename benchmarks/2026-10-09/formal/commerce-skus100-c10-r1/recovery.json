@@ -1,0 +1,17 @@
+{
+  "method": "explicit existing reconcile --replay --grace 0s; no new HTTP load",
+  "samples": [
+    {
+      "elapsed_seconds": 0.06778850000000003,
+      "missing_receipts": 27985
+    },
+    {
+      "elapsed_seconds": 20.682304124999998,
+      "missing_receipts": 6084
+    },
+    {
+      "elapsed_seconds": 41.191034292,
+      "missing_receipts": 0
+    }
+  ]
+}

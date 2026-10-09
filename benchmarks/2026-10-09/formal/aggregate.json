@@ -1,0 +1,274 @@
+[
+  {
+    "group": "commerce-skus1-c10",
+    "rounds": 1,
+    "cases": [
+      "commerce-skus1-c10-r1"
+    ],
+    "success_rps": {
+      "median": 646.6527995437837,
+      "min": 646.6527995437837,
+      "max": 646.6527995437837
+    },
+    "orders_per_second": {
+      "median": 323.32639977189183,
+      "min": 323.32639977189183,
+      "max": 323.32639977189183
+    },
+    "request_p95_ms": {
+      "median": 51.518791,
+      "min": 51.518791,
+      "max": 51.518791
+    },
+    "request_p99_ms": {
+      "median": 86.609917,
+      "min": 86.609917,
+      "max": 86.609917
+    },
+    "transaction_p95_ms": {
+      "median": 71.1965,
+      "min": 71.1965,
+      "max": 71.1965
+    },
+    "transaction_p99_ms": {
+      "median": 106.993583,
+      "min": 106.993583,
+      "max": 106.993583
+    },
+    "api_cpu_percent": {
+      "median": 70.93852857659519,
+      "min": 70.93852857659519,
+      "max": 70.93852857659519
+    },
+    "api_peak_rss_mib": {
+      "median": 105.515625,
+      "min": 105.515625,
+      "max": 105.515625
+    },
+    "db_wait_count": {
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "db_wait_seconds": {
+      "median": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "requests": 77620,
+    "success": 77620,
+    "business_failures": 0,
+    "system_failures": 0,
+    "successful_transactions": 38810,
+    "error_rate": 0.0,
+    "all_reconciled": true,
+    "database_facts": {
+      "commerce-skus1-c10-r1": {
+        "orders": 38810,
+        "paid_orders": 38810,
+        "payment_rows": 38810,
+        "inventory_quantity": 961190,
+        "inventory_ledger_sum": 961190,
+        "inventory_negative": 0,
+        "outbox_due": 0,
+        "outbox_delayed": 38810,
+        "outbox_dead": 0
+      }
+    }
+  },
+  {
+    "group": "feed-A",
+    "rounds": 3,
+    "cases": [
+      "feed-A-r1",
+      "feed-A-r2",
+      "feed-A-r3"
+    ],
+    "success_rps": {
+      "median": 4262.791654474491,
+      "min": 4138.374749005207,
+      "max": 5866.622660720819
+    },
+    "orders_per_second": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "request_p95_ms": {
+      "median": 19.111375,
+      "min": 14.280208,
+      "max": 19.909709
+    },
+    "request_p99_ms": {
+      "median": 26.7835,
+      "min": 21.250875,
+      "max": 28.597792
+    },
+    "transaction_p95_ms": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "transaction_p99_ms": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "api_cpu_percent": {
+      "median": 418.61252776018034,
+      "min": 410.8326828223836,
+      "max": 433.8776486849971
+    },
+    "api_peak_rss_mib": {
+      "median": 102.25,
+      "min": 97.234375,
+      "max": 103.484375
+    },
+    "db_wait_count": {
+      "median": 2272784.0,
+      "min": 2204709.0,
+      "max": 3105126.0
+    },
+    "db_wait_seconds": {
+      "median": 3424.165248371,
+      "min": 3282.506755352,
+      "max": 3435.353850541
+    },
+    "requests": 2568380,
+    "success": 2568380,
+    "business_failures": 0,
+    "system_failures": 0,
+    "successful_transactions": 0,
+    "error_rate": 0.0
+  },
+  {
+    "group": "feed-B",
+    "rounds": 3,
+    "cases": [
+      "feed-B-r1",
+      "feed-B-r2",
+      "feed-B-r3"
+    ],
+    "success_rps": {
+      "median": 7111.5502203778415,
+      "min": 6742.476076608103,
+      "max": 7247.495366917445
+    },
+    "orders_per_second": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "request_p95_ms": {
+      "median": 10.214083,
+      "min": 10.174416,
+      "max": 10.737042
+    },
+    "request_p99_ms": {
+      "median": 20.8165,
+      "min": 20.260916,
+      "max": 22.336833
+    },
+    "transaction_p95_ms": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "transaction_p99_ms": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "api_cpu_percent": {
+      "median": 331.26158697348984,
+      "min": 330.31469486615583,
+      "max": 344.58305177831585
+    },
+    "api_peak_rss_mib": {
+      "median": 86.125,
+      "min": 85.3125,
+      "max": 86.578125
+    },
+    "db_wait_count": {
+      "median": 2332804.0,
+      "min": 2233489.0,
+      "max": 2419987.0
+    },
+    "db_wait_seconds": {
+      "median": 1617.459546653,
+      "min": 1560.982200705,
+      "max": 1643.13717863
+    },
+    "requests": 3799757,
+    "success": 3799757,
+    "business_failures": 0,
+    "system_failures": 0,
+    "successful_transactions": 0,
+    "error_rate": 0.0
+  },
+  {
+    "group": "feed-C",
+    "rounds": 3,
+    "cases": [
+      "feed-C-r1",
+      "feed-C-r2",
+      "feed-C-r3"
+    ],
+    "success_rps": {
+      "median": 8327.157167346655,
+      "min": 8234.61390411176,
+      "max": 8883.869412657257
+    },
+    "orders_per_second": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "request_p95_ms": {
+      "median": 10.695042,
+      "min": 9.401,
+      "max": 11.126084
+    },
+    "request_p99_ms": {
+      "median": 17.212,
+      "min": 16.551583,
+      "max": 17.364042
+    },
+    "transaction_p95_ms": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "transaction_p99_ms": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    },
+    "api_cpu_percent": {
+      "median": 374.1372279350634,
+      "min": 367.54160487138796,
+      "max": 390.75590612118384
+    },
+    "api_peak_rss_mib": {
+      "median": 97.140625,
+      "min": 92.78125,
+      "max": 104.0
+    },
+    "db_wait_count": {
+      "median": 2960893.0,
+      "min": 2926866.0,
+      "max": 3155663.0
+    },
+    "db_wait_seconds": {
+      "median": 3363.300204055,
+      "min": 3324.172216298,
+      "max": 3391.558417598
+    },
+    "requests": 4580725,
+    "success": 4580725,
+    "business_failures": 0,
+    "system_failures": 0,
+    "successful_transactions": 0,
+    "error_rate": 0.0
+  }
+]

@@ -14,7 +14,7 @@ SELECT 'u' || i || '@seed.local',
 FROM generate_series(1, 30000) i
 ON CONFLICT (email) DO NOTHING;
 
-INSERT INTO videos (author_id, title, object_key, duration_seconds, status, published_at, created_at, updated_at)
+INSERT INTO videos (author_id, title, object_key, duration_seconds, status, published_at, created_at, updated_at, media_probe_status)
 SELECT su.id,
        'seed video ' || i,
        'videos/seed/' || i || '.mp4',
@@ -22,7 +22,8 @@ SELECT su.id,
        'PUBLISHED',
        now() - (i || ' seconds')::interval,
        now(),
-       now()
+       now(),
+       'SKIPPED'
 FROM generate_series(1, 1000000) i
 JOIN (
     -- 种子用户的真实 id 未必从 1 开始（序列可能接续旧数据），

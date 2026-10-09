@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,20 +37,41 @@ type config struct {
 	stock       int64
 	quantity    int
 	timeout     time.Duration
+	skus        int
+	output      string
+	readyFile   string
+	startFile   string
 }
 
 func main() {
 	cfg := config{}
 	flag.StringVar(&cfg.base, "base", "http://localhost:8080", "后端地址")
-	flag.StringVar(&cfg.scenario, "scenario", "commerce", "场景：commerce（下单+支付）或 feed（读）")
+	flag.StringVar(&cfg.scenario, "scenario", "commerce", "场景：commerce（下单+支付）、feed（首页读）、penetration（穿透）")
 	flag.IntVar(&cfg.concurrency, "concurrency", 50, "并发 worker 数")
 	flag.DurationVar(&cfg.duration, "duration", 20*time.Second, "持续时长")
 	flag.Int64Var(&cfg.stock, "stock", 1000000, "预置库存")
 	flag.IntVar(&cfg.quantity, "quantity", 1, "每单件数")
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "单请求超时")
+	flag.IntVar(&cfg.skus, "skus", 1, "交易场景SKU数量（每次选择均匀轮换）")
+	flag.StringVar(&cfg.output, "output", "", "JSON报告路径")
+	flag.StringVar(&cfg.readyFile, "ready-file", "", "准备完成标记（协调测量窗口）")
+	flag.StringVar(&cfg.startFile, "start-file", "", "等待此文件后开始测量")
 	flag.Parse()
+	if cfg.concurrency <= 0 || cfg.duration <= 0 || cfg.timeout <= 0 || cfg.skus <= 0 || cfg.stock <= 0 || cfg.quantity <= 0 {
+		fmt.Fprintln(os.Stderr, "loadgen: arguments must be positive")
+		os.Exit(2)
+	}
 
-	client := &http.Client{Timeout: cfg.timeout}
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "loadgen: unsupported default HTTP transport")
+		os.Exit(2)
+	}
+	transport := defaultTransport.Clone()
+	transport.MaxIdleConns = cfg.concurrency * 2
+	transport.MaxIdleConnsPerHost = cfg.concurrency
+	client := &http.Client{Timeout: cfg.timeout, Transport: transport}
+	defer transport.CloseIdleConnections()
 	runner := &runner{cfg: cfg, client: client, statuses: map[string]*atomic.Int64{}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.duration+2*time.Minute)
@@ -71,17 +93,30 @@ func main() {
 		os.Exit(1)
 	}
 	runner.report()
+	if cfg.output != "" {
+		if err := runner.writeReport(cfg.output); err != nil {
+			fmt.Fprintln(os.Stderr, "loadgen: write report:", err)
+			os.Exit(1)
+		}
+	}
 }
 
 type runner struct {
-	cfg      config
-	client   *http.Client
-	statuses map[string]*atomic.Int64
-	mu       sync.Mutex
-	latency  []time.Duration
-	success  atomic.Int64
-	business atomic.Int64
-	system   atomic.Int64
+	cfg                config
+	client             *http.Client
+	statuses           map[string]*atomic.Int64
+	mu                 sync.Mutex
+	latency            []time.Duration
+	started            time.Time
+	ended              time.Time
+	stageLatency       map[string][]time.Duration
+	stageSuccess       map[string]int64
+	stageFailures      map[string]int64
+	transactionLatency []time.Duration
+	transactions       atomic.Int64
+	success            atomic.Int64
+	business           atomic.Int64
+	system             atomic.Int64
 }
 
 func (r *runner) record(status string, latency time.Duration, kind resultKind) {
@@ -94,6 +129,24 @@ func (r *runner) record(status string, latency time.Duration, kind resultKind) {
 		r.statuses[status] = counter
 	}
 	r.latency = append(r.latency, latency)
+	stage := "request"
+	if strings.HasPrefix(status, "order_") {
+		stage = "create"
+	}
+	if status == "order_paid" || strings.HasPrefix(status, "pay_") {
+		stage = "pay"
+	}
+	if r.stageLatency == nil {
+		r.stageLatency = map[string][]time.Duration{}
+		r.stageSuccess = map[string]int64{}
+		r.stageFailures = map[string]int64{}
+	}
+	r.stageLatency[stage] = append(r.stageLatency[stage], latency)
+	if kind == kindSuccess {
+		r.stageSuccess[stage]++
+	} else {
+		r.stageFailures[stage]++
+	}
 	r.mu.Unlock()
 
 	switch kind {
@@ -122,15 +175,18 @@ func (r *runner) runCommerce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("register merchant: %w", err)
 	}
-	productID, skuID, err := r.createSellableSKU(ctx, merchant.AccessToken)
-	if err != nil {
-		return fmt.Errorf("create product: %w", err)
+	skuIDs := make([]int64, r.cfg.skus)
+	for i := range skuIDs {
+		productID, skuID, err := r.createSellableSKU(ctx, merchant.AccessToken)
+		if err != nil {
+			return fmt.Errorf("create product %d: %w", i, err)
+		}
+		if err := r.adjustStock(ctx, merchant.AccessToken, productID, skuID, r.cfg.stock); err != nil {
+			return fmt.Errorf("adjust stock: %w", err)
+		}
+		skuIDs[i] = skuID
 	}
-	if err := r.adjustStock(ctx, merchant.AccessToken, productID, skuID, r.cfg.stock); err != nil {
-		return fmt.Errorf("adjust stock: %w", err)
-	}
-	fmt.Printf("准备完成：sku=%d stock=%d\n", skuID, r.cfg.stock)
-
+	fmt.Printf("准备完成：skus=%d 每SKU库存=%d\n", len(skuIDs), r.cfg.stock)
 	buyers := make([]session, r.cfg.concurrency)
 	for i := range buyers {
 		session, err := r.register(ctx, fmt.Sprintf("buyer%d", i))
@@ -141,7 +197,11 @@ func (r *runner) runCommerce(ctx context.Context) error {
 	}
 
 	fmt.Printf("开始压测：并发=%d 时长=%s\n", r.cfg.concurrency, r.cfg.duration)
-	deadline := time.Now().Add(r.cfg.duration)
+	if err := r.awaitMeasurement(ctx); err != nil {
+		return err
+	}
+	r.started = time.Now()
+	deadline := r.started.Add(r.cfg.duration)
 	var wg sync.WaitGroup
 	for i := range buyers {
 		wg.Add(1)
@@ -150,15 +210,23 @@ func (r *runner) runCommerce(ctx context.Context) error {
 			buyer := buyers[index]
 			for sequence := 0; time.Now().Before(deadline); sequence++ {
 				key := fmt.Sprintf("load-%d-%d-%d", index, sequence, time.Now().UnixNano())
+				transactionStarted := time.Now()
+				skuID := skuIDs[(sequence+index)%len(skuIDs)]
 				orderID, amount, kind, err := r.createOrder(ctx, buyer.AccessToken, skuID, key)
 				if err != nil || kind != kindSuccess {
 					continue
 				}
-				r.payOrder(ctx, buyer.AccessToken, orderID, amount, key)
+				if r.payOrder(ctx, buyer.AccessToken, orderID, amount, key) {
+					r.transactions.Add(1)
+					r.mu.Lock()
+					r.transactionLatency = append(r.transactionLatency, time.Since(transactionStarted))
+					r.mu.Unlock()
+				}
 			}
 		}(i)
 	}
 	wg.Wait()
+	r.ended = time.Now()
 	return nil
 }
 
@@ -169,7 +237,11 @@ func (r *runner) runCommerce(ctx context.Context) error {
 // 通过 /metrics 里的 existence_lookup_total 可以看到请求最终走到了哪一层。
 func (r *runner) runPenetration(ctx context.Context) error {
 	fmt.Printf("开始压测穿透路径（不存在的视频 ID）：并发=%d 时长=%s\n", r.cfg.concurrency, r.cfg.duration)
-	deadline := time.Now().Add(r.cfg.duration)
+	if err := r.awaitMeasurement(ctx); err != nil {
+		return err
+	}
+	r.started = time.Now()
+	deadline := r.started.Add(r.cfg.duration)
 	var wg sync.WaitGroup
 	for worker := range r.cfg.concurrency {
 		wg.Add(1)
@@ -200,13 +272,18 @@ func (r *runner) runPenetration(ctx context.Context) error {
 		}(worker)
 	}
 	wg.Wait()
+	r.ended = time.Now()
 	return nil
 }
 
 // runFeed 压读路径（首页 Feed），用于和 performance-baseline.md 的历史数据对照。
 func (r *runner) runFeed(ctx context.Context) error {
 	fmt.Printf("开始压测读路径：并发=%d 时长=%s\n", r.cfg.concurrency, r.cfg.duration)
-	deadline := time.Now().Add(r.cfg.duration)
+	if err := r.awaitMeasurement(ctx); err != nil {
+		return err
+	}
+	r.started = time.Now()
+	deadline := r.started.Add(r.cfg.duration)
 	var wg sync.WaitGroup
 	for range r.cfg.concurrency {
 		wg.Add(1)
@@ -231,6 +308,7 @@ func (r *runner) runFeed(ctx context.Context) error {
 		}()
 	}
 	wg.Wait()
+	r.ended = time.Now()
 	return nil
 }
 
@@ -334,7 +412,7 @@ func (r *runner) createOrder(ctx context.Context, token string, skuID int64, key
 	})
 	latency := time.Since(started)
 	if err != nil {
-		r.record("network_error", latency, kindSystem)
+		r.record("order_network_error", latency, kindSystem)
 		return 0, 0, kindSystem, err
 	}
 	switch response.status {
@@ -344,7 +422,7 @@ func (r *runner) createOrder(ctx context.Context, token string, skuID int64, key
 			TotalAmount int64 `json:"total_amount"`
 		}
 		if err := json.Unmarshal([]byte(response.body), &payload); err != nil {
-			r.record("decode_error", latency, kindSystem)
+			r.record("order_decode_error", latency, kindSystem)
 			return 0, 0, kindSystem, err
 		}
 		r.record("order_created", latency, kindSuccess)
@@ -364,24 +442,26 @@ func (r *runner) createOrder(ctx context.Context, token string, skuID int64, key
 	}
 }
 
-func (r *runner) payOrder(ctx context.Context, token string, orderID, amount int64, key string) {
+func (r *runner) payOrder(ctx context.Context, token string, orderID, amount int64, key string) bool {
 	started := time.Now()
 	response, err := r.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/orders/%d/pay", orderID), token, map[string]any{
 		"payment_no": "pay-" + key, "provider_trade_no": "trade-" + key, "amount": amount,
 	})
 	latency := time.Since(started)
 	if err != nil {
-		r.record("network_error", latency, kindSystem)
-		return
+		r.record("pay_network_error", latency, kindSystem)
+		return false
 	}
 	switch response.status {
 	case http.StatusOK:
 		r.record("order_paid", latency, kindSuccess)
+		return true
 	case http.StatusConflict:
 		r.record("pay_conflict", latency, kindBusiness)
 	default:
 		r.record(fmt.Sprintf("pay_%d", response.status), latency, kindSystem)
 	}
+	return false
 }
 
 type httpResult struct {
@@ -433,8 +513,8 @@ func (r *runner) report() {
 	fmt.Printf("总请求数 %d（成功 %d / 业务失败 %d / 系统失败 %d）\n",
 		total, r.success.Load(), r.business.Load(), r.system.Load())
 	if total > 0 {
-		elapsed := r.cfg.duration.Seconds()
-		fmt.Printf("吞吐 %.1f req/s（按 %.0fs 计）\n", float64(total)/elapsed, elapsed)
+		elapsed := r.ended.Sub(r.started).Seconds()
+		fmt.Printf("吞吐 %.1f req/s（实际 %.3fs）\n", float64(total)/elapsed, elapsed)
 		fmt.Printf("延迟 p50=%s p95=%s p99=%s max=%s\n",
 			percentile(latencies, 0.50), percentile(latencies, 0.95),
 			percentile(latencies, 0.99), latencies[total-1])

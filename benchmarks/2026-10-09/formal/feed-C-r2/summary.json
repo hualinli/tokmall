@@ -1,0 +1,72 @@
+{
+  "scenario": "feed",
+  "concurrency": 50,
+  "sku_count": 1,
+  "started_at": "2026-10-09T10:26:04.281112+08:00",
+  "ended_at": "2026-10-09T10:29:04.309766+08:00",
+  "elapsed_seconds": 180.028598458,
+  "configured_seconds": 180,
+  "requests": 1482466,
+  "success": 1482466,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 8234.61390411176,
+  "request_rps": 8234.61390411176,
+  "successful_transactions": 0,
+  "successful_orders_per_second": 0,
+  "statuses": {
+    "200": 1482466
+  },
+  "request_latency": {
+    "count": 1482466,
+    "p50_ms": 5.377917,
+    "p95_ms": 11.126084,
+    "p99_ms": 17.212,
+    "max_ms": 1033.74275
+  },
+  "successful_transaction_latency": {
+    "count": 0,
+    "p50_ms": 0,
+    "p95_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "stages": {
+    "request": {
+      "success": 1482466,
+      "failures": 0,
+      "latency": {
+        "count": 1482466,
+        "p50_ms": 5.377917,
+        "p95_ms": 11.126084,
+        "p99_ms": 17.212,
+        "max_ms": 1033.74275
+      }
+    }
+  },
+  "metric_deltas": {
+    "cache_l1_eviction_total": 0.0,
+    "cache_l1_hit_total": 1481784.0,
+    "cache_l1_miss_total": 684.0,
+    "cache_l1_stale_total": 0.0,
+    "db_pool_wait_count_total{db=\"tokmall\"}": 2926866.0,
+    "db_pool_wait_duration_seconds{db=\"tokmall\"}": 3391.558417598,
+    "feed_cache_hit_total": 2964732.0,
+    "feed_cache_miss_total": 202.0,
+    "go_memstats_alloc_bytes_total": 108530514048.0,
+    "go_memstats_frees_total": 717227079.0,
+    "go_memstats_lookups_total": 0.0,
+    "go_memstats_mallocs_total": 717317308.0,
+    "hot_feed_window_rebuild_total{source=\"scheduled\"}": 3.0,
+    "media_faststart_applied_total": 0.0,
+    "reconcile_replayed_events_total": 0.0,
+    "redis_slow_commands_total{command=\"get\"}": 28.0,
+    "redis_slow_commands_total{command=\"hello\"}": 16.0
+  },
+  "api_cpu_seconds": 661.6800000000001,
+  "api_cpu_percent_average": 367.54160487138796,
+  "api_peak_rss_mib": 97.140625,
+  "client_cpu_percent_sampled": 85.62497582168291,
+  "client_peak_rss_mib": 84.265625,
+  "cache_group": "C"
+}

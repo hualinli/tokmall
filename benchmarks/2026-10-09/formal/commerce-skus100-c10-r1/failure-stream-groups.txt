@@ -1,0 +1,12 @@
+name
+attribution-projection
+consumers
+1
+pending
+0
+last-delivered-id
+1791514281216-0
+entries-read
+66351
+lag
+0

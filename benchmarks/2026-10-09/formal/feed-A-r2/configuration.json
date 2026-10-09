@@ -1,0 +1,13 @@
+{
+  "APP_ENV": "development",
+  "SERVER_PORT": "18080",
+  "METRICS_ADDR": "127.0.0.1:19091",
+  "DB_DATABASE": "tokmall_bench_1791512086",
+  "REDIS_DB": "15",
+  "MINIO_BUCKET": "tokmall-bench-1791512086",
+  "RATE_LIMIT_ENABLED": "false",
+  "FEED_CACHE_ENABLED": "false",
+  "FEED_L1_ENABLED": "false",
+  "OUTBOX_STREAM": "tokmall:benchmark:events",
+  "RECONCILE_ENABLED": "true"
+}

@@ -1,0 +1,54 @@
+{
+  "scope": "TokMall test containers only",
+  "volumes_preserved": true,
+  "containers": [
+    {
+      "name": "tokmall-postgres",
+      "image": "postgres:latest",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "923374f9005b882e1fa9e59e0a6ee0fb87869129c0d1d84903ea363779d4afb5",
+          "Source": "/var/lib/docker/volumes/923374f9005b882e1fa9e59e0a6ee0fb87869129c0d1d84903ea363779d4afb5/_data",
+          "Destination": "/var/lib/postgresql",
+          "Driver": "local",
+          "Mode": "",
+          "RW": true,
+          "Propagation": ""
+        }
+      ]
+    },
+    {
+      "name": "tokmall-redis",
+      "image": "redis:7.4-alpine",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "0fb0cdf626c296c9efcae1f43b3a5e2d45788e9b21c09d020499068ba6d715b4",
+          "Source": "/var/lib/docker/volumes/0fb0cdf626c296c9efcae1f43b3a5e2d45788e9b21c09d020499068ba6d715b4/_data",
+          "Destination": "/data",
+          "Driver": "local",
+          "Mode": "z",
+          "RW": true,
+          "Propagation": ""
+        }
+      ]
+    },
+    {
+      "name": "tokmall-minio",
+      "image": "minio/minio:latest",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "tokmall_minio-data",
+          "Source": "/var/lib/docker/volumes/tokmall_minio-data/_data",
+          "Destination": "/data",
+          "Driver": "local",
+          "Mode": "rw",
+          "RW": true,
+          "Propagation": ""
+        }
+      ]
+    }
+  ]
+}

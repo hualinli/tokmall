@@ -1,0 +1,92 @@
+{
+  "scenario": "commerce",
+  "concurrency": 2,
+  "sku_count": 100,
+  "started_at": "2026-10-09T10:13:42.647567+08:00",
+  "ended_at": "2026-10-09T10:13:47.650582+08:00",
+  "elapsed_seconds": 5.003013667,
+  "configured_seconds": 5,
+  "requests": 5550,
+  "success": 5550,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 1109.3313689322767,
+  "request_rps": 1109.3313689322767,
+  "successful_transactions": 2775,
+  "successful_orders_per_second": 554.6656844661384,
+  "statuses": {
+    "order_created": 2775,
+    "order_paid": 2775
+  },
+  "request_latency": {
+    "count": 5550,
+    "p50_ms": 1.690167,
+    "p95_ms": 2.556542,
+    "p99_ms": 3.577083,
+    "max_ms": 15.235542
+  },
+  "successful_transaction_latency": {
+    "count": 2775,
+    "p50_ms": 3.426333,
+    "p95_ms": 5.037083,
+    "p99_ms": 6.8725,
+    "max_ms": 16.982292
+  },
+  "stages": {
+    "create": {
+      "success": 2775,
+      "failures": 0,
+      "latency": {
+        "count": 2775,
+        "p50_ms": 1.727208,
+        "p95_ms": 2.688,
+        "p99_ms": 3.638375,
+        "max_ms": 15.142542
+      }
+    },
+    "pay": {
+      "success": 2775,
+      "failures": 0,
+      "latency": {
+        "count": 2775,
+        "p50_ms": 1.651959,
+        "p95_ms": 2.452708,
+        "p99_ms": 3.287833,
+        "max_ms": 15.235542
+      }
+    }
+  },
+  "metric_deltas": {
+    "cache_l1_eviction_total": 0.0,
+    "cache_l1_hit_total": 0.0,
+    "cache_l1_miss_total": 0.0,
+    "cache_l1_stale_total": 0.0,
+    "db_pool_wait_count_total{db=\"tokmall\"}": 0.0,
+    "db_pool_wait_duration_seconds{db=\"tokmall\"}": 0.0,
+    "feed_cache_hit_total": 0.0,
+    "feed_cache_miss_total": 0.0,
+    "go_memstats_alloc_bytes_total": 614141832.0,
+    "go_memstats_frees_total": 4904434.0,
+    "go_memstats_lookups_total": 0.0,
+    "go_memstats_mallocs_total": 4840823.0,
+    "hot_feed_window_rebuild_total{source=\"scheduled\"}": 0.0,
+    "media_faststart_applied_total": 0.0,
+    "outbox_consumer_processed_total{event_type=\"commerce.order.paid.v1\"}": 2393.0,
+    "outbox_published_total{event_type=\"commerce.order.paid.v1\"}": 2393.0,
+    "reconcile_replayed_events_total": 0.0
+  },
+  "api_cpu_seconds": 0,
+  "cache_group": "C",
+  "database_facts": {
+    "orders": 2775,
+    "paid_orders": 2775,
+    "payment_rows": 2775,
+    "inventory_quantity": 997225,
+    "inventory_ledger_sum": 997225,
+    "inventory_negative": 0,
+    "outbox_due": 0,
+    "outbox_delayed": 2775,
+    "outbox_dead": 0
+  },
+  "reconcile_exit_code": 0
+}

@@ -1,0 +1,456 @@
+replayed=6084
+{
+  "generated_at": "2026-10-09T10:53:58.007288+08:00",
+  "duration_ms": 265225292,
+  "checks": [
+    {
+      "name": "inventory_balance",
+      "description": "库存余额必须等于流水累计变更（期初为 0，所有变更都有流水）",
+      "differences": []
+    },
+    {
+      "name": "order_stock_ledger",
+      "description": "每个非待支付订单恰好有一条下单流水，且回补流水条数与终态匹配",
+      "differences": []
+    },
+    {
+      "name": "refund_order_consistency",
+      "description": "订单的售后状态必须与退款单一致，且退款金额等于订单金额与成功支付金额",
+      "differences": []
+    },
+    {
+      "name": "order_payment_consistency",
+      "description": "已支付订单必须有且仅有一笔成功支付，未支付订单不得有成功支付",
+      "differences": []
+    },
+    {
+      "name": "author_sales_projection",
+      "description": "事件驱动投影必须与订单事实一致（毛额与退款分列口径）",
+      "differences": []
+    },
+    {
+      "name": "coupon_issuance",
+      "description": "券的发行量必须等于实际持券数，且不超发行上限",
+      "differences": []
+    },
+    {
+      "name": "coupon_usage",
+      "description": "已核销的券必须对应订单，且订单优惠金额等于券面额",
+      "differences": []
+    },
+    {
+      "name": "order_amount_split",
+      "description": "订单金额必须满足 实付 = 原价 - 优惠，且用券订单必须引用持券",
+      "differences": []
+    },
+    {
+      "name": "outbox_delivery",
+      "description": "已发布事件必须在宽限期内拿到消费回执，否则说明事件可能已丢失",
+      "differences": [
+        {
+          "columns": {
+            "aggregate_id": 11493,
+            "event_id": "01a11e90-c808-757e-b78d-4b3722e0cf63",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11144,
+            "event_id": "01a11e90-c581-72d2-a476-6a7f4dd63835",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11502,
+            "event_id": "01a11e90-c820-7484-8539-8cf68cf54c06",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.174261+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11088,
+            "event_id": "01a11e90-c51d-7dfa-bdd6-370efff585f5",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.125115+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11080,
+            "event_id": "01a11e90-c511-7530-8b8f-d7fde72073fb",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.125115+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 12063,
+            "event_id": "01a11e90-cbed-7cfc-bb00-285ec6bd0045",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.230617+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11888,
+            "event_id": "01a11e90-cacd-72ab-9c1e-bf02579ed056",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.213461+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11627,
+            "event_id": "01a11e90-c900-7e73-b99d-bd25ffcc61e1",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.187873+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11348,
+            "event_id": "01a11e90-c6f3-7785-84cf-853aede80797",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11363,
+            "event_id": "01a11e90-c710-774f-a8e5-0e6e43568932",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11155,
+            "event_id": "01a11e90-c592-79a0-9612-6bb1ae6c58f9",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11446,
+            "event_id": "01a11e90-c7b0-73ad-92df-50521c6d1f91",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 12052,
+            "event_id": "01a11e90-cbdc-70a0-b648-aad7435ab7a4",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.230617+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11094,
+            "event_id": "01a11e90-c529-7947-8c09-2b615d14316f",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11367,
+            "event_id": "01a11e90-c715-7ad1-aed8-a22ce05a7865",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11845,
+            "event_id": "01a11e90-ca87-7747-a861-c3aef77bafca",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.213461+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11138,
+            "event_id": "01a11e90-c571-7e38-808c-fa32343373a6",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11286,
+            "event_id": "01a11e90-c686-7870-8215-cfecdc4ae5ef",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11231,
+            "event_id": "01a11e90-c627-771c-b4d9-b502fefd2780",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11692,
+            "event_id": "01a11e90-c974-77d0-ad48-2e2ed39badba",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.187873+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11368,
+            "event_id": "01a11e90-c71d-79bc-bcb9-180d0fde016f",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11832,
+            "event_id": "01a11e90-ca72-77bc-8d6f-869eb2f32f0b",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.200831+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11086,
+            "event_id": "01a11e90-c519-76d2-ac2c-5abeb896542f",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.125115+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 12045,
+            "event_id": "01a11e90-cbcf-7ae5-9f24-7558f3c6a1e0",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.230617+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11690,
+            "event_id": "01a11e90-c96c-7c9a-a4dd-1ba6b6cecac0",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.187873+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11610,
+            "event_id": "01a11e90-c8df-74a3-b1c0-1ca9e0281937",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.174261+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11199,
+            "event_id": "01a11e90-c5e4-7488-b801-948eca9a05c1",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11913,
+            "event_id": "01a11e90-caf4-7ee4-a2ea-92e42e19d9f3",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.213461+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11241,
+            "event_id": "01a11e90-c62f-7c25-b57e-9a982eb34478",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11340,
+            "event_id": "01a11e90-c6e8-7ef4-9dd4-63b93a6af20b",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11524,
+            "event_id": "01a11e90-c842-7700-80d9-a5a85eb1f259",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.174261+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11296,
+            "event_id": "01a11e90-c69b-7908-b50c-49e0582b72fc",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11289,
+            "event_id": "01a11e90-c68f-71a9-87db-ce893bfff344",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11815,
+            "event_id": "01a11e90-ca55-74af-b7e0-86ec3950b622",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.200831+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11497,
+            "event_id": "01a11e90-c80e-714c-af99-3d7fcae7fa53",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11355,
+            "event_id": "01a11e90-c703-7d4a-a2f8-e8027b0e5da7",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11135,
+            "event_id": "01a11e90-c570-7115-962d-caea0fc2cb31",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11356,
+            "event_id": "01a11e90-c702-7572-aebd-0b7d2757a86c",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 12038,
+            "event_id": "01a11e90-cbc3-7710-9c10-5bbb754c2225",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.230617+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11370,
+            "event_id": "01a11e90-c71e-77ef-b9ef-1175728a7134",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11620,
+            "event_id": "01a11e90-c8f0-73ff-beb6-19218fc01a3a",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.187873+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11156,
+            "event_id": "01a11e90-c593-73fb-a4cd-b1e64dead205",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11492,
+            "event_id": "01a11e90-c809-7b90-845e-6671acbfb84c",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11488,
+            "event_id": "01a11e90-c7ff-7680-92dc-238efa9cbd57",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11347,
+            "event_id": "01a11e90-c6f2-7071-9c75-fab7ea893fcd",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11145,
+            "event_id": "01a11e90-c582-716f-b2d1-cfae7743f867",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.13614+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11440,
+            "event_id": "01a11e90-c7ab-70cf-a34e-6af7689d862b",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.161079+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11621,
+            "event_id": "01a11e90-c8f2-7a3d-9faf-e8d60a7c42b6",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.187873+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11297,
+            "event_id": "01a11e90-c69b-7528-91e6-a8eb84047674",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        },
+        {
+          "columns": {
+            "aggregate_id": 11342,
+            "event_id": "01a11e90-c6ea-7900-b419-35e575edb916",
+            "event_type": "commerce.order.paid.v1",
+            "published_at": "2026-10-09T10:53:58.148729+08:00"
+          }
+        }
+      ]
+    }
+  ]
+}
+2026/10/09 10:53:58 WARN replayed events missing consumer receipts count=6084
+2026/10/09 10:53:58 ERROR reconcile drift detected check=outbox_delivery differences=50 sample="map[aggregate_id:11493 event_id:01a11e90-c808-757e-b78d-4b3722e0cf63 event_type:commerce.order.paid.v1 published_at:2026-10-09 10:53:58.161079 +0800 CST]"
+2026/10/09 10:53:58 ERROR reconcile found differences checks=9 differences=50

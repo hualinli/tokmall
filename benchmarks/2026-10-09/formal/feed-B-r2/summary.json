@@ -1,0 +1,71 @@
+{
+  "scenario": "feed",
+  "concurrency": 50,
+  "sku_count": 1,
+  "started_at": "2026-10-09T10:29:37.460949+08:00",
+  "ended_at": "2026-10-09T10:32:37.477216+08:00",
+  "elapsed_seconds": 180.016211583,
+  "configured_seconds": 180,
+  "requests": 1213755,
+  "success": 1213755,
+  "business_failures": 0,
+  "system_failures": 0,
+  "success_rps": 6742.476076608103,
+  "request_rps": 6742.476076608103,
+  "successful_transactions": 0,
+  "successful_orders_per_second": 0,
+  "statuses": {
+    "200": 1213755
+  },
+  "request_latency": {
+    "count": 1213755,
+    "p50_ms": 5.74625,
+    "p95_ms": 10.737042,
+    "p99_ms": 22.336833,
+    "max_ms": 4396.534416
+  },
+  "successful_transaction_latency": {
+    "count": 0,
+    "p50_ms": 0,
+    "p95_ms": 0,
+    "p99_ms": 0,
+    "max_ms": 0
+  },
+  "stages": {
+    "request": {
+      "success": 1213755,
+      "failures": 0,
+      "latency": {
+        "count": 1213755,
+        "p50_ms": 5.74625,
+        "p95_ms": 10.737042,
+        "p99_ms": 22.336833,
+        "max_ms": 4396.534416
+      }
+    }
+  },
+  "metric_deltas": {
+    "cache_l1_eviction_total": 0.0,
+    "cache_l1_hit_total": 0.0,
+    "cache_l1_miss_total": 0.0,
+    "cache_l1_stale_total": 0.0,
+    "db_pool_wait_count_total{db=\"tokmall\"}": 2233489.0,
+    "db_pool_wait_duration_seconds{db=\"tokmall\"}": 1617.459546653,
+    "feed_cache_hit_total": 1213633.0,
+    "feed_cache_miss_total": 122.0,
+    "go_memstats_alloc_bytes_total": 106746017208.0,
+    "go_memstats_frees_total": 596737549.0,
+    "go_memstats_lookups_total": 0.0,
+    "go_memstats_mallocs_total": 596801660.0,
+    "hot_feed_window_rebuild_total{source=\"scheduled\"}": 3.0,
+    "media_faststart_applied_total": 0.0,
+    "reconcile_replayed_events_total": 0.0,
+    "redis_slow_commands_total{command=\"get\"}": 4275.0
+  },
+  "api_cpu_seconds": 594.62,
+  "api_cpu_percent_average": 330.31469486615583,
+  "api_peak_rss_mib": 85.3125,
+  "client_cpu_percent_sampled": 72.10668128646812,
+  "client_peak_rss_mib": 76.84375,
+  "cache_group": "B"
+}

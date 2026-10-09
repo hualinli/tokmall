@@ -1,0 +1,45 @@
+{
+  "database": "tokmall_bench_1791511866",
+  "bucket": "tokmall-bench-1791511866",
+  "created_at": "2026-10-09T02:11:06.862313+00:00",
+  "client_date": "2026-10-09",
+  "redis_database": 15,
+  "git_head": "1f23dab443d2a4807619d6c4fce570e7b507dd39",
+  "go": "go version go1.26.3 darwin/arm64",
+  "machine": "Darwin benchmark-host.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:02:59 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T8142 arm64",
+  "hardware": [
+    "Mac17,3",
+    "10",
+    "34359738368"
+  ],
+  "docker": "29.4.0 10 16819613696",
+  "postgres": "PostgreSQL 18.4 (Debian 18.4-1.pgdg13+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+  "container_limits": {
+    "Memory": 0,
+    "NanoCpus": 0,
+    "CpuQuota": 0,
+    "CpuPeriod": 0
+  },
+  "method": "closed-loop HTTP; API, client and containers share host; pool=25; INFO JSON logs kept; stdout discarded",
+  "binaries": {
+    "api": "508f0c2fb28c9b8bda2ecd1195f20d05aac7423aae427357116986eeadd60bf0",
+    "loadgen": "b950450d3196f1fef3754ec65492b602a0683efeaff4662fe9daa7417d09d3dd",
+    "reconcile": "472d3294b3f8c760ac3c75aba0aae11fa8e6fabad7b0b2b76233568721a98647"
+  },
+  "dataset": {
+    "users": 30000,
+    "videos": 1000000,
+    "published": 1000000,
+    "database_bytes": 354711231
+  },
+  "dependency_versions_verified_after_run": {
+    "redis": "7.4.11",
+    "minio": "RELEASE.2025-09-07T16-13-09Z",
+    "images": {
+      "postgres": "sha256:8ff36f3c66371cba71d20ceedccfc3de9669a68737607888c4ef0af93abe8e39",
+      "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+      "minio": "sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+    }
+  },
+  "local_identifiers_redacted": true
+}

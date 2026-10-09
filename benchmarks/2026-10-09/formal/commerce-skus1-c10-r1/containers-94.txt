@@ -1,0 +1,3 @@
+tokmall-postgres 104.72% 202.8MiB / 15.66GiB
+tokmall-redis 4.06% 12.69MiB / 15.66GiB
+tokmall-minio 0.02% 88.57MiB / 15.66GiB

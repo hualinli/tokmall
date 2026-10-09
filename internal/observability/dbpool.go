@@ -30,12 +30,8 @@ func NewDBPoolCollector(db *sql.DB, dbName string) prometheus.Collector {
 			Name:      "idle_connections",
 			Help:      "number of idle connections",
 		}, []string{"db"}),
-		waitCount: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: "db",
-			Subsystem: "pool",
-			Name:      "wait_count_total",
-			Help:      "total number of times a caller waited for a connection",
-		}, []string{"db"}),
+		waitCount: prometheus.NewDesc("db_pool_wait_count_total",
+			"total number of times a caller waited for a connection", []string{"db"}, nil),
 		waitDuration: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "db",
 			Subsystem: "pool",
@@ -51,7 +47,7 @@ type dbPoolCollector struct {
 	openConnections *prometheus.GaugeVec
 	inUse           *prometheus.GaugeVec
 	idle            *prometheus.GaugeVec
-	waitCount       *prometheus.CounterVec
+	waitCount       *prometheus.Desc
 	waitDuration    *prometheus.GaugeVec
 }
 
@@ -59,20 +55,22 @@ func (c *dbPoolCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.openConnections.Describe(ch)
 	c.inUse.Describe(ch)
 	c.idle.Describe(ch)
-	c.waitCount.Describe(ch)
+	ch <- c.waitCount
 	c.waitDuration.Describe(ch)
 }
 
 func (c *dbPoolCollector) Collect(ch chan<- prometheus.Metric) {
-	stats := c.db.Stats()
+	c.collectStats(c.db.Stats(), ch)
+}
+
+func (c *dbPoolCollector) collectStats(stats sql.DBStats, ch chan<- prometheus.Metric) {
 	c.openConnections.WithLabelValues(c.dbName).Set(float64(stats.OpenConnections))
 	c.inUse.WithLabelValues(c.dbName).Set(float64(stats.InUse))
 	c.idle.WithLabelValues(c.dbName).Set(float64(stats.Idle))
-	c.waitCount.WithLabelValues(c.dbName).Add(float64(stats.WaitCount))
+	ch <- prometheus.MustNewConstMetric(c.waitCount, prometheus.CounterValue, float64(stats.WaitCount), c.dbName)
 	c.waitDuration.WithLabelValues(c.dbName).Set(stats.WaitDuration.Seconds())
 	c.openConnections.Collect(ch)
 	c.inUse.Collect(ch)
 	c.idle.Collect(ch)
-	c.waitCount.Collect(ch)
 	c.waitDuration.Collect(ch)
 }
