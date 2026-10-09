@@ -3,6 +3,7 @@ package feed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -14,9 +15,8 @@ import (
 //	缺陷一（游标漂移）：GCFeed 的缓存路径用 `window_end + offset` 翻页。
 //	  窗口一旦被重建（TTL 到期后按分钟桶重新合并、期间新互动改变分数），
 //	  offset 就会指向不同的条目 → 翻页重复或漏数。
-//	  本实现改为 **冻结窗口 + 分数 keyset 游标**：游标带 window_end 锁定窗口 key，
-//	  带 (hot_score, video_id) 表示位置。即使窗口内容变了，分数游标也只依赖
-//	  "上一页最后一条的分数"，不会重复返回已翻过的条目。
+//	  本实现改为冻结窗口 + 分数 keyset 游标，已有窗口不重写，
+//	  快照过期时拒绝旧游标。分数游标本身不能弥补排序键改变。
 //
 //	缺陷二（重建击穿）：GCFeed 在窗口缺失时每个请求都重做一次 60-key 合并
 //	  （窗口内没有正分成员时 ZUNIONSTORE 不创建 key，Exists 永远为 0）。
@@ -103,7 +103,7 @@ type HotCursor struct {
 
 // hotCursorRankVersion 是热榜游标版本：与 time-v1 隔离，切换排序规则时递增，
 // 旧游标自动失效（沿用既有 Ranker 版本约定）。
-const hotCursorRankVersion = "hot-window-v1"
+const hotCursorRankVersion = "hot-window-v2"
 
 // ErrHotFeedUnavailable 表示热榜数据源不可用（Redis 故障或窗口为空）。
 // 调用方据此降级为时间流而不是返回错误——热榜是"锦上添花"的场景，
@@ -112,7 +112,7 @@ var ErrHotFeedUnavailable = errors.New("hot feed unavailable")
 
 // hotMinuteKey 是分钟桶 key。
 func hotMinuteKey(at time.Time) string {
-	return "feed:hot:minute:" + at.UTC().Format("200601021504")
+	return "feed:hot:v2:minute:" + at.UTC().Format("200601021504")
 }
 
 // hotMinuteKeys 返回参与合并的 60 个分钟桶 key（含 windowEnd 所在分钟）。
@@ -127,10 +127,10 @@ func hotMinuteKeys(windowEnd time.Time) []string {
 
 // hotWindowKey 是物化窗口 key：windowEnd 精确到分钟。
 func hotWindowKey(windowEnd time.Time) string {
-	return "feed:hot:window:" + strconv.FormatInt(windowEnd.UTC().Truncate(time.Minute).Unix(), 10)
+	return "feed:hot:v2:window:" + strconv.FormatInt(windowEnd.UTC().Truncate(time.Minute).Unix(), 10)
 }
 
-func hotRankMember(videoID int64) string { return strconv.FormatInt(videoID, 10) }
+func hotRankMember(videoID int64) string { return fmt.Sprintf("%019d", videoID) }
 
 func hotRankVideoID(member string) (int64, bool) {
 	id, err := strconv.ParseInt(member, 10, 64)

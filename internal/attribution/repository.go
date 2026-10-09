@@ -17,11 +17,12 @@ func (r *GormRepository) Sales(ctx context.Context, authorID int64) (*Sales, err
 	result := &Sales{AuthorID: authorID, ByVideo: []Slice{}, ByProduct: []Slice{}}
 	base := `FROM orders o
 		JOIN LATERAL (SELECT sum(quantity) AS units FROM order_items WHERE order_id = o.id) i ON TRUE
-		WHERE o.source_author_id = ? AND o.paid_at IS NOT NULL
-		  AND o.status IN ('PAID', 'FULFILLING', 'COMPLETED')`
+		WHERE o.source_author_id = ? AND o.paid_at IS NOT NULL`
 	metrics := `count(*) AS order_count, count(DISTINCT o.user_id) AS buyer_count,
 		coalesce(sum(i.units), 0) AS units_sold,
-		coalesce(sum(o.total_amount), 0) AS gmv`
+		coalesce(sum(o.total_amount), 0) AS gmv,
+		count(*) FILTER (WHERE o.status = 'REFUNDED') AS refunded_orders,
+		coalesce(sum(o.total_amount) FILTER (WHERE o.status = 'REFUNDED'), 0) AS refunded_amount`
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY").Error; err != nil {
 			return err

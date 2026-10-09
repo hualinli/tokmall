@@ -54,17 +54,19 @@ test.describe('互动', () => {
     await fb.click()
     await expect(fb).toContainText('已关注')
 
-    const serverFollowing = await page.evaluate(async (uid) => {
+    const serverFollowing = () => page.evaluate(async (uid) => {
       const stored = JSON.parse(localStorage.getItem('tokmall-auth')!)
       const res = await fetch(`/api/v1/users/${uid}`, {
         headers: { Authorization: `Bearer ${stored.state.accessToken}` },
       })
       return (await res.json()).is_following
     }, authorId)
-    expect(serverFollowing).toBe(true)
+    // 按钮先乐观更新，必须等写入事实，不能把 UI 文案当作事务已提交。
+    await expect.poll(serverFollowing).toBe(true)
 
     await fb.click()
     await expect(fb).toContainText('+ 关注')
+    await expect.poll(serverFollowing).toBe(false)
   })
 
   test('用户主页展示资料/作品/关注按钮，自己主页无关注按钮', async ({ page }) => {

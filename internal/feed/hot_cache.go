@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -63,28 +64,12 @@ func (c *RedisHotFeed) MaterializeWindow(ctx context.Context, windowEnd time.Tim
 	windowEnd = windowEnd.UTC().Truncate(time.Minute)
 	windowKey := hotWindowKey(windowEnd)
 
-	if _, err := c.client.ZUnionStore(ctx, windowKey, &redis.ZStore{
-		Keys:      hotMinuteKeys(windowEnd),
-		Aggregate: "SUM",
-	}).Result(); err != nil {
+	keys := append([]string{windowKey}, hotMinuteKeys(windowEnd)...)
+	size, err := materializeHotWindow.Run(ctx, c.client, keys, hotWindowMaxEntries, int64(hotWindowTTL/time.Second)).Int()
+	if err != nil {
 		return 0, fmt.Errorf("materialize hot window: %w", err)
 	}
 
-	pipe := c.client.Pipeline()
-	// 净分 ≤ 0 的条目直接移除：点赞又取消不应在榜单上留下僵尸条目。
-	pipe.ZRemRangeByScore(ctx, windowKey, "-inf", "0")
-	// 硬上限：只保留头部。热榜只需要前 N 名，保留全量会让合并成本随视频总数增长。
-	// 注意 ZREMRANGEBYRANK 的下标是升序，0 是最低分，所以要删掉"倒数第 max+1 名及以下"。
-	pipe.ZRemRangeByRank(ctx, windowKey, 0, -int64(hotWindowMaxEntries)-1)
-	pipe.Expire(ctx, windowKey, hotWindowTTL)
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("trim hot window: %w", err)
-	}
-
-	size, err := c.client.ZCard(ctx, windowKey).Result()
-	if err != nil {
-		return 0, fmt.Errorf("hot window size: %w", err)
-	}
 	c.stats.HotWindowSize(int(size))
 	return int(size), nil
 }
@@ -92,7 +77,7 @@ func (c *RedisHotFeed) MaterializeWindow(ctx context.Context, windowEnd time.Tim
 // Page 读取热榜的一页。cursor 为 nil 表示第一页。
 //
 // 返回的 entries 已按 (score DESC, videoID DESC) 排序，且严格位于游标之后——
-// 即使窗口在这期间被重建（内容有细微变化），也不会重复返回已翻过的条目。
+// 窗口存续期间不可变；旧游标引用的窗口过期时明确返回 ErrInvalidCursor。
 func (c *RedisHotFeed) Page(ctx context.Context, windowEnd time.Time, cursor *HotCursor, limit int) ([]HotEntry, error) {
 	if c == nil || c.client == nil {
 		return nil, ErrHotFeedUnavailable
@@ -103,74 +88,46 @@ func (c *RedisHotFeed) Page(ctx context.Context, windowEnd time.Time, cursor *Ho
 	windowEnd = windowEnd.UTC().Truncate(time.Minute)
 	windowKey := hotWindowKey(windowEnd)
 
-	if err := c.ensureWindow(ctx, windowKey, windowEnd); err != nil {
+	if cursor != nil {
+		exists, err := c.client.Exists(ctx, windowKey).Result()
+		if err != nil {
+			return nil, fmt.Errorf("check hot window: %w", err)
+		}
+		if exists == 0 {
+			return nil, ErrInvalidCursor
+		}
+	} else if err := c.ensureWindow(ctx, windowKey, windowEnd); err != nil {
 		return nil, err
 	}
 
-	// 读窗口。分数用**闭区间**上界（Max = 游标分数），同分组由下面的
-	// tie-break 过滤——如果用开区间（Max = "(score"），同一分数的其余条目
-	// 会被整组跳过（分页直接漏数）。
-	fetch := int64(limit + 1)
-	maxScore := "+inf"
-	if cursor != nil && cursor.VideoID > 0 {
-		maxScore = fmt.Sprintf("%d", cursor.HotScore)
+	maxScore, member := "+inf", ""
+	if cursor != nil {
+		maxScore = strconv.FormatInt(cursor.HotScore, 10)
+		member = hotRankMember(cursor.VideoID)
 	}
-	values, err := c.client.ZRevRangeByScoreWithScores(ctx, windowKey, &redis.ZRangeBy{
-		Min: "-inf", Max: maxScore, Offset: 0, Count: fetch,
-	}).Result()
+	values, err := readHotPage.Run(ctx, c.client, []string{windowKey}, maxScore, member, limit, hotWindowMaxEntries).Slice()
 	if err != nil {
 		return nil, fmt.Errorf("read hot window: %w", err)
 	}
-
 	entries := make([]HotEntry, 0, limit)
-	seen := make(map[int64]struct{}, limit+1)
-	skipped := int64(0)
-	for _, value := range values {
-		entry, ok := hotEntryFromZ(value)
+	for i := 0; i+1 < len(values); i += 2 {
+		member, ok := values[i].(string)
 		if !ok {
-			continue
+			return nil, errors.New("invalid hot window entry")
 		}
-		// tie-break：同一分数下按 video_id 降序。游标记的是上一页最后一条的
-		// (score, video_id)，因此同分但 id 更大（已经翻过）的条目要跳过。
-		if cursor != nil && cursor.VideoID > 0 && entry.HotScore == cursor.HotScore && entry.VideoID >= cursor.VideoID {
-			skipped++
-			continue
+		score, ok := values[i+1].(string)
+		if !ok {
+			return nil, errors.New("invalid hot window entry")
+		}
+		parsed, err := strconv.ParseFloat(score, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse hot score: %w", err)
+		}
+		entry, ok := hotEntryFromZ(redis.Z{Member: member, Score: parsed})
+		if !ok {
+			return nil, errors.New("invalid hot window entry")
 		}
 		entries = append(entries, entry)
-		seen[entry.VideoID] = struct{}{}
-		if len(entries) == limit {
-			break
-		}
-	}
-
-	// 同分组太大时上面那一次可能被"已翻过的同分条目"占满窗口，
-	// 用 Offset 跳过它们再补一次（集合在单次请求内是冻结的，offset 稳定）。
-	if skipped > 0 && len(entries) < limit {
-		more, err := c.client.ZRevRangeByScoreWithScores(ctx, windowKey, &redis.ZRangeBy{
-			Min: "-inf", Max: maxScore, Offset: skipped, Count: int64(limit - len(entries)),
-		}).Result()
-		if err != nil {
-			return nil, fmt.Errorf("read hot window page 2: %w", err)
-		}
-		for _, value := range more {
-			entry, ok := hotEntryFromZ(value)
-			if !ok {
-				continue
-			}
-			if cursor != nil && cursor.VideoID > 0 && entry.HotScore == cursor.HotScore && entry.VideoID >= cursor.VideoID {
-				continue
-			}
-			// Offset 作用在**未过滤**的序列上，因此第二段会重新读到第一段
-			// 已经收集过的条目——用 seen 去重（集合在单次请求内冻结，不会漏）。
-			if _, exists := seen[entry.VideoID]; exists {
-				continue
-			}
-			seen[entry.VideoID] = struct{}{}
-			entries = append(entries, entry)
-			if len(entries) == limit {
-				break
-			}
-		}
 	}
 	return entries, nil
 }
@@ -287,4 +244,27 @@ func (w *HotWindowWorker) materializeOnce(ctx context.Context) {
 	}
 }
 
-var _ = errors.Is
+// Both scripts run atomically: readers see a complete, immutable snapshot.
+var materializeHotWindow = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 1 then return redis.call('ZCARD', KEYS[1]) end
+redis.call('ZUNIONSTORE', KEYS[1], #KEYS - 1, unpack(KEYS, 2))
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '0')
+redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -tonumber(ARGV[1]) - 1)
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return redis.call('ZCARD', KEYS[1])
+`)
+
+// Scan at most the bounded snapshot, returning only one page over the network.
+// Zero-padded IDs preserve numeric ordering under Redis's lexicographic tie-break.
+var readHotPage = redis.NewScript(`
+local values = redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[1], '-inf', 'WITHSCORES', 'LIMIT', 0, ARGV[4])
+local result = {}
+for i = 1, #values, 2 do
+    if ARGV[2] == '' or tonumber(values[i+1]) < tonumber(ARGV[1]) or values[i] < ARGV[2] then
+        result[#result+1] = values[i]
+        result[#result+1] = values[i+1]
+        if #result >= tonumber(ARGV[3]) * 2 then break end
+    end
+end
+return result
+`)

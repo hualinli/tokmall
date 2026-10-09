@@ -38,7 +38,7 @@ func NewRepository(db *gorm.DB) *GormRepository {
 // （videos 表没有这些列），全字段 Create 会生成错误的 INSERT。
 func (r *GormRepository) CreateVideo(ctx context.Context, v *Video) error {
 	return r.db.WithContext(ctx).
-		Select("author_id", "title", "object_key", "cover_key", "duration_seconds", "status").
+		Select("author_id", "title", "object_key", "cover_key", "duration_seconds", "status", "media_probe_status").
 		Create(v).Error
 }
 
@@ -63,13 +63,18 @@ func (r *GormRepository) FindVideoByID(ctx context.Context, id int64) (*Video, e
 // 否则返回 ErrStatusConflict。调用方应在 service 层先读取记录以区分
 // 不存在、非作者和状态冲突；这里的 author_id 条件是最终的原子授权兜底。
 func (r *GormRepository) UpdateVideoStatus(ctx context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error {
-	res := r.db.WithContext(ctx).
-		Model(&Video{}).
-		Where("id = ? AND author_id = ? AND status = ?", id, authorID, string(from)).
-		Updates(map[string]any{
-			"status":       string(to),
-			"published_at": publishedAt,
-		})
+	if to == StatusDeleted {
+		return r.deleteVideo(ctx, id, authorID, from)
+	}
+	query := r.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ? AND author_id = ? AND status = ?", id, authorID, string(from))
+	if to == StatusPublished {
+		query = query.Where("media_probe_status IN ?", []string{string(ProbePassed), string(ProbeSkipped)})
+	}
+	res := query.Updates(map[string]any{
+		"status":       string(to),
+		"published_at": publishedAt,
+	})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -187,20 +192,54 @@ func translatePlayEventError(err error) error {
 
 // ConsumeTicket 原子核销 ticket：未被使用、未过期、属于该用户时标记 used，
 // 并返回视频需要的元信息（如上传文件大小由 storage 提供，这里只核销）。
-func (r *GormRepository) ConsumeTicket(ctx context.Context, userID int64, objectKey string) error {
-	return consumeTicket(r.db.WithContext(ctx), userID, objectKey)
+func (r *GormRepository) ConsumeTicket(ctx context.Context, userID int64, objectKey string, finalize func() error) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return finalizeTicket(tx, userID, objectKey, finalize)
+	})
 }
 
 // ConsumeTicketAndCreateVideo 把凭证核销与视频落库放进同一事务。
 // 分开写的话，"核销成功 + 建行失败"会把用户刚上传成功的对象变成孤儿：
 // 凭证已烧掉、视频不存在，用户只能重新申请上传 URL 再传一次。
-func (r *GormRepository) ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video) error {
+func (r *GormRepository) ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video, finalize func() error) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := consumeTicket(tx, userID, objectKey); err != nil {
+		if err := finalizeTicket(tx, userID, objectKey, func() error {
+			if v.CoverKey != nil {
+				if err := consumeTicket(tx, userID, *v.CoverKey); err != nil {
+					return err
+				}
+			}
+			return finalize()
+		}); err != nil {
 			return err
 		}
-		return tx.Select("author_id", "title", "object_key", "cover_key", "duration_seconds", "status").Create(v).Error
+		if v.CoverKey != nil {
+			if err := queueUploadCleanup(tx, userID, *v.CoverKey); err != nil {
+				return err
+			}
+		}
+		return tx.Select("author_id", "title", "object_key", "cover_key", "duration_seconds", "status", "media_probe_status").Create(v).Error
 	})
+}
+
+// The ticket update holds its row lock through sealing. A replay cannot copy
+// new bytes over an already referenced final object; failures roll back usage.
+func finalizeTicket(tx *gorm.DB, userID int64, objectKey string, finalize func() error) error {
+	if err := consumeTicket(tx, userID, objectKey); err != nil {
+		return err
+	}
+	if err := finalize(); err != nil {
+		return err
+	}
+	return queueUploadCleanup(tx, userID, objectKey)
+}
+
+func queueUploadCleanup(tx *gorm.DB, userID int64, objectKey string) error {
+	var ticket UploadTicket
+	if err := tx.Where("user_id = ? AND object_key = ?", userID, objectKey).Take(&ticket).Error; err != nil {
+		return err
+	}
+	return enqueueObjectDelete(tx, "staging/"+objectKey, ticket.ExpiresAt.Add(time.Second))
 }
 
 func consumeTicket(db *gorm.DB, userID int64, objectKey string) error {

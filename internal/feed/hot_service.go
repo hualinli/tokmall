@@ -23,10 +23,8 @@ type HotFeed interface {
 //     回落到时间流并打点标记。热榜是"锦上添花"的场景，让用户看到内容
 //     比看到 500 更重要——同类项目在这里直接 500，是可用性上的退步。
 //
-//  2. **游标里冻结窗口**：window_end 进签名游标。翻页期间后台可能重新物化窗口
-//     （内容会有细微变化），但分数游标 (hot_score, video_id) 只依赖"上一页最后
-//     一条的分数"，因此不会重复返回已翻过的条目——这正是同类项目用
-//     `window_end + offset` 做不到的（offset 在窗口变化后会漂移）。
+//  2. **游标冻结快照**：window_end 进签名游标，已有窗口不重写；窗口过期
+//     拒绝旧游标。只冻结窗口名而允许重建改变分数仍会重复/漏数。
 //
 //  3. **只缓存第一页以外不做页缓存**：热榜本身就是 Redis 里的一份物化快照，
 //     再套一层页缓存是重复的（也避免了同类项目"每个游标一个 key"的基数问题）。
@@ -37,36 +35,48 @@ func (s *Service) ListHot(ctx context.Context, limit int, cursorRaw string) (*Fe
 	if limit < 1 || limit > hotFeedMaxLimit {
 		return nil, ErrInvalidLimit
 	}
-	if s.hot == nil {
-		return s.hotFallback(ctx, limit, cursorRaw, "disabled")
-	}
-
-	windowEnd := s.hot.CurrentWindowEnd()
 	var cursor *HotCursor
+	var windowEnd time.Time
 	if cursorRaw != "" {
-		parsed, err := s.decodeHotCursor(cursorRaw)
+		parsed, err := s.cursor.Decode(cursorRaw)
 		if err != nil {
 			return nil, err
 		}
-		// 游标里带着窗口：翻页期间窗口不变（冻结快照）。
-		windowEnd = parsed.WindowEnd
-		if parsed.HotScore > 0 || parsed.VideoID > 0 {
-			cursor = &HotCursor{WindowEnd: parsed.WindowEnd, HotScore: parsed.HotScore, VideoID: parsed.VideoID}
+		// Once a session falls back, keep using its signed timeline cursor even after Redis recovers.
+		if parsed.RankVersion == CurrentRankVersion {
+			return s.List(ctx, limit, cursorRaw)
 		}
+		parsed, err = s.decodeHotCursor(cursorRaw)
+		if err != nil {
+			return nil, err
+		}
+		windowEnd = parsed.WindowEnd
+		cursor = &HotCursor{WindowEnd: windowEnd, HotScore: parsed.HotScore, VideoID: parsed.VideoID}
+	}
+	if s.hot == nil {
+		if cursor != nil {
+			return nil, ErrInvalidCursor
+		}
+		return s.hotFallback(ctx, limit, "", "disabled")
+	}
+	if cursor == nil {
+		windowEnd = s.hot.CurrentWindowEnd()
 	}
 
 	// 多取一条判断 HasMore（与时间流 assemble 的做法一致）。
 	entries, err := s.hot.Page(ctx, windowEnd, cursor, limit+1)
 	if err != nil {
+		if errors.Is(err, ErrInvalidCursor) || cursor != nil {
+			return nil, err
+		}
 		if errors.Is(err, ErrHotFeedUnavailable) {
 			// 窗口为空（近期没有互动）不是故障，降级为时间流。
 			return s.hotFallback(ctx, limit, "", "empty_window")
 		}
-		slog.Warn("hot feed unavailable, degrading to timeline", "err", err)
-		s.hotStats.HotFeedDegraded("redis_error")
+		slog.WarnContext(ctx, "hot feed unavailable, degrading to timeline", "err", err)
 		return s.hotFallback(ctx, limit, "", "redis_error")
 	}
-	if len(entries) == 0 {
+	if len(entries) == 0 && cursor == nil {
 		return s.hotFallback(ctx, limit, "", "empty_page")
 	}
 
@@ -80,6 +90,12 @@ func (s *Service) ListHot(ctx context.Context, limit int, cursorRaw string) (*Fe
 		return nil, err
 	}
 	result := &FeedResult{Items: items}
+	if err := s.fillLikeCounts(ctx, result); err != nil {
+		return nil, err
+	}
+	if err := s.fillProductCards(ctx, result); err != nil {
+		return nil, err
+	}
 	if next := s.encodeHotCursor(windowEnd, entries); next != "" {
 		result.NextCursor = &next
 	}
@@ -140,7 +156,7 @@ func (s *Service) decodeHotCursor(cursorRaw string) (*Cursor, error) {
 		// 而不是拿两套排序键拼出一个错误的分页。
 		return nil, ErrInvalidCursor
 	}
-	if cursor.WindowEnd.IsZero() {
+	if cursor.WindowEnd.IsZero() || cursor.HotScore <= 0 {
 		return nil, ErrInvalidCursor
 	}
 	return cursor, nil

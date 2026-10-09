@@ -168,7 +168,7 @@ func run() error {
 			// "对象不存在"是健康依赖的正常答复，不能计成故障——
 			// 否则一次正常的 404 就能把熔断器打开。
 			IsFailure: func(err error) bool {
-				return !errors.Is(err, storage.ErrObjectNotFound)
+				return !errors.Is(err, storage.ErrObjectNotFound) && !errors.Is(err, storage.ErrInvalidObjectSize)
 			},
 		}, breaker.WithStats(observability.NewBreakerMetrics(metricsRegistry))))
 	}
@@ -212,6 +212,7 @@ func run() error {
 		cfg.CursorSecret,
 		feedInvalidator,
 	)
+	videoService.SetMediaProbeEnabled(cfg.MediaProbeEnabled)
 	videoService.SetProductCardReader(video.NewProductCardReader(db))
 	userHandler := user.NewHandler(user.NewService(
 		user.NewRepository(db),
@@ -286,7 +287,7 @@ func run() error {
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	couponHandler := coupon.NewHandler(coupon.NewService(coupon.NewRepository(db)))
 	attributionHandler := attribution.NewHandler(attribution.NewService(attribution.NewRepository(db)))
-	// 媒体校验 worker：只在开启时构造（未开启时视频保持 PENDING，不影响其他链路）。
+	// 媒体校验 worker：只在开启时构造（未开启时新视频显式 SKIPPED）。
 	var mediaProbeWorker *video.ProbeWorker
 	if cfg.MediaProbeEnabled {
 		mediaProbeWorker = video.NewProbeWorker(videoRepository, storageClient,
@@ -296,7 +297,7 @@ func run() error {
 			video.WithProbeBatch(cfg.MediaProbeBatch),
 		)
 	}
-	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker)
+	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker, storageClient)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -394,8 +395,13 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 	orderRepo *order.GormRepository, registry *prometheus.Registry,
 	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
 	videoRepo *video.GormRepository, productRepo *product.GormRepository,
-	hotFeed *feed.RedisHotFeed, mediaProbe *video.ProbeWorker) *backgroundWorkers {
+	hotFeed *feed.RedisHotFeed, mediaProbe *video.ProbeWorker, cleanupStorage video.ObjectDeleter) *backgroundWorkers {
 	workers := &backgroundWorkers{}
+	cleanupCtx, cleanupCancel := context.WithCancel(ctx)
+	cleanupDone := make(chan struct{})
+	workers.add(cleanupCancel, cleanupDone, "object cleanup worker")
+	go func() { defer close(cleanupDone); video.NewCleanupWorker(db, cleanupStorage).Run(cleanupCtx) }()
+
 	if mediaProbe != nil {
 		// 媒体校验 worker：异步 ffprobe 校验 + faststart remux。
 		// 放在异步侧的原因见 internal/video/probe_worker.go 顶部注释。

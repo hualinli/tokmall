@@ -10,12 +10,13 @@ import (
 // 用装饰器包住它，业务代码一行都不用改：main 装配时把原始 client 换成
 // 带熔断的 client 即可。
 type StorageClient interface {
-	PresignPutURL(ctx context.Context, objectKey string) (string, error)
+	PresignPutURL(ctx context.Context, objectKey string, fileSize int64, contentType string) (string, error)
 	PresignGetURL(ctx context.Context, objectKey string) (string, error)
 	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 	PresignGetURLWithExpiry(ctx context.Context, objectKey string, expiry time.Duration) (string, error)
 	StatObject(ctx context.Context, objectKey string) (int64, error)
 	DeleteObject(ctx context.Context, objectKey string) error
+	FinalizeUpload(ctx context.Context, source, destination string, maxSize int64) error
 	// DownloadToFile / UploadFromFile：媒体校验 worker 用（下载→探测→回写）。
 	DownloadToFile(ctx context.Context, objectKey, path string) error
 	UploadFromFile(ctx context.Context, objectKey, path string, size int64) error
@@ -37,9 +38,9 @@ func NewStorage(next StorageClient, breaker *Breaker) *Storage {
 	return &Storage{next: next, breaker: breaker}
 }
 
-func (s *Storage) PresignPutURL(ctx context.Context, objectKey string) (string, error) {
+func (s *Storage) PresignPutURL(ctx context.Context, objectKey string, fileSize int64, contentType string) (string, error) {
 	return Execute(ctx, s.breaker, func(ctx context.Context) (string, error) {
-		return s.next.PresignPutURL(ctx, objectKey)
+		return s.next.PresignPutURL(ctx, objectKey, fileSize, contentType)
 	})
 }
 
@@ -70,6 +71,12 @@ func (s *Storage) StatObject(ctx context.Context, objectKey string) (int64, erro
 func (s *Storage) DeleteObject(ctx context.Context, objectKey string) error {
 	return s.breaker.Do(ctx, func(ctx context.Context) error {
 		return s.next.DeleteObject(ctx, objectKey)
+	})
+}
+
+func (s *Storage) FinalizeUpload(ctx context.Context, source, destination string, maxSize int64) error {
+	return s.breaker.Do(ctx, func(ctx context.Context) error {
+		return s.next.FinalizeUpload(ctx, source, destination, maxSize)
 	})
 }
 

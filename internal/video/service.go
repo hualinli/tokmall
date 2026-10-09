@@ -38,10 +38,10 @@ type Repository interface {
 	FindVideoByID(ctx context.Context, id int64) (*Video, error)
 	UpdateVideoStatus(ctx context.Context, id, authorID int64, from, to Status, publishedAt *time.Time) error
 	CreateTicket(ctx context.Context, t *UploadTicket) error
-	ConsumeTicket(ctx context.Context, userID int64, objectKey string) error
+	ConsumeTicket(ctx context.Context, userID int64, objectKey string, finalize func() error) error
 	// ConsumeTicketAndCreateVideo 让"凭证核销 + 视频落库"成为一个事务，
 	// 避免核销成功但建行失败把用户已上传的对象变成孤儿。
-	ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video) error
+	ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video, finalize func() error) error
 	ListByAuthor(ctx context.Context, authorID int64, before *Cursor, limit int) ([]Video, error)
 	LikeCounts(ctx context.Context, videoIDs []int64) (map[int64]int64, error)
 	IsLiked(ctx context.Context, userID, videoID int64) (bool, error)
@@ -61,11 +61,12 @@ const existenceNamespace = "video"
 
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
 type Storage interface {
-	PresignPutURL(ctx context.Context, objectKey string) (string, error)
+	PresignPutURL(ctx context.Context, objectKey string, fileSize int64, contentType string) (string, error)
 	PresignGetURL(ctx context.Context, objectKey string) (string, error)
 	PresignAvatarURL(ctx context.Context, objectKey string) (string, error)
 	StatObject(ctx context.Context, objectKey string) (int64, error)
 	DeleteObject(ctx context.Context, objectKey string) error
+	FinalizeUpload(ctx context.Context, source, destination string, maxSize int64) error
 }
 
 // FeedCacheInvalidator 消费侧接口：发布/删除成功后失效 feed 首页缓存。
@@ -75,15 +76,19 @@ type FeedCacheInvalidator interface {
 }
 
 type Service struct {
-	repo         Repository
-	productCards ProductCardReader
-	storage      Storage
-	expiry       time.Duration
-	feedCache    FeedCacheInvalidator
-	cursor       *codec
-	existence    ExistenceGuard
-	hotScore     HotScoreRecorder
+	repo              Repository
+	productCards      ProductCardReader
+	storage           Storage
+	expiry            time.Duration
+	feedCache         FeedCacheInvalidator
+	cursor            *codec
+	existence         ExistenceGuard
+	hotScore          HotScoreRecorder
+	mediaProbeEnabled bool
 }
+
+// SetMediaProbeEnabled controls whether new uploads require async validation.
+func (s *Service) SetMediaProbeEnabled(enabled bool) { s.mediaProbeEnabled = enabled }
 
 func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
 
@@ -112,11 +117,12 @@ func (s *Service) recordHotScore(ctx context.Context, videoID int64, action stri
 
 func NewService(repo Repository, storage Storage, uploadExpiry time.Duration, cursorSecret string, feedCache FeedCacheInvalidator) *Service {
 	return &Service{
-		repo:      repo,
-		storage:   storage,
-		expiry:    uploadExpiry,
-		feedCache: feedCache,
-		cursor:    NewCodec(cursorSecret),
+		mediaProbeEnabled: true,
+		repo:              repo,
+		storage:           storage,
+		expiry:            uploadExpiry,
+		feedCache:         feedCache,
+		cursor:            NewCodec(cursorSecret),
 	}
 }
 
@@ -251,7 +257,7 @@ func (s *Service) GetUploadURL(ctx context.Context, userID int64, filename strin
 	default:
 		return nil, ErrInvalidParam
 	}
-	uploadURL, err := s.storage.PresignPutURL(ctx, objectKey)
+	uploadURL, err := s.storage.PresignPutURL(ctx, "staging/"+objectKey, fileSize, contentType)
 	if err != nil {
 		if mapped := mapStorageError(err); errors.Is(mapped, ErrStorageUnavailable) {
 			return nil, mapped
@@ -284,41 +290,38 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 	if p.DurationSeconds < 1 || p.DurationSeconds > 3600 {
 		return nil, ErrInvalidParam
 	}
-	size, err := s.storage.StatObject(ctx, p.ObjectKey)
-	if err != nil {
-		if errors.Is(err, storage.ErrObjectNotFound) {
-			return nil, ErrUploadURLExpired
-		}
-		if mapped := mapStorageError(err); errors.Is(mapped, ErrStorageUnavailable) {
-			return nil, mapped
-		}
-		slog.Error("stat object failed", "object_key", p.ObjectKey, "err", err)
-		return nil, fmt.Errorf("stat object: %w", err)
-	}
-	if size == 0 {
+	if !strings.HasPrefix(p.ObjectKey, fmt.Sprintf("videos/%d/", userID)) {
 		return nil, ErrUploadURLExpired
 	}
-	// 封面同样必须"真上传 + 有票证"（防伪造引用他人文件）。它在视频事务之前
-	// 核销：封面核销失败时视频还没落库，不需要回滚，也不会烧掉视频凭证。
-	if p.CoverKey != nil {
-		if err := s.ValidateImage(ctx, userID, *p.CoverKey); err != nil {
-			if errors.Is(err, ErrUploadURLExpired) {
-				return nil, ErrUploadURLExpired
-			}
-			return nil, err
-		}
+	if p.CoverKey != nil && !strings.HasPrefix(*p.CoverKey, fmt.Sprintf("covers/%d/", userID)) {
+		return nil, ErrUploadURLExpired
 	}
 	v := &Video{
-		AuthorID:        userID,
-		Title:           title,
-		ObjectKey:       p.ObjectKey,
-		CoverKey:        p.CoverKey,
-		DurationSeconds: p.DurationSeconds,
-		Status:          StatusPendingReview,
+		AuthorID:         userID,
+		Title:            title,
+		ObjectKey:        p.ObjectKey,
+		CoverKey:         p.CoverKey,
+		DurationSeconds:  p.DurationSeconds,
+		Status:           StatusPendingReview,
+		MediaProbeStatus: ProbePending,
 	}
-	if err := s.repo.ConsumeTicketAndCreateVideo(ctx, userID, p.ObjectKey, v); err != nil {
+	if !s.mediaProbeEnabled {
+		v.MediaProbeStatus = ProbeSkipped
+	}
+	if err := s.repo.ConsumeTicketAndCreateVideo(ctx, userID, p.ObjectKey, v, func() error {
+		if err := s.finalizeUpload(ctx, p.ObjectKey, 512<<20); err != nil {
+			return err
+		}
+		if p.CoverKey != nil {
+			return s.finalizeUpload(ctx, *p.CoverKey, 5<<20)
+		}
+		return nil
+	}); err != nil {
 		if errors.Is(err, ErrTicketInvalid) {
 			return nil, ErrUploadURLExpired
+		}
+		if errors.Is(err, ErrInvalidParam) || errors.Is(err, ErrUploadURLExpired) || errors.Is(err, ErrStorageUnavailable) {
+			return nil, err
 		}
 		slog.Error("create video failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("create video: %w", err)
@@ -352,7 +355,7 @@ func (s *Service) Publish(ctx context.Context, userID, videoID int64) (*PublishR
 		// 他人视频的存在性。
 		return nil, ErrNotFound
 	}
-	if !canTransition(v.Status, StatusPublished) {
+	if !canTransition(v.Status, StatusPublished) || !v.MediaProbeStatus.AllowsPublish() {
 		return nil, ErrStatusConflict
 	}
 
@@ -384,6 +387,9 @@ func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
 	if v.AuthorID != userID {
 		return ErrNotFound
 	}
+	if v.Status == StatusDeleted {
+		return nil
+	}
 	if !canTransition(v.Status, StatusDeleted) {
 		return ErrStatusConflict
 	}
@@ -396,9 +402,9 @@ func (s *Service) Delete(ctx context.Context, userID, videoID int64) error {
 		return fmt.Errorf("delete video: %w", err)
 	}
 	s.invalidateFeed(ctx)
-	// 软删成功后再删 MinIO 对象：旧 URL 立刻 404，"软删 ≠ 内容不可达"
-	// 的缺口在此闭合。对象删除失败只记日志——status 已 DELETED，
-	// feed/详情已不可见，孤儿对象由后续清理任务收敛。
+	// 软删提交后尝试立即删对象；失败由持久化任务重试。
+	// 删除完成前，已签发的 GET URL 仍可能有效——status 已 DELETED，
+	// feed/详情已不可见，同事务写入的清理任务会继续重试。
 	s.removeObjects(ctx, v)
 	return nil
 }
@@ -655,28 +661,30 @@ func samePlayEventOptionalString(a, b *string) bool {
 // ValidateImage 校验图片上传凭证 + 文件真实存在，核销票证。
 // 供 user 模块 PATCH /me 的头像校验（消费侧接口由 user 定义，main 装配）。
 func (s *Service) ValidateImage(ctx context.Context, userID int64, objectKey string) error {
-	size, err := s.storage.StatObject(ctx, objectKey)
-	if err != nil {
-		if errors.Is(err, storage.ErrObjectNotFound) {
-			return ErrUploadURLExpired
-		}
-		if mapped := mapStorageError(err); errors.Is(mapped, ErrStorageUnavailable) {
-			return mapped
-		}
-		slog.Error("stat image failed", "object_key", objectKey, "err", err)
-		return fmt.Errorf("stat image: %w", err)
-	}
-	if size == 0 {
+	if !strings.HasPrefix(objectKey, fmt.Sprintf("covers/%d/", userID)) {
 		return ErrUploadURLExpired
 	}
-	if err := s.repo.ConsumeTicket(ctx, userID, objectKey); err != nil {
-		if errors.Is(err, ErrTicketInvalid) {
-			return ErrUploadURLExpired
-		}
-		slog.Error("consume image ticket failed", "user_id", userID, "err", err)
-		return fmt.Errorf("consume image ticket: %w", err)
+	err := s.repo.ConsumeTicket(ctx, userID, objectKey, func() error {
+		return s.finalizeUpload(ctx, objectKey, 5<<20)
+	})
+	if errors.Is(err, ErrTicketInvalid) {
+		return ErrUploadURLExpired
 	}
-	return nil
+	return err
+}
+
+func (s *Service) finalizeUpload(ctx context.Context, objectKey string, maxSize int64) error {
+	sealCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err := s.storage.FinalizeUpload(sealCtx, "staging/"+objectKey, objectKey, maxSize)
+	switch {
+	case errors.Is(err, storage.ErrObjectNotFound):
+		return ErrUploadURLExpired
+	case errors.Is(err, storage.ErrInvalidObjectSize):
+		return ErrInvalidParam
+	default:
+		return mapStorageError(err)
+	}
 }
 
 // Get 按可见性策略返回详情：已删除对所有人不可见；

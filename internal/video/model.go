@@ -14,22 +14,35 @@ const (
 	StatusDeleted       Status = "DELETED"
 )
 
+// MediaProbeStatus records the outcome of asynchronous media validation.
+type MediaProbeStatus string
+
+const (
+	ProbePending  MediaProbeStatus = "PENDING"
+	ProbePassed   MediaProbeStatus = "PASSED"
+	ProbeRejected MediaProbeStatus = "REJECTED"
+	ProbeSkipped  MediaProbeStatus = "SKIPPED"
+)
+
+func (s MediaProbeStatus) AllowsPublish() bool { return s == ProbePassed || s == ProbeSkipped }
+
 // Video 对应 videos 表，schema 以 migrations/*.sql 为准。
 // status 字段由状态机统一维护，不在此处直接赋值。
 // Username/AvatarKey 来自 LEFT JOIN users（详情页作者信息）。
 type Video struct {
-	ID              int64      `gorm:"column:id;primaryKey"`
-	AuthorID        int64      `gorm:"column:author_id"`
-	Title           string     `gorm:"column:title"`
-	ObjectKey       string     `gorm:"column:object_key"`
-	CoverKey        *string    `gorm:"column:cover_key"`
-	DurationSeconds int        `gorm:"column:duration_seconds"`
-	Status          Status     `gorm:"column:status"`
-	PublishedAt     *time.Time `gorm:"column:published_at"`
-	CreatedAt       time.Time  `gorm:"column:created_at"`
-	UpdatedAt       time.Time  `gorm:"column:updated_at"`
-	Username        string     `gorm:"column:username"`
-	AvatarKey       *string    `gorm:"column:avatar_key"`
+	MediaProbeStatus MediaProbeStatus `gorm:"column:media_probe_status"`
+	ID               int64            `gorm:"column:id;primaryKey"`
+	AuthorID         int64            `gorm:"column:author_id"`
+	Title            string           `gorm:"column:title"`
+	ObjectKey        string           `gorm:"column:object_key"`
+	CoverKey         *string          `gorm:"column:cover_key"`
+	DurationSeconds  int              `gorm:"column:duration_seconds"`
+	Status           Status           `gorm:"column:status"`
+	PublishedAt      *time.Time       `gorm:"column:published_at"`
+	CreatedAt        time.Time        `gorm:"column:created_at"`
+	UpdatedAt        time.Time        `gorm:"column:updated_at"`
+	Username         string           `gorm:"column:username"`
+	AvatarKey        *string          `gorm:"column:avatar_key"`
 }
 
 func (Video) TableName() string {

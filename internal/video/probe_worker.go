@@ -11,6 +11,7 @@ import (
 
 	"github.com/lihualin/tokmall/internal/config"
 	"github.com/lihualin/tokmall/internal/mediaprobe"
+	"github.com/lihualin/tokmall/internal/storage"
 )
 
 // 媒体校验 worker
@@ -21,7 +22,7 @@ import (
 // 这个 worker 把校验放到**异步**侧（同类项目在上传请求里同步跑 ffprobe+ffmpeg，
 // 阻塞 HTTP 线程 30s~2min，且失败直接 500）：
 //
-//	取 PENDING 视频（SKIP LOCKED）→ 下载到临时目录 → ffprobe 实测
+//	取到期 PENDING 视频（失败后延迟重试）→ 下载到临时目录 → ffprobe 实测
 //	→ 策略校验（时长/分辨率/编码）→ 需要时 remux 加 faststart 回写
 //	→ 写回实测结果与状态（PASSED / REJECTED / SKIPPED）
 //
@@ -69,7 +70,8 @@ type ProbeRepository interface {
 	// ListPendingProbe 取一批待校验视频（PENDING），按 id 升序。
 	ListPendingProbe(ctx context.Context, limit int) ([]ProbeCandidate, error)
 	// SaveProbeResult 写回校验结果。返回 false 表示该行已被别的 worker 处理。
-	SaveProbeResult(ctx context.Context, videoID int64, result ProbeOutcome) (bool, error)
+	SaveProbeResult(ctx context.Context, videoID int64, result ProbeOutcome, beforeSave ...func() error) (bool, error)
+	DeferProbe(ctx context.Context, videoID int64, retryAt time.Time) error
 }
 
 // ProbeCandidate 是一条待校验视频的关键信息。
@@ -176,7 +178,7 @@ func (w *ProbeWorker) Run(ctx context.Context) {
 func (w *ProbeWorker) RunOnce(ctx context.Context) int {
 	candidates, err := w.repo.ListPendingProbe(ctx, w.batch)
 	if err != nil {
-		slog.Warn("list pending media probes failed", "err", err)
+		slog.WarnContext(ctx, "list pending media probes failed", "err", err)
 		return 0
 	}
 	processed := 0
@@ -185,7 +187,12 @@ func (w *ProbeWorker) RunOnce(ctx context.Context) int {
 			return processed
 		}
 		if err := w.probeOne(ctx, candidate); err != nil {
-			slog.Warn("media probe failed", "video_id", candidate.VideoID, "err", err)
+			slog.WarnContext(ctx, "media probe failed", "video_id", candidate.VideoID, "err", err)
+			retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			if retryErr := w.repo.DeferProbe(retryCtx, candidate.VideoID, time.Now().Add(time.Minute)); retryErr != nil {
+				slog.WarnContext(ctx, "defer media probe failed", "video_id", candidate.VideoID, "err", retryErr)
+			}
+			cancel()
 		}
 		processed++
 	}
@@ -202,6 +209,9 @@ func (w *ProbeWorker) probeOne(ctx context.Context, candidate ProbeCandidate) er
 
 	inputPath := filepath.Join(dir, "input.mp4")
 	if err := w.storage.DownloadToFile(ctx, candidate.ObjectKey, inputPath); err != nil {
+		if errors.Is(err, storage.ErrInvalidObjectSize) {
+			return w.save(ctx, candidate.VideoID, ProbeOutcome{Status: "REJECTED", Error: "video exceeds the object size limit"})
+		}
 		// 下载失败通常是对象存储暂时不可用：**不写结果**，留给下一轮重试。
 		return fmt.Errorf("download object: %w", err)
 	}
@@ -212,7 +222,7 @@ func (w *ProbeWorker) probeOne(ctx context.Context, candidate ProbeCandidate) er
 		case errors.Is(err, mediaprobe.ErrToolMissing):
 			// 工具缺失是环境问题，不是文件问题：标记 SKIPPED（降级放行）并告警，
 			// 绝不能把正常视频误判成坏文件。
-			slog.Error("ffprobe not available, skipping media validation", "video_id", candidate.VideoID)
+			slog.ErrorContext(ctx, "ffprobe not available, skipping media validation", "video_id", candidate.VideoID)
 			w.stats.ProbeSkipped("tool_missing")
 			return w.save(ctx, candidate.VideoID, ProbeOutcome{Status: "SKIPPED", Error: "ffprobe not installed"})
 		case errors.Is(err, mediaprobe.ErrProbeFailed):
@@ -248,36 +258,37 @@ func (w *ProbeWorker) probeOne(ctx context.Context, candidate ProbeCandidate) er
 		VideoCodec:      result.VideoCodec,
 	}
 
+	var beforeSave []func() error
 	// faststart：moov 在尾部时重写容器（-c copy，不重新编码）。
-	// 失败不影响校验结论：只是首帧会慢一些，属于"降级但仍可播"。
+	// remux 失败保留原文件；回写失败则重试，避免数据库与对象内容脱节。
 	if !result.MoovAtFront {
 		faststartPath := filepath.Join(dir, "faststart.mp4")
 		if err := w.prober.RemuxFaststart(ctx, inputPath, faststartPath); err != nil {
-			slog.Warn("faststart remux failed, keeping original object",
+			slog.WarnContext(ctx, "faststart remux failed, keeping original object",
 				"video_id", candidate.VideoID, "err", err)
 		} else if info, statErr := os.Stat(faststartPath); statErr == nil {
-			if uploadErr := w.storage.UploadFromFile(ctx, candidate.ObjectKey, faststartPath, info.Size()); uploadErr != nil {
-				slog.Warn("upload faststart object failed, keeping original",
-					"video_id", candidate.VideoID, "err", uploadErr)
-			} else {
-				outcome.FaststartApplied = true
-				w.stats.FaststartApplied()
-			}
+			outcome.FaststartApplied = true
+			beforeSave = append(beforeSave, func() error {
+				return w.storage.UploadFromFile(ctx, candidate.ObjectKey, faststartPath, info.Size())
+			})
 		}
 	}
 
 	w.stats.ProbeResult("passed")
-	return w.save(ctx, candidate.VideoID, outcome)
+	return w.save(ctx, candidate.VideoID, outcome, beforeSave...)
 }
 
-func (w *ProbeWorker) save(ctx context.Context, videoID int64, outcome ProbeOutcome) error {
-	saved, err := w.repo.SaveProbeResult(ctx, videoID, outcome)
+func (w *ProbeWorker) save(ctx context.Context, videoID int64, outcome ProbeOutcome, beforeSave ...func() error) error {
+	saved, err := w.repo.SaveProbeResult(ctx, videoID, outcome, beforeSave...)
 	if err != nil {
 		return fmt.Errorf("save probe result: %w", err)
 	}
+	if saved && outcome.FaststartApplied {
+		w.stats.FaststartApplied()
+	}
 	if !saved {
 		// 行已被别的 worker 处理（多实例部署）：不是错误。
-		slog.Debug("media probe result already saved by another worker", "video_id", videoID)
+		slog.DebugContext(ctx, "media probe result already saved by another worker", "video_id", videoID)
 	}
 	return nil
 }

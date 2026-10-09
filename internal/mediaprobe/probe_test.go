@@ -157,3 +157,13 @@ func TestProbeMissingToolIsDistinguishable(t *testing.T) {
 	_, err := prober.Probe(context.Background(), path)
 	require.ErrorIs(t, err, ErrToolMissing)
 }
+
+// A killed command returns ExitError too; timeout must never mean invalid media.
+func TestProbeTimeoutIsRetryable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ffprobe")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nexec sleep 5\n"), 0700))
+	prober := &Prober{FFProbePath: path, Timeout: 20 * time.Millisecond}
+	_, err := prober.Probe(context.Background(), "unused")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotErrorIs(t, err, ErrProbeFailed)
+}

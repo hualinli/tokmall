@@ -3,19 +3,13 @@ package video
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// 媒体校验的仓储实现。
-//
-// 取件用 `FOR UPDATE SKIP LOCKED`：多实例部署时每个 worker 拿到不同的行，
-// 不会互相阻塞，也不需要额外的分布式锁（与 outbox 仓储同一套做法）。
-// 但**锁只覆盖取件事务**：真正的探测（下载 + ffprobe + remux）可能几十秒，
-// 不能把行锁持有那么久。因此取件只把行"标记为处理中"的语义交给
-// SaveProbeResult 的条件更新来兜底——见下面 SaveProbeResult 的 WHERE。
+// 待校验队列排除已删除视频；失败记录延后重试，让后续上传得到处理。
 func (r *GormRepository) ListPendingProbe(ctx context.Context, limit int) ([]ProbeCandidate, error) {
 	if limit <= 0 {
 		limit = 1
@@ -25,12 +19,10 @@ func (r *GormRepository) ListPendingProbe(ctx context.Context, limit int) ([]Pro
 		ObjectKey       string `gorm:"column:object_key"`
 		DurationSeconds int    `gorm:"column:duration_seconds"`
 	}
-	err := r.db.WithContext(ctx).Raw(`
-		SELECT id, object_key, duration_seconds
-		FROM videos
-		WHERE media_probe_status = 'PENDING'
-		ORDER BY id ASC
-		LIMIT ?`, limit).Scan(&rows).Error
+	err := r.db.WithContext(ctx).Model(&Video{}).
+		Select("id, object_key, duration_seconds").
+		Where("media_probe_status = ? AND status <> ? AND probe_retry_at <= ?", string(ProbePending), string(StatusDeleted), time.Now().UTC()).
+		Order("probe_retry_at ASC, id ASC").Limit(limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -50,52 +42,67 @@ func (r *GormRepository) ListPendingProbe(ctx context.Context, limit int) ([]Pro
 // 条件更新 `WHERE media_probe_status = 'PENDING'` 是幂等的来源：
 // 同一行被两个 worker 处理时，只有第一个能把状态从 PENDING 推走，
 // 第二个得到 RowsAffected=0（返回 false，不视为错误）。
-func (r *GormRepository) SaveProbeResult(ctx context.Context, videoID int64, outcome ProbeOutcome) (bool, error) {
+func (r *GormRepository) SaveProbeResult(ctx context.Context, videoID int64, outcome ProbeOutcome, beforeSave ...func() error) (bool, error) {
 	if videoID <= 0 {
 		return false, errors.New("invalid video id")
 	}
-	now := time.Now().UTC()
-
-	updates := map[string]any{
-		"media_probe_status":      outcome.Status,
-		"media_probe_error":       nullableProbeError(outcome.Error),
-		"probed_at":               now,
-		"probed_duration_seconds": nullableProbeFloat(outcome.DurationSeconds),
-		"probed_width":            nullableProbeInt(outcome.Width),
-		"probed_height":           nullableProbeInt(outcome.Height),
-		"probed_video_codec":      nullableProbeString(outcome.VideoCodec),
-		"faststart_applied":       outcome.FaststartApplied,
-	}
-	if outcome.Status == "SKIPPED" {
-		// SKIPPED 的语义是"没校验"（工具缺失），因此不写 probed_at——
-		// 数据库 CHECK 也要求这两者同真同假。
-		delete(updates, "probed_at")
-	}
-
-	query := r.db.WithContext(ctx).Model(&Video{}).
-		Where("id = ? AND media_probe_status = ?", videoID, "PENDING")
-
-	// 校验失败时把视频挡回待审：否则一个"上传时是坏文件"的视频
-	// 可能已经处于 PUBLISHED 并被 Feed 缓存引用。
-	if outcome.Status == "REJECTED" {
-		query = query.Where("status <> ?", string(StatusPublished))
-	}
-
-	result := query.Updates(updates)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	if result.RowsAffected == 0 {
-		// 可能原因：已被别的 worker 处理（正常），或视频已被删除（正常），
-		// 或 REJECTED 撞上了"已经发布"（需要人工介入，记日志）。
-		var status string
-		if err := r.db.WithContext(ctx).Raw(`SELECT status FROM videos WHERE id = ?`, videoID).
-			Scan(&status).Error; err == nil && status == string(StatusPublished) && outcome.Status == "REJECTED" {
-			return false, fmt.Errorf("video %d is published but failed media validation: %s", videoID, outcome.Error)
+	saved := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var v Video
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND media_probe_status = ? AND status <> ?", videoID, string(ProbePending), string(StatusDeleted)).Take(&v).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
 		}
-		return false, nil
-	}
-	return true, nil
+		if err != nil {
+			return err
+		}
+		for _, action := range beforeSave {
+			if err := action(); err != nil {
+				return err
+			}
+		}
+		now := time.Now().UTC()
+
+		updates := map[string]any{
+			"media_probe_status":      outcome.Status,
+			"media_probe_error":       nullableProbeError(outcome.Error),
+			"probed_at":               now,
+			"probed_duration_seconds": nullableProbeFloat(outcome.DurationSeconds),
+			"probed_width":            nullableProbeInt(outcome.Width),
+			"probed_height":           nullableProbeInt(outcome.Height),
+			"probed_video_codec":      nullableProbeString(outcome.VideoCodec),
+			"faststart_applied":       outcome.FaststartApplied,
+		}
+		if outcome.Status == "SKIPPED" {
+			// SKIPPED 的语义是"没校验"（工具缺失），因此不写 probed_at——
+			// 数据库 CHECK 也要求这两者同真同假。
+			delete(updates, "probed_at")
+		}
+
+		query := tx.Model(&Video{}).
+			Where("id = ? AND media_probe_status = ? AND status <> ?", videoID, string(ProbePending), string(StatusDeleted))
+
+		// 结果与下架同一条 UPDATE，数据库不会看到 REJECTED + PUBLISHED 的中间态。
+		if outcome.Status == string(ProbeRejected) {
+			updates["status"] = gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", string(StatusPublished), string(StatusBlocked))
+		}
+
+		result := query.Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		saved = result.RowsAffected == 1
+		return nil
+	})
+	return saved, err
+}
+
+// DeferProbe delays transient failures rather than retaining a poison head of queue.
+func (r *GormRepository) DeferProbe(ctx context.Context, videoID int64, retryAt time.Time) error {
+	return r.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ? AND media_probe_status = ? AND status <> ?", videoID, string(ProbePending), string(StatusDeleted)).
+		Update("probe_retry_at", retryAt.UTC()).Error
 }
 
 func nullableProbeError(value string) *string {
@@ -127,4 +134,3 @@ func nullableProbeFloat(value float64) *float64 {
 }
 
 var _ ProbeRepository = (*GormRepository)(nil)
-var _ = gorm.ErrRecordNotFound

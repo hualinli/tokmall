@@ -186,11 +186,11 @@ paths:
       summary: 热榜（物化滑动窗口）
       description: >-
         热度按分钟桶累加（点赞 +3 / 取消点赞 -3 / 播放 +1，权重在服务端），
-        读取时把最近 60 个分钟桶合并成一个**冻结窗口**再分页。
-        游标同时携带 window_end 与 (hot_score, video_id)：窗口冻结保证同一段翻页
-        看到同一份榜单，分数游标保证即使窗口被后台重新物化也不会重复返回已翻过的条目。
-        窗口为空（近期无互动）或 Redis 不可用时**降级为时间流**（items 结构与时间流一致，
-        仅 hot_score 为 0），不会返回错误。
+        后台每分钟合并最近 60 个分钟桶为冻结窗口，首页窗口缺失才合并回源。
+        游标携带 window_end 与 (hot_score, video_id)，已有窗口不重写；窗口最多 2000 条、
+        默认 10 分钟过期，过期的热榜游标返回 400 INVALID_CURSOR。
+        首页窗口为空或首页遇 Redis 故障时降级时间流；返回时间游标后，后续继续时间流。
+        已有热榜游标遇 Redis 故障不切换排序，会返回系统错误。
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
@@ -351,6 +351,10 @@ paths:
     post:
       tags: [videos]
       summary: 申请预签名上传 URL（含票证防伪造）
+      description: >-
+        URL 仅授权写 staging 临时对象，签名绑定 file_size 与 content_type。
+        PUT 请求必须发送对应长度和 Content-Type，创建视频时回传原 object_key，
+        服务端检查实际大小并按源 ETag 封存到最终对象；旧 PUT 重放不会改最终文件。
       requestBody:
         required: true
         content:
@@ -359,7 +363,7 @@ paths:
               $ref: "#/components/schemas/UploadURLRequest"
       responses:
         "200":
-          description: 预签名 PUT URL（15 分钟有效）
+          description: 预签名 PUT URL（默认 15 分钟，可配置，以 expires_at 为准）
           content:
             application/json:
               schema:
@@ -371,7 +375,7 @@ paths:
   /api/v1/videos:
     post:
       tags: [videos]
-      summary: 创建视频记录（需先上传文件到 object_key）
+      summary: 封存已上传对象并创建视频记录（回传上传票证的 object_key）
       requestBody:
         required: true
         content:
@@ -437,10 +441,12 @@ paths:
           $ref: "#/components/responses/RateLimited"
     delete:
       tags: [videos]
-      summary: 删除视频（软删 + 删除 MinIO 对象，旧 URL 立即失效）
+      summary: 删除视频（软删 + 持久化对象清理）
       description: >-
         非作者与视频不存在统一返回 404：视频 ID 是自增序列，403 会变成
         "该 ID 存在但不属于你"的存在性预言机，与不可见资源一律 404 的约定冲突。
+        删除状态与对象清理任务同事务提交；请求内尝试物理删除，失败由后台重试。
+        已删除视频的作者重复请求成功；物理删除完成前，已签发的 GET URL 可能仍有效。
       parameters:
         - $ref: "#/components/parameters/VideoID"
       responses:
@@ -458,6 +464,9 @@ paths:
     post:
       tags: [videos]
       summary: 发布视频（PENDING_REVIEW -> PUBLISHED，条件更新防并发）
+      description: >-
+        仅作者可发布；媒体状态必须为 PASSED 或 SKIPPED，PENDING/REJECTED 返回状态冲突。
+        ffprobe 缺失或媒体探测配置关闭会记为 SKIPPED，不等于已经通过真实媒体校验。
       parameters:
         - $ref: "#/components/parameters/VideoID"
       responses:
@@ -1826,7 +1835,7 @@ components:
         file_size:
           type: integer
           format: int64
-          description: 视频 1MB-512MB；图片 1KB-5MB
+          description: 视频 1MiB-512MiB；图片 1KiB-5MiB。签名绑定此字节数，PUT 实际长度须一致
         content_type:
           type: string
           enum: [video/mp4, video/webm, video/quicktime, image/jpeg, image/png, image/webp]
@@ -1836,10 +1845,10 @@ components:
       properties:
         object_key:
           type: string
-          description: 创建视频时必须回传
+          description: 逻辑对象 key；创建视频或图片引用时回传，不从 upload_url 反推 staging key
         upload_url:
           type: string
-          description: 预签名 PUT URL（15 分钟有效）
+          description: 预签名 PUT URL（默认 15 分钟，可配置，以 expires_at 为准）
         expires_at:
           type: string
           format: date-time
@@ -2254,22 +2263,26 @@ components:
             $ref: "#/components/schemas/VideoProductCard"
     AuthorSalesSlice:
       type: object
-      required: [id, order_count, buyer_count, units_sold, gmv]
+      required: [id, order_count, buyer_count, units_sold, gmv, refunded_orders, refunded_amount]
       properties:
         id: { type: integer, format: int64 }
         order_count: { type: integer, format: int64 }
         buyer_count: { type: integer, format: int64 }
         units_sold: { type: integer, format: int64 }
-        gmv: { type: integer, format: int64, description: 人民币分 }
+        gmv: { type: integer, format: int64, description: 历史成交毛额（人民币分，含后来退款的订单） }
+        refunded_orders: { type: integer, format: int64 }
+        refunded_amount: { type: integer, format: int64, description: 已成功退款金额（人民币分） }
     AuthorSales:
       type: object
-      required: [author_id, order_count, buyer_count, units_sold, gmv, by_video, by_product]
+      required: [author_id, order_count, buyer_count, units_sold, gmv, refunded_orders, refunded_amount, by_video, by_product]
       properties:
         author_id: { type: integer, format: int64 }
         order_count: { type: integer, format: int64 }
         buyer_count: { type: integer, format: int64 }
         units_sold: { type: integer, format: int64 }
-        gmv: { type: integer, format: int64, description: 人民币分 }
+        gmv: { type: integer, format: int64, description: 历史成交毛额（人民币分，含后来退款的订单） }
+        refunded_orders: { type: integer, format: int64 }
+        refunded_amount: { type: integer, format: int64, description: 已成功退款金额（人民币分） }
         by_video:
           type: array
           items: { $ref: "#/components/schemas/AuthorSalesSlice" }
@@ -2327,7 +2340,8 @@ components:
           type: string
         status:
           type: string
-          enum: [PENDING_PAYMENT]
+          enum: [PENDING_PAYMENT, PAID, FULFILLING, COMPLETED, CANCELED, EXPIRED, REFUND_REQUESTED, REFUNDED]
+          description: 首次创建为 PENDING_PAYMENT；幂等重放返回原订单的当前状态
         total_amount:
           type: integer
           format: int64

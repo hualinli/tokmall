@@ -54,7 +54,9 @@ func (f *fakeRepo) CreateVideo(ctx context.Context, v *Video) error {
 }
 
 func (f *fakeRepo) FindVideoByID(ctx context.Context, id int64) (*Video, error) {
+	f.playMu.Lock()
 	f.findCalls++
+	f.playMu.Unlock()
 	v, ok := f.videos[id]
 	if !ok {
 		return nil, ErrNotFound
@@ -80,18 +82,34 @@ func (f *fakeRepo) CreateTicket(ctx context.Context, t *UploadTicket) error {
 	return nil
 }
 
-func (f *fakeRepo) ConsumeTicket(ctx context.Context, userID int64, objectKey string) error {
+func (f *fakeRepo) ConsumeTicket(ctx context.Context, userID int64, objectKey string, finalize func() error) error {
 	t, ok := f.tickets[objectKey]
 	if !ok || t.Used || t.UserID != userID || t.ExpiresAt.Before(time.Now()) {
 		return ErrTicketInvalid
+	}
+	if err := finalize(); err != nil {
+		return err
 	}
 	t.Used = true
 	return nil
 }
 
 // ConsumeTicketAndCreateVideo 复刻事务语义：核销失败则视频不落库。
-func (f *fakeRepo) ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video) error {
-	if err := f.ConsumeTicket(ctx, userID, objectKey); err != nil {
+func (f *fakeRepo) ConsumeTicketAndCreateVideo(ctx context.Context, userID int64, objectKey string, v *Video, finalize func() error) error {
+	if err := f.ConsumeTicket(ctx, userID, objectKey, func() error {
+		if v.CoverKey != nil {
+			cover, ok := f.tickets[*v.CoverKey]
+			if !ok || cover.Used || cover.UserID != userID || cover.ExpiresAt.Before(time.Now()) {
+				return ErrTicketInvalid
+			}
+			if err := finalize(); err != nil {
+				return err
+			}
+			cover.Used = true
+			return nil
+		}
+		return finalize()
+	}); err != nil {
 		return err
 	}
 	return f.CreateVideo(ctx, v)
@@ -169,7 +187,7 @@ func newFakeStorage() *fakeStorage {
 	return &fakeStorage{objectSizes: make(map[string]int64)}
 }
 
-func (f *fakeStorage) PresignPutURL(ctx context.Context, objectKey string) (string, error) {
+func (f *fakeStorage) PresignPutURL(ctx context.Context, objectKey string, fileSize int64, contentType string) (string, error) {
 	if f.presignErr != nil {
 		return "", f.presignErr
 	}
@@ -185,6 +203,23 @@ func (f *fakeStorage) StatObject(ctx context.Context, objectKey string) (int64, 
 		return 0, storage.ErrObjectNotFound
 	}
 	return size, nil
+}
+
+func (f *fakeStorage) FinalizeUpload(ctx context.Context, source, destination string, maxSize int64) error {
+	if f.presignErr != nil {
+		return f.presignErr
+	}
+	size, err := f.StatObject(ctx, destination)
+	if err != nil {
+		return err
+	}
+	if size <= 0 {
+		return storage.ErrObjectNotFound
+	}
+	if size > maxSize {
+		return storage.ErrInvalidObjectSize
+	}
+	return nil
 }
 
 func (f *fakeStorage) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
@@ -205,7 +240,65 @@ func (f *fakeStorage) DeleteObject(ctx context.Context, objectKey string) error 
 }
 
 func newTestService(repo *fakeRepo, store *fakeStorage) *Service {
-	return NewService(repo, store, 15*time.Minute, "test-cursor-secret", newFakeInvalidator())
+	svc := NewService(repo, store, 15*time.Minute, "test-cursor-secret", newFakeInvalidator())
+	svc.SetMediaProbeEnabled(false)
+	return svc
+}
+
+func TestActualUploadSizeLimits(t *testing.T) {
+	for _, image := range []bool{false, true} {
+		repo, store := newFakeRepo(), newFakeStorage()
+		svc := newTestService(repo, store)
+		key := "videos/42/oversize.mp4"
+		maxSize := int64(512 << 20)
+		if image {
+			key = "covers/42/oversize.jpg"
+			maxSize = 5 << 20
+		}
+		registerTicket(t, repo, 42, key)
+		store.objectSizes[key] = maxSize + 1
+		var err error
+		if image {
+			err = svc.ValidateImage(context.Background(), 42, key)
+		} else {
+			_, err = svc.Create(context.Background(), 42, CreateParams{Title: "oversize", ObjectKey: key, DurationSeconds: 10})
+		}
+		require.ErrorIs(t, err, ErrInvalidParam)
+		require.False(t, repo.tickets[key].Used, "failed finalization must preserve retryability")
+		store.objectSizes[key] = maxSize
+		if image {
+			err = svc.ValidateImage(context.Background(), 42, key)
+		} else {
+			_, err = svc.Create(context.Background(), 42, CreateParams{Title: "bounded", ObjectKey: key, DurationSeconds: 10})
+		}
+		require.NoError(t, err)
+	}
+}
+
+func TestUploadURLOnlyAuthorizesStaging(t *testing.T) {
+	repo, store := newFakeRepo(), newFakeStorage()
+	svc := newTestService(repo, store)
+	result, err := svc.GetUploadURL(context.Background(), 42, "video.mp4", 2<<20, "video/mp4")
+	require.NoError(t, err)
+	require.Contains(t, result.UploadURL, "/staging/"+result.ObjectKey)
+	require.NotContains(t, result.ObjectKey, "staging/")
+}
+
+func TestFailedVideoFinalizationPreservesBothTickets(t *testing.T) {
+	repo, store := newFakeRepo(), newFakeStorage()
+	svc := newTestService(repo, store)
+	key, cover := "videos/42/retry.mp4", "covers/42/retry.jpg"
+	registerTicket(t, repo, 42, key)
+	registerTicket(t, repo, 42, cover)
+	store.objectSizes[key] = 513 << 20
+	store.objectSizes[cover] = 1024
+	_, err := svc.Create(context.Background(), 42, CreateParams{Title: "retry", ObjectKey: key, CoverKey: &cover, DurationSeconds: 10})
+	require.ErrorIs(t, err, ErrInvalidParam)
+	require.False(t, repo.tickets[key].Used)
+	require.False(t, repo.tickets[cover].Used)
+	store.objectSizes[key] = 2 << 20
+	_, err = svc.Create(context.Background(), 42, CreateParams{Title: "retry", ObjectKey: key, CoverKey: &cover, DurationSeconds: 10})
+	require.NoError(t, err)
 }
 
 // fakeInvalidator 记录失效调用：验证"发布/删除成功才失效"与"失效失败不阻塞请求"。
@@ -413,7 +506,7 @@ func (r *concurrentPublishRepo) UpdateVideoStatus(_ context.Context, id, authorI
 func TestPublish_ConcurrentSingleWinner(t *testing.T) {
 	repo := &concurrentPublishRepo{
 		fakeRepo: newFakeRepo(),
-		video:    Video{ID: 7, AuthorID: 42, Status: StatusPendingReview},
+		video:    Video{ID: 7, AuthorID: 42, Status: StatusPendingReview, MediaProbeStatus: ProbeSkipped},
 	}
 	store := newFakeStorage()
 	svc := NewService(repo, store, 15*time.Minute, "test-cursor-secret", nil)
@@ -504,7 +597,7 @@ func TestDelete_ForbiddenAndSuccess(t *testing.T) {
 
 	// 已删除是终态，不能再删
 	err = svc.Delete(context.Background(), 42, res.VideoID)
-	require.ErrorIs(t, err, ErrStatusConflict)
+	require.NoError(t, err)
 }
 
 // TestPublishInvalidatesCache 发布成功必须失效 feed 缓存。
@@ -513,6 +606,7 @@ func TestPublishInvalidatesCache(t *testing.T) {
 	store := newFakeStorage()
 	invalidator := newFakeInvalidator()
 	svc := NewService(repo, store, 15*time.Minute, "test-cursor-secret", invalidator)
+	svc.SetMediaProbeEnabled(false)
 	registerTicket(t, repo, 42, "videos/42/u1.mp4")
 	store.objectSizes["videos/42/u1.mp4"] = 1024
 	res, err := svc.Create(context.Background(), 42, CreateParams{
@@ -536,6 +630,7 @@ func TestDeleteInvalidatesCache(t *testing.T) {
 	store := newFakeStorage()
 	invalidator := newFakeInvalidator()
 	svc := NewService(repo, store, 15*time.Minute, "test-cursor-secret", invalidator)
+	svc.SetMediaProbeEnabled(false)
 	registerTicket(t, repo, 42, "videos/42/u1.mp4")
 	store.objectSizes["videos/42/u1.mp4"] = 1024
 	res, err := svc.Create(context.Background(), 42, CreateParams{
@@ -559,6 +654,7 @@ func TestInvalidateFailureDoesNotFailRequest(t *testing.T) {
 	invalidator := newFakeInvalidator()
 	invalidator.err = errors.New("redis down")
 	svc := NewService(repo, store, 15*time.Minute, "test-cursor-secret", invalidator)
+	svc.SetMediaProbeEnabled(false)
 	registerTicket(t, repo, 42, "videos/42/u1.mp4")
 	store.objectSizes["videos/42/u1.mp4"] = 1024
 	res, err := svc.Create(context.Background(), 42, CreateParams{

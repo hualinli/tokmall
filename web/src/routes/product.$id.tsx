@@ -27,6 +27,7 @@ function ProductPage() {
   const queryClient = useQueryClient()
   const [skuId, setSkuId] = useState(0)
   const [quantity, setQuantity] = useState(1)
+  const [closedOrder, setClosedOrder] = useState(false)
   const [paidOrder, setPaidOrder] = useState<number | null>(null)
   // 幂等键懒初始化：渲染期不能调用 crypto（非安全上下文的 http 页面没有 randomUUID，
   // 会把整页渲染打断），等到真正下单时再生成
@@ -61,6 +62,10 @@ function ProductPage() {
       })
       if (created.error) throw apiRequestError(created)
       const order = created.data
+      if (order.status === 'CANCELED' || order.status === 'EXPIRED') {
+        setClosedOrder(true)
+        throw new Error('原订单已关闭，请重新购买')
+      }
       if (!paymentIdentity.current || paymentIdentity.current.orderId !== order.order_id) {
         paymentIdentity.current = {
           orderId: order.order_id,
@@ -76,7 +81,15 @@ function ProductPage() {
           amount: order.total_amount,
         },
       })
-      if (payment.error) throw apiRequestError(payment)
+      if (payment.error) {
+        if (payment.error.error.code === 'ORDER_EXPIRED') {
+          setClosedOrder(true)
+        } else if (payment.error.error.code === 'ORDER_STATE_CONFLICT') {
+          const latest = await client.GET('/api/v1/orders/{id}', { params: { path: { id: order.order_id } } })
+          if (latest.data?.status === 'CANCELED' || latest.data?.status === 'EXPIRED') setClosedOrder(true)
+        }
+        throw apiRequestError(payment)
+      }
       return order.order_id
     },
     onSuccess: (orderId) => {
@@ -140,9 +153,16 @@ function ProductPage() {
         ) : accessToken ? (
           <Button
             className="mt-6 w-full" disabled={!selectedSKU || item.status !== 'ON_SALE' || checkout.isPending}
-            onClick={() => checkout.mutate()}
+            onClick={() => {
+              if (closedOrder) {
+                orderKey.current = null
+                paymentIdentity.current = null
+                setClosedOrder(false)
+              }
+              checkout.mutate()
+            }}
           >
-            {checkout.isPending ? '处理中…' : '下单并模拟支付'}
+            {checkout.isPending ? '处理中…' : closedOrder ? '重新购买' : '下单并模拟支付'}
           </Button>
         ) : (
           <Link to="/login" search={{ redirect: window.location.pathname + window.location.search }} className="mt-6 block">

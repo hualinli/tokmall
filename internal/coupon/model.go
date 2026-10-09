@@ -1,7 +1,7 @@
 // Package coupon 实现优惠券/促销域（v1：满减券）。
 //
 // 这个模块是照着"同类项目的反面清单"设计的（见
-// docs/domtok-comparison-and-borrowing.md §2）：发行量、每人限领、领取截止、
+// docs/architecture-decisions.md ADR-024）：发行量、每人限领、领取截止、
 // 券状态机、整数分金额、整单门槛、退款退券、对账覆盖——缺一条就会出现
 // "券可以无限领、无限用、过期还能领"那类问题。
 package coupon

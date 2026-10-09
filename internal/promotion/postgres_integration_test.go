@@ -135,7 +135,7 @@ func seedFixture(t *testing.T, db *gorm.DB, label string, n int) (int64, int64, 
 	prefix := label + "-" + uuid.NewString()
 	var author, video int64
 	require.NoError(t, db.Raw(`INSERT INTO users(email,username,password_hash,role) VALUES(?,?,'hash','MERCHANT') RETURNING id`, prefix+"@example.test", prefix).Scan(&author).Error)
-	require.NoError(t, db.Raw(`INSERT INTO videos(author_id,title,object_key,status,published_at) VALUES(?,'video',?,'PUBLISHED',now()) RETURNING id`, author, prefix+".mp4").Scan(&video).Error)
+	require.NoError(t, db.Raw(`INSERT INTO videos(author_id,title,object_key,status,published_at,media_probe_status) VALUES(?,'video',?,'PUBLISHED',now(),'SKIPPED') RETURNING id`, author, prefix+".mp4").Scan(&video).Error)
 	products := make([]int64, 0, n)
 	for i := range n {
 		var productID, skuID int64

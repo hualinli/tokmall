@@ -12,6 +12,33 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPostgresClosedCouponMigrationRepairsHistory(t *testing.T) {
+	if os.Getenv(postgresIntegrationSwitch) != "1" {
+		t.Skip("PostgreSQL integration is disabled")
+	}
+	db := newIsolatedPostgres(t, strings.TrimSpace(os.Getenv("TOKMALL_TEST_DATABASE_DSN")))
+	down, err := os.ReadFile("../../migrations/000024_closed_order_coupon.down.sql")
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(string(down)).Error)
+	buyers, merchantID, skuID := seedRefundFixture(t, db, "repair", 1, 5)
+	uc := seedUserCoupon(t, db, buyers[0], merchantID, 1000, 500)
+	svc := refundService(NewRepository(db))
+	ctx := context.Background()
+	created, err := svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "repair-old", UserCouponID: &uc})
+	require.NoError(t, err)
+	// Simulate the old cancellation implementation, which did not release coupons.
+	require.NoError(t, db.Exec("UPDATE orders SET status='CANCELED',canceled_at=now() WHERE id=?", created.OrderID).Error)
+	up, err := os.ReadFile("../../migrations/000024_closed_order_coupon.up.sql")
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(string(up)).Error)
+	var status string
+	require.NoError(t, db.Raw("SELECT status FROM user_coupons WHERE id=?", uc).Scan(&status).Error)
+	require.Equal(t, "UNUSED", status)
+	_, err = svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "repair-new", UserCouponID: &uc})
+	require.NoError(t, err)
+	require.Error(t, db.Exec(string(down)).Error, "rollback must preserve reused coupon history")
+}
+
 // 优惠券与订单的集成证明：金额拆分、一券一单、幂等重放、退款退券。
 // 这些都是"券"这个跨模块特性最容易出错的地方（DomTok 在这里的字段语义全乱了）。
 func TestPostgresOrderCouponIntegration(t *testing.T) {
@@ -23,6 +50,45 @@ func TestPostgresOrderCouponIntegration(t *testing.T) {
 	repo := NewRepository(db)
 	svc := refundService(repo)
 	ctx := context.Background()
+	for _, mode := range []string{"cancel", "expire", "lazy-expire", "expired-coupon"} {
+		t.Run("closed order releases coupon "+mode, func(t *testing.T) {
+			buyers, merchantID, skuID := seedRefundFixture(t, db, mode[:3], 1, 5)
+			uc := seedUserCoupon(t, db, buyers[0], merchantID, 1000, 500)
+			created, err := svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "close-" + mode, UserCouponID: &uc})
+			require.NoError(t, err)
+			if mode == "expired-coupon" {
+				require.NoError(t, db.Exec("UPDATE coupons SET valid_to=now()-interval '1 minute' WHERE id=(SELECT coupon_id FROM user_coupons WHERE id=?)", uc).Error)
+			}
+			switch mode {
+			case "expire", "lazy-expire":
+				require.NoError(t, db.Exec("UPDATE orders SET created_at=now()-interval '2 minutes', expires_at=now()-interval '1 minute' WHERE id=?", created.OrderID).Error)
+				if mode == "expire" {
+					expired, err := repo.ExpireNext(ctx, time.Now())
+					require.NoError(t, err)
+					require.True(t, expired)
+				} else {
+					_, err := svc.Pay(ctx, PayParams{UserID: buyers[0], OrderID: created.OrderID, PaymentNo: "close-pay", ProviderTradeNo: "close-trade", Amount: created.TotalAmount})
+					require.ErrorIs(t, err, ErrOrderExpired)
+				}
+			default:
+				_, err := svc.Cancel(ctx, CancelParams{UserID: buyers[0], OrderID: created.OrderID})
+				require.NoError(t, err)
+			}
+			var status string
+			require.NoError(t, db.Raw("SELECT status FROM user_coupons WHERE id=?", uc).Scan(&status).Error)
+			if mode == "expired-coupon" {
+				require.Equal(t, "EXPIRED", status)
+				return
+			}
+			require.Equal(t, "UNUSED", status)
+			reused, err := svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "reuse-" + mode, UserCouponID: &uc})
+			require.NoError(t, err)
+			require.NotEqual(t, created.OrderID, reused.OrderID)
+			var historical int64
+			require.NoError(t, db.Raw("SELECT user_coupon_id FROM orders WHERE id=?", created.OrderID).Scan(&historical).Error)
+			require.Equal(t, uc, historical)
+		})
+	}
 
 	t.Run("order splits amount and marks the coupon used", func(t *testing.T) {
 		buyers, merchantID, skuID := seedRefundFixture(t, db, "coupon-order", 1, 5)
@@ -98,6 +164,13 @@ func TestPostgresOrderCouponIntegration(t *testing.T) {
 			Row().Scan(&status, &orderID))
 		require.Equal(t, "UNUSED", status, "退款成功后券必须退回可再用状态")
 		require.Nil(t, orderID, "退券要清空订单引用，否则这张券再也用不出去")
+		reused, err := svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "coupon-reuse", UserCouponID: &userCouponID})
+		require.NoError(t, err, "returned coupon must be usable in a new order")
+		require.NotEqual(t, created.OrderID, reused.OrderID)
+		var originalCouponID int64
+		require.NoError(t, db.Raw("SELECT user_coupon_id FROM orders WHERE id = ?", created.OrderID).Scan(&originalCouponID).Error)
+		require.Equal(t, userCouponID, originalCouponID, "refund preserves the historical coupon reference")
+
 	})
 
 	t.Run("refund marks the coupon expired when it lapsed", func(t *testing.T) {
@@ -139,6 +212,16 @@ func TestPostgresOrderCouponIntegration(t *testing.T) {
 				IdempotencyKey: "coupon-threshold", UserCouponID: &userCouponID,
 			})
 			require.ErrorIs(t, err, ErrCouponThresholdNotMet)
+		})
+
+		t.Run("coupon belongs to another merchant", func(t *testing.T) {
+			_, otherMerchant, _ := seedRefundFixture(t, db, "coupon-other", 1, 5)
+			uc := seedUserCoupon(t, db, buyers[0], otherMerchant, 1000, 500)
+			_, err := svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: skuID, Quantity: 1, IdempotencyKey: "coupon-merchant", UserCouponID: &uc})
+			require.ErrorIs(t, err, ErrCouponNotUsable)
+			var status string
+			require.NoError(t, db.Raw("SELECT status FROM user_coupons WHERE id = ?", uc).Scan(&status).Error)
+			require.Equal(t, "UNUSED", status)
 		})
 
 		t.Run("coupon belongs to another user", func(t *testing.T) {

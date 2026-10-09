@@ -109,6 +109,9 @@ func (p *Prober) Probe(ctx context.Context, path string) (*Result, error) {
 		"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path)
 	output, err := cmd.Output()
 	if err != nil {
+		if probeCtx.Err() != nil {
+			return nil, fmt.Errorf("run ffprobe: %w", probeCtx.Err())
+		}
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, ErrToolMissing
 		}

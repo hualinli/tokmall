@@ -323,6 +323,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/feed/hot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 热榜（物化滑动窗口）
+         * @description 热度按分钟桶累加（点赞 +3 / 取消点赞 -3 / 播放 +1，权重在服务端）， 后台每分钟合并最近 60 个分钟桶为冻结窗口，首页窗口缺失才合并回源。 游标携带 window_end 与 (hot_score, video_id)，已有窗口不重写；窗口最多 2000 条、 默认 10 分钟过期，过期的热榜游标返回 400 INVALID_CURSOR。 首页窗口为空或首页遇 Redis 故障时降级时间流；返回时间游标后，后续继续时间流。 已有热榜游标遇 Redis 故障不切换排序，会返回系统错误。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 每页条数，默认 20，合法范围 1-100（feed 与视频列表；超出返回 400） */
+                    limit?: components["parameters"]["Limit"];
+                    /** @description 上一页返回的签名游标（无则取第一页） */
+                    cursor?: components["parameters"]["Cursor"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 热榜页 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["FeedResult"];
+                    };
+                };
+                400: components["responses"]["InvalidArgument"];
+                429: components["responses"]["RateLimited"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/feed/following": {
         parameters: {
             query?: never;
@@ -616,7 +662,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 申请预签名上传 URL（含票证防伪造） */
+        /**
+         * 申请预签名上传 URL（含票证防伪造）
+         * @description URL 仅授权写 staging 临时对象，签名绑定 file_size 与 content_type。 PUT 请求必须发送对应长度和 Content-Type，创建视频时回传原 object_key， 服务端检查实际大小并按源 ETag 封存到最终对象；旧 PUT 重放不会改最终文件。
+         */
         post: {
             parameters: {
                 query?: never;
@@ -630,7 +679,7 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description 预签名 PUT URL（15 分钟有效） */
+                /** @description 预签名 PUT URL（默认 15 分钟，可配置，以 expires_at 为准） */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -658,7 +707,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 创建视频记录（需先上传文件到 object_key） */
+        /** 封存已上传对象并创建视频记录（回传上传票证的 object_key） */
         post: {
             parameters: {
                 query?: never;
@@ -779,8 +828,8 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * 删除视频（软删 + 删除 MinIO 对象，旧 URL 立即失效）
-         * @description 非作者与视频不存在统一返回 404：视频 ID 是自增序列，403 会变成 "该 ID 存在但不属于你"的存在性预言机，与不可见资源一律 404 的约定冲突。
+         * 删除视频（软删 + 持久化对象清理）
+         * @description 非作者与视频不存在统一返回 404：视频 ID 是自增序列，403 会变成 "该 ID 存在但不属于你"的存在性预言机，与不可见资源一律 404 的约定冲突。 删除状态与对象清理任务同事务提交；请求内尝试物理删除，失败由后台重试。 已删除视频的作者重复请求成功；物理删除完成前，已签发的 GET URL 可能仍有效。
          */
         delete: {
             parameters: {
@@ -820,7 +869,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 发布视频（PENDING_REVIEW -> PUBLISHED，条件更新防并发） */
+        /**
+         * 发布视频（PENDING_REVIEW -> PUBLISHED，条件更新防并发）
+         * @description 仅作者可发布；媒体状态必须为 PASSED 或 SKIPPED，PENDING/REJECTED 返回状态冲突。 ffprobe 缺失或媒体探测配置关闭会记为 SKIPPED，不等于已经通过真实媒体校验。
+         */
         post: {
             parameters: {
                 query?: never;
@@ -2240,6 +2292,274 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/coupons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 商家创建满减券
+         * @description 券模板由服务端校验：门槛与面额为正整数（分）、面额不超过门槛、有效期区间合法、 发行量与每人限领有上界。发行量为 0 表示不限量；已发放数量不接受客户端提交。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateCouponRequest"];
+                };
+            };
+            responses: {
+                /** @description 创建成功 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CouponDetail"];
+                    };
+                };
+                400: components["responses"]["InvalidArgument"];
+                401: components["responses"]["Unauthenticated"];
+                429: components["responses"]["RateLimited"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/coupons/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 商家查看自己发行的券（含发行量进度） */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 每页条数，默认 20，合法范围 1-100（feed 与视频列表；超出返回 400） */
+                    limit?: components["parameters"]["Limit"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 券列表 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CouponList"];
+                    };
+                };
+                401: components["responses"]["Unauthenticated"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/coupons/available": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 查看当前可领取的券（匿名可读）
+         * @description 只返回 ACTIVE、在有效期内且仍有余量的券；已登录时附带 claimed_by_me （服务端算好"我是否已达每人限领"，避免前端重复实现规则）。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 每页条数，默认 20，合法范围 1-100（feed 与视频列表；超出返回 400） */
+                    limit?: components["parameters"]["Limit"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 可领取的券 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CouponList"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/coupons/{id}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 领取优惠券
+         * @description 领取在单个事务内完成：锁券行 → 校验状态与有效期 → 条件更新发行量（防超发）→ 校验每人限领 → 写入持券。并发领取由券行锁串行化，因此不会超发也不会超领； 已达限领返回 409 COUPON_ALREADY_CLAIMED，领完返回 409 COUPON_SOLD_OUT。
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 领取成功 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserCouponDetail"];
+                    };
+                };
+                400: components["responses"]["InvalidArgument"];
+                401: components["responses"]["Unauthenticated"];
+                404: components["responses"]["CouponNotFound"];
+                /** @description 已领完 / 已达每人限领 / 券不可领或已过期 */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                429: components["responses"]["RateLimited"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/coupons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 我的券
+         * @description status 可选 UNUSED/USED/EXPIRED；不传返回全部。过期由服务端按当前时间判定 （不依赖定时任务刷状态），usable 字段直接给出"现在能不能用"。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    status?: "UNUSED" | "USED" | "EXPIRED";
+                    /** @description 每页条数，默认 20，合法范围 1-100（feed 与视频列表；超出返回 400） */
+                    limit?: components["parameters"]["Limit"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 我的券列表 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserCouponList"];
+                    };
+                };
+                400: components["responses"]["InvalidArgument"];
+                401: components["responses"]["Unauthenticated"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/coupons/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 查看单张持券（下单前校验用） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 持券详情 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UserCouponDetail"];
+                    };
+                };
+                401: components["responses"]["Unauthenticated"];
+                404: components["responses"]["UserCouponNotFound"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/authors/{id}/sales": {
         parameters: {
             query?: never;
@@ -2381,16 +2701,16 @@ export interface components {
             filename: string;
             /**
              * Format: int64
-             * @description 视频 1MB-512MB；图片 1KB-5MB
+             * @description 视频 1MiB-512MiB；图片 1KiB-5MiB。签名绑定此字节数，PUT 实际长度须一致
              */
             file_size: number;
             /** @enum {string} */
             content_type: "video/mp4" | "video/webm" | "video/quicktime" | "image/jpeg" | "image/png" | "image/webp";
         };
         UploadResult: {
-            /** @description 创建视频时必须回传 */
+            /** @description 逻辑对象 key；创建视频或图片引用时回传，不从 upload_url 反推 staging key */
             object_key: string;
-            /** @description 预签名 PUT URL（15 分钟有效） */
+            /** @description 预签名 PUT URL（默认 15 分钟，可配置，以 expires_at 为准） */
             upload_url: string;
             /** Format: date-time */
             expires_at: string;
@@ -2431,6 +2751,11 @@ export interface components {
              * @description 点赞数（现查，准实时）
              */
             like_count: number;
+            /**
+             * Format: int64
+             * @description 仅热榜场景返回：窗口内累计热度
+             */
+            hot_score?: number;
             product_cards: components["schemas"]["VideoProductCard"][];
         };
         AuthorRef: {
@@ -2628,9 +2953,16 @@ export interface components {
             units_sold: number;
             /**
              * Format: int64
-             * @description 人民币分
+             * @description 历史成交毛额（人民币分，含后来退款的订单）
              */
             gmv: number;
+            /** Format: int64 */
+            refunded_orders: number;
+            /**
+             * Format: int64
+             * @description 已成功退款金额（人民币分）
+             */
+            refunded_amount: number;
         };
         AuthorSales: {
             /** Format: int64 */
@@ -2643,9 +2975,16 @@ export interface components {
             units_sold: number;
             /**
              * Format: int64
-             * @description 人民币分
+             * @description 历史成交毛额（人民币分，含后来退款的订单）
              */
             gmv: number;
+            /** Format: int64 */
+            refunded_orders: number;
+            /**
+             * Format: int64
+             * @description 已成功退款金额（人民币分）
+             */
+            refunded_amount: number;
             by_video: components["schemas"]["AuthorSalesSlice"][];
             by_product: components["schemas"]["AuthorSalesSlice"][];
         };
@@ -2655,6 +2994,11 @@ export interface components {
             /** Format: int32 */
             quantity: number;
             idempotency_key: string;
+            /**
+             * Format: int64
+             * @description 可选的持券 ID；服务端校验归属/状态/有效期/门槛并计算优惠金额
+             */
+            user_coupon_id?: number;
             source?: components["schemas"]["CreateOrderSource"];
         };
         /** @description 可选的完整内容带货来源；三个字段必须同时提供并匹配启用中的挂载关系 */
@@ -2670,13 +3014,31 @@ export interface components {
             /** Format: int64 */
             order_id: number;
             order_no: string;
-            /** @enum {string} */
-            status: "PENDING_PAYMENT";
+            /**
+             * @description 首次创建为 PENDING_PAYMENT；幂等重放返回原订单的当前状态
+             * @enum {string}
+             */
+            status: "PENDING_PAYMENT" | "PAID" | "FULFILLING" | "COMPLETED" | "CANCELED" | "EXPIRED" | "REFUND_REQUESTED" | "REFUNDED";
             /**
              * Format: int64
-             * @description 订单总金额，单位分
+             * @description 实付金额（= original_amount - discount_amount），单位分
              */
             total_amount: number;
+            /**
+             * Format: int64
+             * @description 商品原价合计
+             */
+            original_amount: number;
+            /**
+             * Format: int64
+             * @description 优惠金额（券面额）
+             */
+            discount_amount: number;
+            /**
+             * Format: int64
+             * @description 本单使用的持券 ID
+             */
+            user_coupon_id?: number;
             /** Format: date-time */
             expires_at: string;
             item: components["schemas"]["OrderItem"];
@@ -2693,8 +3055,26 @@ export interface components {
             merchant_id: number;
             /** @enum {string} */
             status: "PENDING_PAYMENT" | "PAID" | "FULFILLING" | "COMPLETED" | "CANCELED" | "EXPIRED" | "REFUND_REQUESTED" | "REFUNDED";
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description 实付金额（= original_amount - discount_amount），也是支付金额
+             */
             total_amount: number;
+            /**
+             * Format: int64
+             * @description 商品原价合计
+             */
+            original_amount?: number;
+            /**
+             * Format: int64
+             * @description 优惠金额（券面额）
+             */
+            discount_amount?: number;
+            /**
+             * Format: int64
+             * @description 本单使用的持券 ID
+             */
+            user_coupon_id?: number;
             source?: components["schemas"]["CreateOrderSource"];
             /** Format: date-time */
             expires_at: string;
@@ -2762,6 +3142,94 @@ export interface components {
             /** Format: date-time */
             canceled_at: string;
             replayed: boolean;
+        };
+        CreateCouponRequest: {
+            title: string;
+            /**
+             * Format: int64
+             * @description 满（单位：分）
+             */
+            threshold_amount: number;
+            /**
+             * Format: int64
+             * @description 减（单位：分，不得超过 threshold_amount）
+             */
+            discount_amount: number;
+            /**
+             * Format: int64
+             * @description 发行量，0 表示不限量
+             */
+            total_quantity?: number;
+            /**
+             * Format: int32
+             * @description 每人限领，默认 1
+             */
+            per_user_limit?: number;
+            /** Format: date-time */
+            valid_from: string;
+            /** Format: date-time */
+            valid_to: string;
+        };
+        CouponDetail: {
+            /** Format: int64 */
+            coupon_id: number;
+            /** Format: int64 */
+            merchant_id: number;
+            title: string;
+            /** Format: int64 */
+            threshold_amount: number;
+            /** Format: int64 */
+            discount_amount: number;
+            /** Format: int64 */
+            total_quantity: number;
+            /** Format: int64 */
+            issued_quantity: number;
+            /**
+             * Format: int64
+             * @description 剩余可领数量，-1 表示不限量
+             */
+            remaining: number;
+            /** Format: int32 */
+            per_user_limit: number;
+            /** @enum {string} */
+            status: "ACTIVE" | "DISABLED";
+            /** Format: date-time */
+            valid_from: string;
+            /** Format: date-time */
+            valid_to: string;
+            /** @description 仅"可领取列表"填充：我是否已达限领 */
+            claimed_by_me: boolean;
+        };
+        CouponList: {
+            items: components["schemas"]["CouponDetail"][];
+        };
+        UserCouponDetail: {
+            /** Format: int64 */
+            user_coupon_id: number;
+            /** Format: int64 */
+            coupon_id: number;
+            title: string;
+            /** Format: int64 */
+            threshold_amount: number;
+            /** Format: int64 */
+            discount_amount: number;
+            /** @enum {string} */
+            status: "UNUSED" | "USED" | "EXPIRED";
+            /** Format: date-time */
+            valid_from: string;
+            /** Format: date-time */
+            valid_to: string;
+            /** Format: date-time */
+            claimed_at: string;
+            /** Format: date-time */
+            used_at?: string;
+            /** Format: int64 */
+            order_id?: number;
+            /** @description 服务端判定：未使用且在有效期内 */
+            usable: boolean;
+        };
+        UserCouponList: {
+            items: components["schemas"]["UserCouponDetail"][];
         };
         RequestRefundRequest: {
             /** @description 买家填写的退款原因；金额与身份由订单事实和认证上下文决定 */
@@ -2916,6 +3384,24 @@ export interface components {
         };
         /** @description 订单没有退款单，或订单不属于当前买家/商家（统一 404，不泄露存在性） */
         RefundNotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description 券不存在或已不可领取（统一 404，不泄露存在性） */
+        CouponNotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description 持券不存在或不属于当前用户（统一 404，不泄露存在性） */
+        UserCouponNotFound: {
             headers: {
                 [name: string]: unknown;
             };

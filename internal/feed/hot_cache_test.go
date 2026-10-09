@@ -31,13 +31,13 @@ func newHotTestClient(t *testing.T) *redis.Client {
 
 func TestHotKeysAndWeights(t *testing.T) {
 	at := time.Date(2026, 10, 1, 12, 34, 56, 0, time.UTC)
-	require.Equal(t, "feed:hot:minute:202610011234", hotMinuteKey(at))
-	require.Equal(t, "feed:hot:window:1790858040", hotWindowKey(at))
+	require.Equal(t, "feed:hot:v2:minute:202610011234", hotMinuteKey(at))
+	require.Equal(t, "feed:hot:v2:window:1790858040", hotWindowKey(at))
 
 	keys := hotMinuteKeys(at)
 	require.Len(t, keys, hotWindowMinutes)
-	require.Equal(t, "feed:hot:minute:202610011234", keys[len(keys)-1], "最后一个桶是 windowEnd 所在分钟")
-	require.Equal(t, "feed:hot:minute:202610011135", keys[0], "第一个桶是 59 分钟前")
+	require.Equal(t, "feed:hot:v2:minute:202610011234", keys[len(keys)-1], "最后一个桶是 windowEnd 所在分钟")
+	require.Equal(t, "feed:hot:v2:minute:202610011135", keys[0], "第一个桶是 59 分钟前")
 
 	// 权重：点赞 +3 / 取消 -3 / 播放 +1，未知动作不计分。
 	require.Equal(t, 3, HotScoreForAction(HotActionLike))
@@ -91,63 +91,30 @@ func TestHotWindowIgnoresExpiredBuckets(t *testing.T) {
 	require.Equal(t, int64(2), entries[0].VideoID, "窗口外的热度不应计入")
 }
 
-// TestHotPaginationIsStableAcrossWindowRebuild 是这套设计的核心用例：
-// 翻页途中窗口被重建（内容变化），分数游标必须保证不重复返回已翻过的条目。
-//
-// 这正是同类项目 `window_end + offset` 做不到的：offset 在窗口内容变化后会漂移。
-func TestHotPaginationIsStableAcrossWindowRebuild(t *testing.T) {
+func TestHotWindowIsImmutableAndExpiredCursorIsRejected(t *testing.T) {
 	client := newHotTestClient(t)
 	hot := NewRedisHotFeed(client, nil)
 	ctx := context.Background()
-	now := time.Date(2026, 10, 1, 12, 30, 0, 0, time.UTC)
-
-	// 10 个视频，分数 100..91（分数递减、ID 递增）
-	for i := range 10 {
-		videoID := int64(i + 1)
-		for range 10 - i {
-			require.NoError(t, hot.AddHotScore(ctx, videoID, HotActionLike, now.Add(-time.Minute)))
-		}
+	now := hot.CurrentWindowEnd()
+	for id := int64(1); id <= 10; id++ {
+		require.NoError(t, hot.AddHotScore(ctx, id, HotActionLike, now))
 	}
-	_, err := hot.MaterializeWindow(ctx, now)
-	require.NoError(t, err)
-
 	first, err := hot.Page(ctx, now, nil, 4)
 	require.NoError(t, err)
-	require.Len(t, first, 4)
-	require.Equal(t, int64(1), first[0].VideoID, "分数最高的排最前")
-	require.Equal(t, int64(4), first[3].VideoID)
-
-	cursor := &HotCursor{WindowEnd: now, HotScore: first[len(first)-1].HotScore, VideoID: first[len(first)-1].VideoID}
-
-	// 翻页途中：窗口被删掉并按"变化后的分钟桶"重建——视频 1 的热度翻倍，
-	// 视频 5 被取消到净 0。窗口内容因此与第一页时不同。
-	require.NoError(t, client.Del(ctx, hotWindowKey(now)).Err())
-	require.NoError(t, hot.AddHotScore(ctx, 1, HotActionLike, now.Add(-time.Minute)))
-	require.NoError(t, hot.AddHotScore(ctx, 5, HotActionUnlike, now.Add(-time.Minute)))
-	require.NoError(t, hot.AddHotScore(ctx, 5, HotActionUnlike, now.Add(-time.Minute)))
-	require.NoError(t, hot.AddHotScore(ctx, 5, HotActionUnlike, now.Add(-time.Minute)))
-	require.NoError(t, hot.AddHotScore(ctx, 5, HotActionUnlike, now.Add(-time.Minute)))
-	require.NoError(t, hot.AddHotScore(ctx, 5, HotActionUnlike, now.Add(-time.Minute)))
+	cursor := &HotCursor{WindowEnd: now, HotScore: first[3].HotScore, VideoID: first[3].VideoID}
+	require.NoError(t, hot.AddHotScore(ctx, 10, HotActionUnlike, now))
 	_, err = hot.MaterializeWindow(ctx, now)
 	require.NoError(t, err)
-
 	second, err := hot.Page(ctx, now, cursor, 4)
 	require.NoError(t, err)
-	require.NotEmpty(t, second)
-	require.Len(t, second, 4, "剩余 4 条（视频 5 已被取消到净 0）")
-
-	// 关键断言：第二页不得包含第一页已经返回过的视频。
-	seen := map[int64]bool{}
-	for _, entry := range first {
-		seen[entry.VideoID] = true
-	}
-	for _, entry := range second {
-		require.Falsef(t, seen[entry.VideoID], "视频 %d 在第一页已返回，第二页不得重复", entry.VideoID)
-	}
-	// 且第二页的分数必须严格低于游标分数（分数游标是单调的）。
-	for _, entry := range second {
-		require.Lessf(t, entry.HotScore, cursor.HotScore, "第二页分数应低于游标分数")
-	}
+	require.Len(t, second, 4)
+	require.Equal(t, int64(6), second[0].VideoID)
+	score, err := client.ZScore(ctx, hotWindowKey(now), hotRankMember(10)).Result()
+	require.NoError(t, err)
+	require.Equal(t, float64(3), score, "materialization must not overwrite an existing snapshot")
+	require.NoError(t, client.Del(ctx, hotWindowKey(now)).Err())
+	_, err = hot.Page(ctx, now, cursor, 4)
+	require.ErrorIs(t, err, ErrInvalidCursor, "expired snapshot must not be reconstructed for an old cursor")
 }
 
 // TestHotPageBreaksTiesByVideoID：分数并列时按 video_id 降序，
@@ -235,3 +202,33 @@ func TestHotWorkerMaterializesWindow(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
+
+func TestHotPagesTraverseLargeTieGroupAcrossDigitBoundaries(t *testing.T) {
+	client := newHotTestClient(t)
+	hot := NewRedisHotFeed(client, nil)
+	ctx := context.Background()
+	now := hot.CurrentWindowEnd()
+	for id := int64(1); id <= 120; id++ {
+		require.NoError(t, hot.AddHotScore(ctx, id, HotActionLike, now))
+	}
+	var cursor *HotCursor
+	var ids []int64
+	for {
+		page, err := hot.Page(ctx, now, cursor, 3)
+		require.NoError(t, err)
+		if len(page) == 0 {
+			break
+		}
+		for _, entry := range page {
+			ids = append(ids, entry.VideoID)
+		}
+		last := page[len(page)-1]
+		cursor = &HotCursor{WindowEnd: now, HotScore: last.HotScore, VideoID: last.VideoID}
+		require.LessOrEqual(t, len(ids), 120, "pagination must terminate without duplicates")
+	}
+	expected := make([]int64, 120)
+	for i := range expected {
+		expected[i] = int64(120 - i)
+	}
+	require.Equal(t, expected, ids)
+}

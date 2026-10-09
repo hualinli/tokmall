@@ -2,6 +2,8 @@ package storage
 
 import (
 	"log/slog"
+	"net/http"
+	"strconv"
 
 	"context"
 	"errors"
@@ -15,6 +17,7 @@ import (
 )
 
 var ErrObjectNotFound = errors.New("object not found")
+var ErrInvalidObjectSize = errors.New("invalid object size")
 
 type Client struct {
 	mc             *minio.Client
@@ -64,17 +67,46 @@ func (c *Client) ensureBucket(ctx context.Context) error {
 }
 
 // PresignPutURL 生成指定 object 的预签名 PUT URL，客户端可直传。
-func (c *Client) PresignPutURL(ctx context.Context, objectKey string) (string, error) {
-	url, err := c.mc.PresignedPutObject(ctx, c.bucket, objectKey, c.uploadExpiry)
+func (c *Client) PresignPutURL(ctx context.Context, objectKey string, fileSize int64, contentType string) (string, error) {
+	if fileSize <= 0 {
+		return "", ErrInvalidObjectSize
+	}
+	headers := http.Header{}
+	headers.Set("Content-Length", strconv.FormatInt(fileSize, 10))
+	headers.Set("Content-Type", contentType)
+	url, err := c.mc.PresignHeader(ctx, http.MethodPut, c.bucket, objectKey, c.uploadExpiry, nil, headers)
 	if err != nil {
 		return "", fmt.Errorf("presign put url: %w", err)
 	}
 	return url.String(), nil
 }
 
+// FinalizeUpload copies a bounded, stable snapshot into a server-only object.
+// The source ETag condition prevents a concurrent PUT from changing the bytes
+// between the size check and copy. Callers serialize finalization by ticket.
+func (c *Client) FinalizeUpload(ctx context.Context, source, destination string, maxSize int64) error {
+	info, err := c.mc.StatObject(ctx, c.bucket, source, minio.StatObjectOptions{})
+	if err != nil {
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return ErrObjectNotFound
+		}
+		return fmt.Errorf("stat upload: %w", err)
+	}
+	if info.Size <= 0 || info.Size > maxSize {
+		return ErrInvalidObjectSize
+	}
+	_, err = c.mc.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: c.bucket, Object: destination},
+		minio.CopySrcOptions{Bucket: c.bucket, Object: source, MatchETag: info.ETag})
+	if err != nil {
+		return fmt.Errorf("seal upload: %w", err)
+	}
+	return nil
+}
+
 // PresignGetURL 生成短时效的预签名 GET URL：播放/封面的唯一出口。
-// 签名即授权——服务器在签发那一刻决定"给不给钥匙"，删除即时性由此而来：
-// 对象被删后，已发出的 URL 指向空对象（404），播放自然失败。
+// 签名即授权：删除对象后，已发出的 URL 返回 404；存储故障时，
+// 物理删除由持久化清理任务补偿，旧 URL 在补删前仍可能有效。
 // bucket 保持私有（默认），不再依赖"公开读"这种无法撤销的假设。
 func (c *Client) PresignGetURL(ctx context.Context, objectKey string) (string, error) {
 	return c.PresignGetURLWithExpiry(ctx, objectKey, c.downloadExpiry)
@@ -119,6 +151,13 @@ func (c *Client) DeleteObject(ctx context.Context, objectKey string) error {
 // 走 FGetObject 而不是预签名 GET：worker 在服务端、有凭证，
 // 不需要绕一圈 HTTP 签名，也避免把内部对象暴露成 URL。
 func (c *Client) DownloadToFile(ctx context.Context, objectKey, path string) error {
+	size, err := c.StatObject(ctx, objectKey)
+	if err != nil {
+		return err
+	}
+	if size <= 0 || size > 512<<20 {
+		return ErrInvalidObjectSize
+	}
 	if err := c.mc.FGetObject(ctx, c.bucket, objectKey, path, minio.GetObjectOptions{}); err != nil {
 		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
 			return ErrObjectNotFound

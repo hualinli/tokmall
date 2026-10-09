@@ -35,8 +35,8 @@ func TestPostgresCardsAndPaidAttribution(t *testing.T) {
 		VALUES ('author@example.test','author','hash','MERCHANT') RETURNING id`).Scan(&authorID).Error)
 	require.NoError(t, db.Raw(`INSERT INTO users(email,username,password_hash,role)
 		VALUES ('buyer@example.test','buyer','hash','USER') RETURNING id`).Scan(&buyerID).Error)
-	require.NoError(t, db.Raw(`INSERT INTO videos(author_id,title,object_key,status,published_at)
-		VALUES (?,'video','videos/test.mp4','PUBLISHED',now()) RETURNING id`, authorID).Scan(&videoID).Error)
+	require.NoError(t, db.Raw(`INSERT INTO videos(author_id,title,object_key,status,published_at,media_probe_status)
+		VALUES (?,'video','videos/test.mp4','PUBLISHED',now(),'SKIPPED') RETURNING id`, authorID).Scan(&videoID).Error)
 	require.NoError(t, db.Raw(`INSERT INTO products(merchant_id,title,cover_key,status)
 		VALUES (?,'Product','products/cover.jpg','ON_SALE') RETURNING id`, authorID).Scan(&productID).Error)
 	require.NoError(t, db.Raw(`INSERT INTO skus(product_id,spec,price,status)
@@ -53,30 +53,30 @@ func TestPostgresCardsAndPaidAttribution(t *testing.T) {
 	require.Len(t, videoCards, 1)
 	require.Equal(t, productID, videoCards[0].ProductID)
 
-	require.NoError(t, db.Raw(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,
+	require.NoError(t, db.Raw(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,original_amount,
 		idempotency_key,request_fingerprint,source_video_id,source_author_id,source_product_id,
 		expires_at,paid_at)
-		VALUES ('paid-1',?,?,'PAID',2000,'paid-1',repeat('a',64),?,?,?,now()+interval '15 minutes',now()) RETURNING id`,
+		VALUES ('paid-1',?,?,'PAID',2000,2000,'paid-1',repeat('a',64),?,?,?,now()+interval '15 minutes',now()) RETURNING id`,
 		buyerID, authorID, videoID, authorID, productID).Scan(&orderID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO order_items(order_id,product_id,sku_id,
 		merchant_id_snapshot,product_title_snapshot,sku_spec_snapshot,unit_price,quantity,line_amount)
 		VALUES (?,?,?,?,'Product','S',1000,2,2000)`, orderID, productID, skuID, authorID).Error)
-	require.NoError(t, db.Raw(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,
+	require.NoError(t, db.Raw(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,original_amount,
 		idempotency_key,request_fingerprint,source_video_id,source_author_id,source_product_id,
 		expires_at,paid_at)
-		VALUES ('paid-2',?,?,'PAID',1000,'paid-2',repeat('c',64),?,?,?,now()+interval '15 minutes',now()) RETURNING id`,
+		VALUES ('paid-2',?,?,'PAID',1000,1000,'paid-2',repeat('c',64),?,?,?,now()+interval '15 minutes',now()) RETURNING id`,
 		buyerID, authorID, videoID, authorID, productID).Scan(&orderID).Error)
 	require.NoError(t, db.Exec(`INSERT INTO order_items(order_id,product_id,sku_id,
 		merchant_id_snapshot,product_title_snapshot,sku_spec_snapshot,unit_price,quantity,line_amount)
 		VALUES (?,?,?,?,'Product','S',1000,1,1000)`, orderID, productID, skuID, authorID).Error)
 	// An unpaid sourced order and a paid organic order must not increase attributed sales.
-	require.NoError(t, db.Exec(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,
+	require.NoError(t, db.Exec(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,original_amount,
 		idempotency_key,request_fingerprint,source_video_id,source_author_id,source_product_id,expires_at)
-		VALUES ('pending-1',?,?,'PENDING_PAYMENT',1000,'pending-1',repeat('b',64),?,?,?,now()+interval '15 minutes')`,
+		VALUES ('pending-1',?,?,'PENDING_PAYMENT',1000,1000,'pending-1',repeat('b',64),?,?,?,now()+interval '15 minutes')`,
 		buyerID, authorID, videoID, authorID, productID).Error)
-	require.NoError(t, db.Exec(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,
+	require.NoError(t, db.Exec(`INSERT INTO orders(order_no,user_id,merchant_id,status,total_amount,original_amount,
 		idempotency_key,request_fingerprint,expires_at,paid_at)
-		VALUES ('organic-1',?,?,'PAID',1000,'organic-1',repeat('d',64),now()+interval '15 minutes',now())`,
+		VALUES ('organic-1',?,?,'PAID',1000,1000,'organic-1',repeat('d',64),now()+interval '15 minutes',now())`,
 		buyerID, authorID).Error)
 
 	sales, err := NewRepository(db).Sales(ctx, authorID)
@@ -102,6 +102,19 @@ func TestPostgresCardsAndPaidAttribution(t *testing.T) {
 	sales, err = NewRepository(db).Sales(ctx, authorID)
 	require.NoError(t, err)
 	require.Equal(t, int64(3000), sales.GMV, "historical payment survives product status changes")
+	require.NoError(t, db.Exec("UPDATE orders SET status='REFUND_REQUESTED', refund_from_status='PAID' WHERE id=?", orderID).Error)
+	sales, err = NewRepository(db).Sales(ctx, authorID)
+	require.NoError(t, err)
+	require.Equal(t, int64(3000), sales.GMV, "a refund request preserves paid history")
+	require.Zero(t, sales.RefundedAmount)
+	require.NoError(t, db.Exec("UPDATE orders SET status='REFUNDED', refunded_at=now() WHERE id=?", orderID).Error)
+	sales, err = NewRepository(db).Sales(ctx, authorID)
+	require.NoError(t, err)
+	require.Equal(t, int64(3000), sales.GMV)
+	require.Equal(t, int64(1000), sales.RefundedAmount)
+	require.Equal(t, int64(1), sales.RefundedOrders)
+	require.Equal(t, int64(1000), sales.ByVideo[0].RefundedAmount)
+	require.Equal(t, int64(1), sales.ByProduct[0].RefundedOrders)
 }
 
 func attributionTestDB(t *testing.T, dsn string) *gorm.DB {

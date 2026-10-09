@@ -229,7 +229,9 @@ type fakeStorage struct {
 	calls int
 }
 
-func (f *fakeStorage) PresignPutURL(context.Context, string) (string, error) { return "", f.err }
+func (f *fakeStorage) PresignPutURL(context.Context, string, int64, string) (string, error) {
+	return "", f.err
+}
 func (f *fakeStorage) PresignGetURL(_ context.Context, key string) (string, error) {
 	f.calls++
 	if f.err != nil {
@@ -270,3 +272,5 @@ func TestBusinessErrorsDoNotTripBreaker(t *testing.T) {
 }
 
 var errBusiness = errors.New("object not found")
+
+func (f *fakeStorage) FinalizeUpload(context.Context, string, string, int64) error { return f.err }

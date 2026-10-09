@@ -48,8 +48,8 @@ func TestPostgresFollowingTimeline(t *testing.T) {
 	insertVideo := func(authorID int64, title, status string, publishedAt time.Time) int64 {
 		t.Helper()
 		var id int64
-		require.NoError(t, db.Raw(`INSERT INTO videos(author_id,title,object_key,status,published_at)
-			VALUES (?,?,?,?,?) RETURNING id`, authorID, title, "videos/"+title+".mp4", status, publishedAt).Scan(&id).Error)
+		require.NoError(t, db.Raw(`INSERT INTO videos(author_id,title,object_key,status,published_at,media_probe_status)
+			VALUES (?,?,?,?,?,'SKIPPED') RETURNING id`, authorID, title, "videos/"+title+".mp4", status, publishedAt).Scan(&id).Error)
 		return id
 	}
 	expected := make([]struct {

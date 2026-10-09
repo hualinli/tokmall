@@ -99,8 +99,11 @@ function MePage() {
           <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
             <p>支付订单 <strong className="block text-lg">{sales.data.order_count}</strong></p>
             <p>购买人数 <strong className="block text-lg">{sales.data.buyer_count}</strong></p>
-            <p>成交金额 <strong className="block text-lg">¥{(sales.data.gmv / 100).toFixed(2)}</strong></p>
+            <p>成交毛额 <strong className="block text-lg">¥{(sales.data.gmv / 100).toFixed(2)}</strong></p>
           </div>
+          <p className="mt-3 text-sm text-zinc-400">
+            已退款 ¥{(sales.data.refunded_amount / 100).toFixed(2)} · 净成交 ¥{((sales.data.gmv - sales.data.refunded_amount) / 100).toFixed(2)}
+          </p>
         </Card>
       )}
       <CommerceManager />

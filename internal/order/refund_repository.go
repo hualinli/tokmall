@@ -290,12 +290,11 @@ func restoreStock(db *gorm.DB, order Order, at time.Time) error {
 	return nil
 }
 
-// restoreUserCoupon 把订单用掉的券退回：
+// restoreUserCoupon 退回退款成功或未支付关单占用的券：
 //   - 券仍在有效期内 → UNUSED（清空 used_at/order_id，用户可以再次使用）；
 //   - 已过期 → EXPIRED（退也没用，但状态要如实反映，便于对账）。
 //
-// 注意"退款成功"与"退券"是两件事：券是营销资源，退回与否不影响资金事实，
-// 因此这里失败不会回滚退款（退款是资金终态，优先级更高）。
+// 退券与订单终态同事务提交；数据库错误回滚整次操作，允许安全重试。
 func restoreUserCoupon(db *gorm.DB, order Order, at time.Time) error {
 	if order.UserCouponID == nil {
 		return nil

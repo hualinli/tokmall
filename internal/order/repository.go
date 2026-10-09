@@ -64,7 +64,7 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 		if cmd.UserCouponID != nil {
 			// 注意传的是"当前时间"而不是 cmd.ExpiresAt：后者是订单支付截止时间，
 			// 用它判断券是否在有效期内会把窗口放大 30 分钟。
-			applied, err := applyUserCoupon(db, cmd.UserID, *cmd.UserCouponID, int64(lineAmount), time.Now())
+			applied, err := applyUserCoupon(db, cmd.UserID, sku.MerchantID, *cmd.UserCouponID, int64(lineAmount), time.Now())
 			if err != nil {
 				return err
 			}
@@ -345,6 +345,9 @@ func (r *GormRepository) Cancel(ctx context.Context, userID, orderID int64, canc
 		if err := db.Create(&ledger).Error; err != nil {
 			return translateError(err)
 		}
+		if err := restoreUserCoupon(db, order, at); err != nil {
+			return err
+		}
 		order.Status = StatusCanceled
 		order.CanceledAt = &at
 		order.UpdatedAt = at
@@ -415,7 +418,10 @@ func expireLockedOrder(db *gorm.DB, order Order, at time.Time) error {
 		return errors.New("inventory invariant violated: order sku has no inventory row")
 	}
 	ledger := inventoryLedger{SKUID: item.SKUID, OrderID: order.ID, Change: int64(item.Quantity), Reason: "ORDER_EXPIRED", BizID: order.OrderNo}
-	return translateError(db.Create(&ledger).Error)
+	if err := db.Create(&ledger).Error; err != nil {
+		return translateError(err)
+	}
+	return restoreUserCoupon(db, order, at)
 }
 
 func findPaymentByIdentity(db *gorm.DB, paymentNo, providerTradeNo string) (*Payment, error) {
@@ -456,10 +462,11 @@ func translatePaymentWriteError(err error) error {
 // 这里读的是 coupon 模块的表（order 自己的 read model + 直接 SQL），
 // 但**折扣规则调用 coupon.DiscountFor**——规则只能有一份实现，
 // 否则"下单算一次、视图显示一次、对账再算一次"必然漂移（DomTok 的教训）。
-func applyUserCoupon(db *gorm.DB, userID, userCouponID int64, orderAmount int64, now time.Time) (int64, error) {
+func applyUserCoupon(db *gorm.DB, userID, merchantID, userCouponID int64, orderAmount int64, now time.Time) (int64, error) {
 	var row struct {
 		UserCouponID int64     `gorm:"column:id"`
 		CouponID     int64     `gorm:"column:coupon_id"`
+		MerchantID   int64     `gorm:"column:merchant_id"`
 		Status       string    `gorm:"column:status"`
 		Title        string    `gorm:"column:title"`
 		Threshold    int64     `gorm:"column:threshold_amount"`
@@ -468,7 +475,7 @@ func applyUserCoupon(db *gorm.DB, userID, userCouponID int64, orderAmount int64,
 		ValidTo      time.Time `gorm:"column:valid_to"`
 	}
 	err := db.Raw(`
-		SELECT uc.id, uc.coupon_id, uc.status, c.title, c.threshold_amount,
+		SELECT uc.id, uc.coupon_id, uc.status, c.merchant_id, c.title, c.threshold_amount,
 		       c.discount_amount, c.valid_from, c.valid_to
 		FROM user_coupons uc
 		JOIN coupons c ON c.id = uc.coupon_id
@@ -480,6 +487,9 @@ func applyUserCoupon(db *gorm.DB, userID, userCouponID int64, orderAmount int64,
 	if row.UserCouponID == 0 {
 		// 券不存在与券不属于当前用户返回同一错误，不泄露存在性。
 		return 0, ErrCouponNotFound
+	}
+	if row.MerchantID != merchantID {
+		return 0, ErrCouponNotUsable
 	}
 	discount, err := coupon.DiscountFor(
 		coupon.UserCoupon{ID: row.UserCouponID, CouponID: row.CouponID, UserID: userID, Status: coupon.UserCouponStatus(row.Status)},

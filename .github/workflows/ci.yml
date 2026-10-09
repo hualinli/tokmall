@@ -192,6 +192,7 @@ jobs:
             -e MINIO_ROOT_USER=tokmall -e MINIO_ROOT_PASSWORD=tokmall123 \
             minio/minio server /data
           for i in $(seq 1 30); do curl -sf http://localhost:9000/minio/health/live && break; sleep 1; done
+      # e2e 使用合成上传文件；媒体准入由后端真实探测/仓储集成测试覆盖。
       - name: 启动后端
         run: |
           go build -o bin/api ./cmd/api
@@ -199,6 +200,7 @@ jobs:
             JWT_SECRET=ci-jwt-secret-for-e2e-run-only \
             FEED_CURSOR_SECRET=ci-cursor-secret-for-e2e-run-only \
             DB_PORT=5432 REDIS_ADDR=127.0.0.1:6379 \
+            MEDIA_PROBE_ENABLED=false \
             MINIO_ENDPOINT=localhost:9000 \
             nohup ./bin/api > api.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://localhost:8080/health/ready && break; sleep 1; done

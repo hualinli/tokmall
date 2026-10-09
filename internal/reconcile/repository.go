@@ -210,7 +210,8 @@ func checks(grace time.Duration) []check {
 				LEFT JOIN orders o ON o.id = uc.order_id
 				WHERE (uc.status = 'USED' AND (o.id IS NULL OR o.user_coupon_id <> uc.id))
 					OR (uc.status <> 'USED' AND uc.order_id IS NOT NULL)
-					OR (uc.status = 'USED' AND o.discount_amount <> c.discount_amount)`,
+					OR (uc.status = 'USED' AND o.discount_amount <> c.discount_amount)
+					OR (uc.status = 'USED' AND o.status IN ('CANCELED','EXPIRED','REFUNDED'))`,
 		},
 		{
 			name:        "order_amount_split",
