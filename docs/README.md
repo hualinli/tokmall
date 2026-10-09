@@ -1,6 +1,6 @@
 # 文档导航
 
-> 核对日期：2026-10-07。描述当前工作区实现（包含尚未提交的修复）；已实现能力、历史实验、未来事项分别记录。
+> 核对日期：2026-10-09。描述当前实现；已实现能力、历史实验、未来事项分别记录。
 
 ## 按问题阅读
 
@@ -10,7 +10,7 @@
 | 模块与数据边界 | [后端架构](backend-architecture.md) | 装配、数据所有权、读写与后台任务 |
 | 产品规则 | [商城业务](commerce-business.md) | 角色、状态、支持范围与异常分支 |
 | 交易实现 | [商城技术设计](commerce-v1-technical-design.md) | 锁、事务、幂等、库存/资金/券、归因与对账 |
-| 为什么这样设计 | [架构决策](architecture-decisions.md) | ADR-001～029，保留稳定编号供源码引用 |
+| 为什么这样设计 | [架构决策](architecture-decisions.md) | ADR-001～030，保留稳定编号供源码引用 |
 | 如何运行、排障、升级 | [开发与运维](development-and-operations.md) | 环境、测试矩阵、工具、迁移、脚本限制 |
 | 数字从哪里来 | [性能基线](performance-baseline.md) | 历史条件、结果、适用范围和待补实验 |
 | 如何解释和接受追问 | [面试讲解](interview-walkthrough.md) | 问题、机制、不变量、失败顺序、证据 |
@@ -22,7 +22,7 @@
 
 当前行为以 [服务装配](../cmd/api/main.go)、各模块代码、[版本化迁移](../migrations/) 和测试为准。[OpenAPI](../internal/api/openapi.yaml) 是 API 契约，字段/路由有自动检查；配置默认值来自 [config](../internal/config/config.go)，命令来自 [Makefile](../Makefile) 和 [工具入口](../cmd/)。历史 QPS、旧提交和原实施计划不能代替当前代码。
 
-真实依赖测试必须显式开启；默认 `go test ./...` 不证明实际 PG/Redis/MinIO 链路。当前后端已实现券、热榜、媒体校验、两级缓存、告警规则与日志 trace 关联；前端接入范围及完整 OTel/告警通知的缺口应分别描述。
+真实依赖测试必须显式开启；默认 `go test ./...` 不证明实际 PG/Redis/RustFS 链路。当前后端已实现券、热榜、媒体校验、两级缓存、告警规则与日志 trace 关联；前端接入范围及完整 OTel/告警通知的缺口应分别描述。
 
 ## 整理原则
 

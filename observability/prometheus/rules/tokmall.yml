@@ -134,7 +134,7 @@ groups:
             （`job:tokmall_feed_cache_hit_ratio:rate5m`），说明流量直接压到了数据库。
 
       - alert: TokMallStorageBreakerOpen
-        expr: breaker_state{name="minio"} == 2
+        expr: breaker_state{name="s3"} == 2
         for: 2m
         labels:
           severity: warning
@@ -142,5 +142,5 @@ groups:
           summary: "对象存储熔断器已打开（依赖不可用）"
           description: >-
             熔断打开期间上传/取播放地址会快速失败（503）。
-            排查：MinIO 容器是否在跑、`breaker_rejections_total` 增长说明正在被保护；
+            排查：RustFS 容器是否在跑、`breaker_rejections_total` 增长说明正在被保护；
             依赖恢复后冷却期结束会自动 half-open 探测并闭合（`breaker_probes_total{result="success"}`）。

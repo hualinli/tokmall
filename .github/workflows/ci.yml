@@ -31,6 +31,7 @@ env:
   # 集成测试显式开关：默认关闭，CI 里打开（与服务容器一起提供真实依赖）。
   TOKMALL_RUN_PG_INTEGRATION: "1"
   TOKMALL_RUN_REDIS_INTEGRATION: "1"
+  TOKMALL_RUN_S3_INTEGRATION: "1"
   TOKMALL_TEST_DATABASE_DSN: "host=127.0.0.1 user=tokmall password=tokmall dbname=tokmall port=5432 sslmode=disable"
   TOKMALL_TEST_REDIS_ADDR: "127.0.0.1:6379"
 
@@ -56,6 +57,17 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      rustfs:
+        image: rustfs/rustfs:1.0.1
+        env:
+          RUSTFS_ACCESS_KEY: tokmall
+          RUSTFS_SECRET_KEY: tokmall123
+          RUSTFS_VOLUMES: /data
+          RUSTFS_CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/health/ready"
+          --health-interval 5s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -186,12 +198,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-      - name: 启动对象存储（MinIO）
+      - name: 启动对象存储（RustFS）
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=tokmall -e MINIO_ROOT_PASSWORD=tokmall123 \
-            minio/minio server /data
-          for i in $(seq 1 30); do curl -sf http://localhost:9000/minio/health/live && break; sleep 1; done
+          docker run -d --name rustfs -p 9000:9000 \
+            -e RUSTFS_ACCESS_KEY=tokmall -e RUSTFS_SECRET_KEY=tokmall123 \
+            -e RUSTFS_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 \
+            rustfs/rustfs:1.0.1 /data
+          for i in $(seq 1 60); do curl -sf http://localhost:9000/health/ready && break; sleep 1; done
+          curl --fail http://localhost:9000/health/ready
       # e2e 使用合成上传文件；媒体准入由后端真实探测/仓储集成测试覆盖。
       - name: 启动后端
         run: |
@@ -201,7 +215,7 @@ jobs:
             FEED_CURSOR_SECRET=ci-cursor-secret-for-e2e-run-only \
             DB_PORT=5432 REDIS_ADDR=127.0.0.1:6379 \
             MEDIA_PROBE_ENABLED=false \
-            MINIO_ENDPOINT=localhost:9000 \
+            S3_ENDPOINT=localhost:9000 \
             nohup ./bin/api > api.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://localhost:8080/health/ready && break; sleep 1; done
       - name: 安装依赖与浏览器

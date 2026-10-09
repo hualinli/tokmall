@@ -1,6 +1,6 @@
 # TokMall
 
-CloudWeGo Hertz 的短视频 Feed + 商城学习项目，采用模块化单体。PostgreSQL 是业务事实源，Redis 承担缓存、限流与事件传输，MinIO 保存媒体对象；React 前端用于演示核心链路。
+CloudWeGo Hertz 的短视频 Feed + 商城学习项目，采用模块化单体。PostgreSQL 是业务事实源，Redis 承担缓存、限流与事件传输，RustFS 保存媒体对象；React 前端用于演示核心链路。
 
 ```text
 内容：申请上传 → 临时对象直传 → 服务端封存 → 异步媒体校验 → 作者发布 → Feed / 互动
@@ -40,7 +40,7 @@ cd web && pnpm typecheck && pnpm exec vitest run
 | 事件失败恢复 | Outbox 至少一次投递，消费回执与投影同事务；[集成测试](internal/outbox/integration_test.go) |
 | 账实一致 | 九项检查、缺失回执重放、作者日销重建；[对账测试](internal/reconcile/integration_test.go) |
 | Feed 分页与缓存 | 时间游标、关注完整时间线、热榜冻结分数游标、L1/L2；[实现与测试](internal/feed/) |
-| 媒体不可替换与删除补偿 | 上传签名绑定长度/类型、ETag 封存、发布门禁、持久化清理；[MinIO 测试](internal/storage/upload_integration_test.go)、[PG 测试](internal/video/cleanup_postgres_integration_test.go) |
+| 媒体不可替换与删除补偿 | 上传签名绑定长度/类型、ETag 封存、发布门禁、持久化清理；[RustFS 测试](internal/storage/upload_integration_test.go)、[PG 测试](internal/video/cleanup_postgres_integration_test.go) |
 
 历史性能数字均带测量条件，见 [性能基线](docs/performance-baseline.md)，不等于当前容量承诺。源码包含 Prometheus 规则和 traceparent 关联，不代表部署了完整 OTel tracing 或告警通知链路。
 

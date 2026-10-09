@@ -85,7 +85,7 @@ clean: ## 删除构建产物 bin/
 
 # 一键开发环境：依赖容器 + 后端 + 前端（全部后台运行）
 dev: ## 起依赖容器 + 后端 + 前端（后台，日志 logs/）
-	docker compose up -d postgres minio redis
+	docker compose up -d postgres rustfs redis
 	$(MAKE) dev-backend
 	$(MAKE) dev-web
 	@echo "✅ 前端 http://localhost:5173  后端 http://localhost:8080"

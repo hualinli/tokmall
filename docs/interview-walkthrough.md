@@ -1,6 +1,6 @@
 # TokMall 面试讲解：四条能落到证据的工程故事
 
-> 更新于 2026-10-07。按“问题 → 机制 → 不变量 → 证据 → 边界”讲，不把架构名词当成结论。
+> 更新于 2026-10-09。按“问题 → 机制 → 不变量 → 证据 → 边界”讲，不把架构名词当成结论。
 > 本文讲当前代码；实现选择统一看 [架构决策记录](architecture-decisions.md)，业务范围看
 > [Commerce 说明](commerce-business.md) 与 [技术设计](commerce-v1-technical-design.md)。
 
@@ -141,7 +141,7 @@ Redis Streams 是当前已接入的传输；Kafka 没有接入。Outbox 的 **Pu
 
 本地演练脚本是辅助观察手段，不能代替上述集成测试：当前 **drill_failure_modes.sh** 的 Redis 阶段
 没有实际发起支付，消费崩溃阶段只查看 Stream 状态而没有杀掉消费者，待处理总数还包含未来才到期的
-关单事件；MinIO 步骤使用无效对象 key/票证，不能证明熔断行为。**drill_commerce_loop.sh** 上传随机
+关单事件；RustFS 步骤使用无效对象 key/票证，不能证明熔断行为。**drill_commerce_loop.sh** 上传随机
 1 MiB 字节后立即发布，默认媒体门禁开启时不会构成有效视频发布链路。若关闭媒体校验，只能演示
 模拟业务链路，不能算媒体验证证据。脚本待修状态见 [工程路线图](roadmap.md)。
 
@@ -150,7 +150,7 @@ Redis Streams 是当前已接入的传输；Kafka 没有接入。Outbox 的 **Pu
 ### 问题
 
 预签名上传若直接写最终对象 key，客户端可重放或替换对象；只看上传凭证也不能证明对象实际存在、
-大小符合限制或内容可播放。数据库事务又无法回滚 MinIO 已完成的复制和删除。
+大小符合限制或内容可播放。数据库事务又无法回滚 RustFS 已完成的复制和删除。
 
 ### 做法
 
@@ -166,15 +166,15 @@ Redis Streams 是当前已接入的传输；Kafka 没有接入。Outbox 的 **Pu
 
 ### 证据与边界
 
-[上传封存集成测试](../internal/storage/upload_integration_test.go) 通过真实 MinIO 验证签名长度变更、
+[上传封存集成测试](../internal/storage/upload_integration_test.go) 通过真实 RustFS 验证签名长度/类型变更、
 硬大小上限和 ETag 替换竞态；[媒体门禁 PostgreSQL 测试](../internal/video/probe_postgres_integration_test.go)
 验证数据库发布约束与探测队列；
 [探测器测试](../internal/mediaprobe/probe_test.go) 验证 ffprobe 结果与 faststart 处理；
 [删除补偿 PostgreSQL 测试](../internal/video/cleanup_postgres_integration_test.go) 验证失败重试、
-清理与媒体探测不能复活已删除视频。它们是分层测试，不是一个覆盖 MinIO、PostgreSQL、
+清理与媒体探测不能复活已删除视频。它们是分层测试，不是一个覆盖 RustFS、PostgreSQL、
 ffprobe 的单一端到端演练。
 
-MinIO 复制成功后，如果 PostgreSQL 后续插入或提交失败，数据库无法撤销最终对象；当前清理任务只处理
+RustFS 复制成功后，如果 PostgreSQL 后续插入或提交失败，数据库无法撤销最终对象；当前清理任务只处理
 已知删除任务和过期 staging key，没有扫描发现这类未知最终对象孤儿的回收器。删除任务失败会按间隔
 持续重试，目前没有最大尝试次数或独立死信队列。上传门禁、补偿范围及取舍见
 架构决策记录中的 ADR-028 和 ADR-029。
@@ -193,7 +193,7 @@ MinIO 复制成功后，如果 PostgreSQL 后续插入或提交失败，数据�
 | 视频和商品关系有什么边界？ | 只允许作者挂自己的在售商品，最多五个有效关系；数据库 advisory lock 与约束守住并发上限。归因仍不能证明点击来源。见 [商品挂载实现](../internal/promotion/repository.go) 和 [迁移](../migrations/000013_enforce_video_product_active_limit.up.sql)。 |
 | 点赞、关注和播放事件怎么幂等？ | 关系表唯一约束配合冲突忽略；播放事件同步写 PostgreSQL，以 event_id 唯一约束及载荷比较拒绝同键异载荷。Kafka 没有接入播放路径。见 [播放事件实现](../internal/video/repository.go)。 |
 | 怎么防刷不存在的 ID？ | 进程内双缓冲 Bloom、warmup 保护和 Redis 负缓存；只对确认不存在的记录写负缓存，可见性拒绝不缓存为不存在。见 [存在性防护](../internal/existence) 和 ADR-022。 |
-| MinIO 停机时会怎样？ | 对象存储调用通过三态熔断装饰器，业务正常的对象不存在不会计为依赖故障；打开时返回可重试的 503。见 [熔断器](../internal/breaker) 和 ADR-023。 |
+| RustFS 停机时会怎样？ | 对象存储调用通过三态熔断装饰器，业务正常的对象不存在不会计为依赖故障；打开时返回可重试的 503。见 [熔断器](../internal/breaker) 和 ADR-023。 |
 | 有完整链路追踪吗？ | 有结构化日志、Prometheus 指标及自研 W3C traceparent 透传；没有 OpenTelemetry SDK/exporter，也没有端到端 span 链路。见 [观测模块](../internal/observability) 与 [traceparent 实现](../internal/tracing)。 |
 | 有真实容量结论吗？ | [性能基线](performance-baseline.md) 有百万视频、50并发、180秒×3轮的同版本Feed缓存对照和原始证据。它是同机固定场景吞吐，不是生产容量；交易异步链路出现回执缺口，已验证显式重放恢复，完整交易矩阵待重测。 |
 | 怎么避免接口契约和错误语义漂移？ | 错误经过 repository → service → handler 翻译；OpenAPI 有路由同步与 schema/DTO 校验，CI 会运行契约检查。见 [错误响应](../internal/response) 和 [API 契约测试](../internal/api/spec_test.go)。 |
@@ -212,7 +212,7 @@ ACTIVE、模型默认值和数据库约束，并增加真实 PostgreSQL“注册
 - 客户端归因字段只能在当前实现中验证有效关系，不能证明用户真实点击来源；写入路径也未再次验证
   视频当时仍为 PUBLISHED。这是归因边界，不把它描述成可信广告点击归因。
 - 优惠券商家 API 当前基于 owner/user_id 授权，未做额外 MERCHANT 角色门禁。
-- MinIO 最终复制与 PostgreSQL 提交无法原子化；失败可能遗留未知最终对象，当前没有孤儿扫描回收。
+- RustFS 最终复制与 PostgreSQL 提交无法原子化；失败可能遗留未知最终对象，当前没有孤儿扫描回收。
 - 故障演练脚本存在待修场景；对账和消息语义以真实依赖集成测试及具体代码为证，不以脚本标题为证。
 
 旧审计、分阶段修复记录和专题笔记中的有效机制与故障经验已压缩到以上四条故事、快查和边界；

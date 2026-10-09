@@ -1,10 +1,10 @@
 # 后端架构与模块边界
 
-> 更新于 2026-10-07。本文描述当前工作区实现；运行时装配以 [cmd/api/main.go](../cmd/api/main.go)、配置以 [config.go](../internal/config/config.go)、接口以 [OpenAPI 契约](../internal/api/openapi.yaml)、数据库结构以 [版本化迁移](../migrations/) 为准。TokMall 是共享 PostgreSQL 的模块化单体，尚未拆分服务。
+> 更新于 2026-10-09。本文描述当前工作区实现；运行时装配以 [cmd/api/main.go](../cmd/api/main.go)、配置以 [config.go](../internal/config/config.go)、接口以 [OpenAPI 契约](../internal/api/openapi.yaml)、数据库结构以 [版本化迁移](../migrations/) 为准。TokMall 是共享 PostgreSQL 的模块化单体，尚未拆分服务。
 
 ## 运行时与依赖边界
 
-`cmd/api` 是组合根：加载并校验配置，连接 PostgreSQL 和 Redis，执行 SQL 迁移，创建 MinIO 客户端、缓存、指标、各模块服务与 handler，再统一注册路由。API 进程也运行对象删除、媒体探测、热榜物化、缓存存在性重建、订单到期、Outbox 中继/消费和周期对账等后台任务；其中多项由配置开关控制。退出时先关 HTTP，再按逆序停止 worker。
+`cmd/api` 是组合根：加载并校验配置，连接 PostgreSQL 和 Redis，执行 SQL 迁移，创建 RustFS 客户端、缓存、指标、各模块服务与 handler，再统一注册路由。API 进程也运行对象删除、媒体探测、热榜物化、缓存存在性重建、订单到期、Outbox 中继/消费和周期对账等后台任务；其中多项由配置开关控制。退出时先关 HTTP，再按逆序停止 worker。
 
 请求经过 Hertz 中间件（恢复、request ID、traceparent、HTTP 指标和访问日志）后进入 handler，相关实现见 [tracing middleware](../internal/middleware/tracing.go)、[auth middleware](../internal/middleware/auth.go) 和 [HTTP metrics](../internal/observability/http.go)。`registerRoutes` 将 optional-auth 与 protected 路由分组，并在 API 组挂载读限流、在受保护组挂载写限流。handler 解析 HTTP DTO、注入认证身份并映射业务错误；service 执行业务规则；repository 负责 SQL、事务和 ORM 错误翻译。service 暴露领域参数/视图，不把 GORM model 作为跨层 API。接口通常定义在消费侧，装配关系集中在 `main.go`。
 
@@ -12,7 +12,7 @@
 |---|---|
 | PostgreSQL | 交易事实、状态机、幂等约束、Outbox、消费回执、统计投影和删除任务；订单与库存可在同一数据库事务中协调。schema 只由 golang-migrate 迁移管理，禁止 AutoMigrate。 |
 | Redis | Feed 缓存与版本号、关注 Feed 缓存、refresh token 撤销、固定窗口限流、穿透负缓存、热榜分钟桶/窗口，以及 Redis Streams 事件传输。它不替代 PostgreSQL 的交易事实。 |
-| MinIO | 私有媒体对象；上传通过绑定长度和类型的预签名 PUT 写 staging key，服务端封存到最终 key；播放/封面 URL 由服务端签发。删除失败由数据库任务补偿。 |
+| RustFS | 私有媒体对象；上传通过绑定长度和类型的预签名 PUT 写 staging key，服务端封存到最终 key；播放/封面 URL 由服务端签发。删除失败由数据库任务补偿。 |
 | 模块边界 | 不把模块的持久化 model 当作跨模块 API；跨模块读取使用本模块 read model 或显式 SQL。存在少量窄域协作，例如订单调用 `coupon.DiscountFor`、通过 Outbox API 写事件；需要依赖抽象时优先由消费侧定义接口并由 `main.go` 装配。 |
 
 ### 模块职责与事实归属
@@ -30,7 +30,7 @@
 | `outbox` | 事务 Outbox 中继、Streams 消费、回执、DLQ 与重放 | `outbox_events`、`consumed_events` |
 | `attribution` | 作者成交实时查询、事件驱动的日销投影 | `author_sales_daily`；来源订单仍由 `order` 持有 |
 | `reconcile` | 交易/库存/投影/券/事件差异检测、事件重放与投影重建 | 跨模块只读校验与修复入口 |
-| `breaker` / `existence` / `tracing` | MinIO 熔断装饰器、布隆过滤器与负缓存、W3C traceparent 解析生成 | 横切能力，不拥有业务表 |
+| `breaker` / `existence` / `tracing` | RustFS 熔断装饰器、布隆过滤器与负缓存、W3C traceparent 解析生成 | 横切能力，不拥有业务表 |
 
 订单、库存和 outbox 共享 PostgreSQL 事务是当前模块化单体的一致性边界，不等同于跨服务事务。Feed、视频详情读取商品卡时按页批量装配；订单创建重新校验 SKU、商家和在售状态，并验证客户端提供的来源与活动商品关系后保存商品/价格快照；挂载时要求视频已发布，但下单只校验活动关系，不复查视频当前状态，也不证明用户真实点击来源。推广规则当前要求视频作者就是商品商家；订单会分别保存商家和来源作者。
 
@@ -46,7 +46,7 @@
 
 ### 上传、发布与清理
 
-上传 URL 只允许写入 `staging/<object_key>`，签名绑定声明的 Content-Length 和 Content-Type。视频请求范围为 1 MiB–512 MiB，图片为 1 KiB–5 MiB；服务端在封存时再次检查对象真实大小，并用源 ETag 条件复制到最终 key。服务端只有在预签名成功后才持久化票证；同一个 MinIO 熔断器也包住预签名。SDK 可在 bucket region 已缓存时本地签名，首次 region 未命中则可能查询 MinIO，因此 MinIO 故障时既可能无法签发票证，也可能在 region 已缓存时拿到 URL。核销时锁住票证行，封存、视频和封面票证核销及视频创建由同一数据库事务控制；封存失败会回滚票证核销与视频创建，票证在有效期内仍可重试。对象存储副作用不能回滚，复制成功但事务失败时可能留下无引用的最终对象。流程见 [video/service.go](../internal/video/service.go)、[video/repository.go](../internal/video/repository.go)、[storage 装饰器](../internal/breaker/storage.go) 和 [storage.go](../internal/storage/storage.go)。
+上传 URL 只允许写入 `staging/<object_key>`，签名绑定声明的 Content-Length 和 Content-Type。视频请求范围为 1 MiB–512 MiB，图片为 1 KiB–5 MiB；服务端在封存时再次检查对象真实大小，并用源 ETag 条件复制到最终 key。服务端只有在预签名成功后才持久化票证；同一个 RustFS 熔断器也包住预签名。SDK 可在 bucket region 已缓存时本地签名，首次 region 未命中则可能查询 RustFS，因此 RustFS 故障时既可能无法签发票证，也可能在 region 已缓存时拿到 URL。核销时锁住票证行，封存、视频和封面票证核销及视频创建由同一数据库事务控制；封存失败会回滚票证核销与视频创建，票证在有效期内仍可重试。对象存储副作用不能回滚，复制成功但事务失败时可能留下无引用的最终对象。流程见 [video/service.go](../internal/video/service.go)、[video/repository.go](../internal/video/repository.go)、[storage 装饰器](../internal/breaker/storage.go) 和 [storage.go](../internal/storage/storage.go)。
 
 新视频从 `PENDING_REVIEW` 开始。媒体 worker 下载对象到临时目录后调用 ffprobe 检查时长、尺寸和编码，必要时用 ffmpeg remux 以启用 faststart。结果为 `PENDING/PASSED/REJECTED/SKIPPED`：ffprobe 未安装或探测被配置关闭是 `SKIPPED`，损坏/不符合策略为 `REJECTED`；只有 `PASSED` 或 `SKIPPED` 可发布。下载等暂时失败保留待处理并推迟重试，删除视频不被 worker 取件。数据库条件写回保证结果幂等，但多个 worker 仍可能重复做探测。实现见 [probe_worker.go](../internal/video/probe_worker.go)、[probe_repository.go](../internal/video/probe_repository.go)、[migration 000020](../migrations/000020_video_media_probe.up.sql) 和 [migration 000022](../migrations/000022_probe_publish_gate.up.sql)。
 
@@ -68,7 +68,7 @@
 
 ## 配置与可观测性
 
-`JWT_SECRET` 和 `FEED_CURSOR_SECRET` 在所有环境必填；生产环境进一步校验密钥长度/区分、数据库和 Redis TLS、MinIO TLS、占位凭证等。`TRUSTED_PROXIES` 默认空，表示不信任转发头；不允许配置全网段。限流使用 Redis 固定窗口 Lua：认证按账号及 IP，API 读请求按 IP，受保护写请求按用户；Redis 故障时 fail-open 并记录告警日志，见 [config.go](../internal/config/config.go) 和 [ratelimit.go](../internal/middleware/ratelimit.go)。Prometheus `/metrics` 默认绑定 `127.0.0.1:9091`，启动后会主动探测端点。
+`JWT_SECRET` 和 `FEED_CURSOR_SECRET` 在所有环境必填；生产环境进一步校验密钥长度/区分、数据库和 Redis TLS、RustFS TLS、占位凭证等。`TRUSTED_PROXIES` 默认空，表示不信任转发头；不允许配置全网段。限流使用 Redis 固定窗口 Lua：认证按账号及 IP，API 读请求按 IP，受保护写请求按用户；Redis 故障时 fail-open 并记录告警日志，见 [config.go](../internal/config/config.go) 和 [ratelimit.go](../internal/middleware/ratelimit.go)。Prometheus `/metrics` 默认绑定 `127.0.0.1:9091`，启动后会主动探测端点。
 
 日志由 slog 输出 stdout 和轮转文件；ContextHandler 从 context 注入 request_id、trace_id、span_id、路由模板和用户 ID，并按字段名脱敏。HTTP 指标使用路由模板，避免把资源 ID 作为标签。实现见 [logcontext.go](../internal/observability/logcontext.go)、[traceparent.go](../internal/tracing/traceparent.go) 和 [HTTP metrics](../internal/observability/http.go)。这里只实现 W3C traceparent 的校验、生成与透传，没有完整 OpenTelemetry SDK、OTLP exporter 或跨服务 span 自动埋点。Prometheus 规则在 [tokmall.yml](../observability/prometheus/rules/tokmall.yml)，告警规则文件不等同于部署了 Alertmanager。
 
@@ -76,6 +76,6 @@
 
 - 当前是单进程模块化单体；媒体 worker、过期关单、Outbox 和对账不是独立部署的服务。
 - Kafka、支付渠道、部分退款/退货入库、券商品范围、Feed 推送扇出及 HybridRanker 均未接入。
-- PostgreSQL 与 Redis/MinIO 之间没有分布式事务；通过 Outbox、幂等、补偿任务和对账处理已知失败窗口。
+- PostgreSQL 与 Redis/RustFS 之间没有分布式事务；通过 Outbox、幂等、补偿任务和对账处理已知失败窗口。
 
 进一步的订单字段、状态约束和迁移依据见 [Commerce v1 技术实现](commerce-v1-technical-design.md)；设计取舍见 [ADR](architecture-decisions.md)，后续演进计划见 [roadmap](roadmap.md)。

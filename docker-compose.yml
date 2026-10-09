@@ -9,18 +9,27 @@ services:
     ports:
       - "5432:5432"
 
-  minio:
-    image: minio/minio:latest
-    container_name: tokmall-minio
-    command: server /data --console-address ":9001"
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    container_name: tokmall-rustfs
+    command: /data
     environment:
-      MINIO_ROOT_USER: tokmall
-      MINIO_ROOT_PASSWORD: tokmall123
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-tokmall}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-tokmall123}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CORS_ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   redis:
     # 本机 6379 已被其他项目占用，映射到 6380；镜像固定小版本避免隐式升级。
@@ -64,4 +73,4 @@ services:
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
-  minio-data:
+  rustfs-data:

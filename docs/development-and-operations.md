@@ -1,10 +1,12 @@
 # 开发、验证与运维
 
-> 核对日期：2026-10-07；命令与默认值对照 [Makefile](../Makefile)、[配置](../internal/config/config.go)、[CI](../.github/workflows/ci.yml)。这里说明怎么运行，业务规则与机制分别见业务文档和 ADR。
+> 核对日期：2026-10-09；命令与默认值对照 [Makefile](../Makefile)、[配置](../internal/config/config.go)、[CI](../.github/workflows/ci.yml)。这里说明怎么运行，业务规则与机制分别见业务文档和 ADR。
 
 ## 环境与启动
 
-Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Compose 提供 PostgreSQL `localhost:5432`、Redis `localhost:6380`、MinIO `:9000`（控制台 `:9001`），服务名分别为 postgres/redis/minio。不要另建 5433 实例。
+Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Compose 提供 PostgreSQL `localhost:5432`、Redis `localhost:6380`、RustFS `:9000`（控制台 `:9001`），服务名分别为 postgres/redis/rustfs。不要另建 5433 实例。
+
+对象存储默认使用固定版本 `rustfs/rustfs:1.0.1`，应用通过通用 `S3_*` 配置访问，客户端库仍是 `minio-go`（S3 SDK，不要求MinIO服务端）。原 `MINIO_*` 环境变量须改名为对应 `S3_*`，包括三个URL有效期；生产校验也使用新变量。RustFS开发端口仅映射到回环，浏览器CORS允许localhost/127.0.0.1的5173端口，部署到其他域名时显式更新 `RUSTFS_CORS_ALLOWED_ORIGINS`。新卷为 `rustfs-data`；不复用或转换旧 `minio-data`，本次迁移不包含历史对象数据。
 
 ```bash
 cd web && pnpm install --frozen-lockfile
@@ -19,9 +21,9 @@ make stop
 
 `make dev` 起依赖容器、编译后端、启动前端；日志在 `logs/api.log`、`logs/web.log`。`make stop` 的实现是匹配 `bin/api`/Vite 并强制停止，不等于验证优雅停机；应用本身有信号停机逻辑。避免按 8080 端口批量杀进程，本机可能还有其他应用。要验证优雅停机，对明确的后端 PID 发送 SIGTERM 并检查 worker 退出日志。
 
-Docker 凭证助手异常时，按 [项目记忆](../AGENTS.md) 的 `.docker-anon/config.json` 配置绕过；手动容器命令可用 `DOCKER_CONFIG=$PWD/.docker-anon docker compose up -d postgres minio redis`。`make dev` 自身未硬编码匿名目录，需要正确的 Docker 环境。
+Docker 凭证助手异常时，按 [项目记忆](../AGENTS.md) 的 `.docker-anon/config.json` 配置绕过；手动容器命令可用 `DOCKER_CONFIG=$PWD/.docker-anon docker compose up -d postgres rustfs redis`。`make dev` 自身未硬编码匿名目录，需要正确的 Docker 环境。
 
-直接启动任何 Go 工具都需要 `APP_ENV`、`JWT_SECRET`、`FEED_CURSOR_SECRET`，即使该工具只连数据库。Makefile 仅为本地开发提供密钥。生产还校验 DB/Redis/MinIO 显式配置、TLS、密钥长度与占位凭证，完整条件看 [Validate](../internal/config/config.go)。
+直接启动任何 Go 工具都需要 `APP_ENV`、`JWT_SECRET`、`FEED_CURSOR_SECRET`，即使该工具只连数据库。Makefile 仅为本地开发提供密钥。生产还校验 DB/Redis/RustFS 显式配置、TLS、密钥长度与占位凭证，完整条件看 [Validate](../internal/config/config.go)。
 
 ## 媒体与旧版本升级
 
@@ -60,16 +62,18 @@ scripts/preflight.sh
 `preflight.sh` 检查格式、vet、测试、tidy 漂移，依赖安装后检查前端类型；它不执行 lint、前端生成物漂移检查或 E2E，不能替代完整 CI。
 
 ```bash
-docker compose up -d postgres redis minio
+docker compose up -d postgres redis rustfs
 TOKMALL_RUN_PG_INTEGRATION=1 \
 TOKMALL_RUN_REDIS_INTEGRATION=1 \
-TOKMALL_RUN_MINIO_INTEGRATION=1 \
+TOKMALL_RUN_S3_INTEGRATION=1 \
 TOKMALL_TEST_DATABASE_DSN='postgres://tokmall:tokmall@localhost:5432/tokmall?sslmode=disable' \
 TOKMALL_TEST_REDIS_ADDR=localhost:6380 \
 go test ./... -count=1
 ```
 
-PG 测试用隔离 schema；Redis 测试用自己的 key/stream，不要在共享实例盲目 FLUSHDB。MinIO 测试开关目前仅覆盖 [上传封存集成测试](../internal/storage/upload_integration_test.go)，使用固定本地端点/开发凭证和临时 bucket，并清理自身对象。各测试的依赖条件以测试源文件为准。
+PG 测试用隔离 schema；Redis 测试用自己的 key/stream，不要在共享实例盲目 FLUSHDB。S3 测试开关覆盖 [真实存储契约](../internal/storage/upload_integration_test.go)：上传长度/类型签名、ETag封存、防覆盖、下载/回写、Range、CORS、签名到期与幂等删除。默认连接本地RustFS开发凭证，可用 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY` 覆盖；每次建临时bucket并清理自身对象。各测试的依赖条件以测试源文件为准。
+
+2026-10-09迁移验收在RustFS 1.0.1、PostgreSQL 18.4、Redis 7.4的独立测试环境执行：显式开启三个真实依赖开关的全量Go测试通过，storage/config/observability竞态检查、lint、tidy一致性通过；前端类型、构建、30项单测及17项Chromium E2E通过。E2E关闭限流与媒体探测，验证真实直传、发布和Feed播放；媒体工具实测不属于本次迁移验收。CI使用PostgreSQL16，仍需以远端运行结果确认该平台门禁，不把本地结果标为远端CI已通过。
 
 并发检查示例：`go test -race ./internal/order ./internal/video ./internal/feed ./internal/outbox ./internal/user`。启用上述环境变量后也会运行相应真实依赖分支；全量 race 不是每次改文档都需要运行。
 
@@ -80,11 +84,11 @@ export GOPATH="$PWD/.gopath" GOMODCACHE="$PWD/.gopath/pkg/mod"
 export GOCACHE="$PWD/.gocache" GOSUMDB=off
 ```
 
-前端生成、类型、单测与 E2E 看 [web README](../web/README.md)。[CI](../.github/workflows/ci.yml) 有 backend/contract/web/e2e 四个 job，PG/Redis 服务显式开启测试；真实 MinIO 封存测试目前没有在 backend job 开启，E2E 使用另起的 MinIO 且关闭媒体探测。[Security](../.github/workflows/security.yml) 独立执行 CodeQL/govulncheck。CI 跳过纯 Markdown 改动，文档链接需要单独核验。
+前端生成、类型、单测与 E2E 看 [web README](../web/README.md)。[CI](../.github/workflows/ci.yml) 有 backend/contract/web/e2e 四个 job，PG/Redis/RustFS 服务显式开启真实依赖测试；E2E 使用另起的RustFS且关闭媒体探测。[Security](../.github/workflows/security.yml) 独立执行 CodeQL/govulncheck。CI 跳过纯 Markdown 改动，文档链接需要单独核验。
 
 ## 观测与恢复
 
-`GET /health/live` 恒返回 OK；`GET /health/ready` 只 ping PostgreSQL，不检查 Redis/MinIO。具体实现看 [health](../internal/health/) 与 [main](../cmd/api/main.go)。MinIO 不可用不会阻止启动，不能从 API 进程存在推断媒体存储已就绪。
+`GET /health/live` 恒返回 OK；`GET /health/ready` 只 ping PostgreSQL，不检查 Redis/RustFS。具体实现看 [health](../internal/health/) 与 [main](../cmd/api/main.go)。RustFS 不可用不会阻止启动，不能从 API 进程存在推断媒体存储已就绪。
 
 ```bash
 make monitoring
@@ -111,7 +115,7 @@ Prometheus `:9090`、Grafana `:3000` 已配置规则与看板。当前 [规则�
 |---|---|
 | `scripts/drill_coupon.sh` | 券模板、顺序领取/重复领取、用券、支付、退款退券与对账；未覆盖并发领取或关单退券 |
 | `make drill` | 写入 1MiB 随机媒体后立即发布；默认媒体门禁下不可直接跑通，模拟业务需先用 MEDIA_PROBE_ENABLED=false 启动后端 |
-| `make drill-failure` | Redis 停机支付段只查计数；消费者崩溃段只看 PEL；MinIO 段使用无效 key/票证，在访问存储前就被拒，未触发熔断器。需按 roadmap 修复断言与造数 |
+| `make drill-failure` | Redis 停机支付段只查计数；消费者崩溃段只看 PEL；RustFS 段使用无效 key/票证，在访问存储前就被拒，未触发熔断器。需按 roadmap 修复断言与造数 |
 
 Outbox 的 PENDING 包含未来才到期的订单 timeout 事件，恢复目标不是总 PENDING=0。观察 `available_at <= now()` 的待投递事件、过期租约、消费回执和对账差异。不能删掉一个已有投影的消费回执再重放；回执与投影同事务，人工删回执会破坏幂等依据。
 

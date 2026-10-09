@@ -205,7 +205,7 @@ func TestStorageDecoratorFailsFast(t *testing.T) {
 
 	_, err := storage.PresignGetURL(context.Background(), "videos/1/a.mp4")
 	require.ErrorIs(t, err, ErrStorageUnavailable)
-	require.Equal(t, callsAfterTrip, downstream.calls, "熔断后不得再调用 MinIO")
+	require.Equal(t, callsAfterTrip, downstream.calls, "熔断后不得再调用 S3")
 
 	// 下游恢复 → 冷却期后探测成功 → 恢复正常
 	downstream.err = nil
@@ -252,7 +252,7 @@ func (f *fakeStorage) UploadFromFile(context.Context, string, string, int64) err
 
 // TestBusinessErrorsDoNotTripBreaker 锁死一个实测踩到的坑：
 // StatObject 返回"对象不存在"是健康依赖的正常答复，若计成失败，
-// 一次正常的 404 就会打开熔断器（MinIO 恢复后的 half-open 探测因此失败过）。
+// 一次正常的 404 就会打开熔断器（S3 恢复后的 half-open 探测因此失败过）。
 func TestBusinessErrorsDoNotTripBreaker(t *testing.T) {
 	clock := newFakeClock()
 	cfg := testConfig()

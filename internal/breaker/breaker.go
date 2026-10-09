@@ -58,7 +58,7 @@ type Config struct {
 	//
 	// 为什么必须有它：StatObject 返回"对象不存在"是**健康依赖的正常答复**，
 	// 不是故障。如果把它计成失败，一次正常的 404 就能把熔断器打开——
-	// 实测踩过：MinIO 恢复后的 half-open 探测因为返回 NoSuchKey 被判失败，
+	// 实测踩过：S3 恢复后的 half-open 探测因为返回 NoSuchKey 被判失败，
 	// 熔断器立刻重新打开。
 	IsFailure func(error) bool
 }

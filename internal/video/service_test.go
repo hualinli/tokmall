@@ -408,12 +408,12 @@ func TestCreate_ForgedObjectKey(t *testing.T) {
 	require.ErrorIs(t, err, ErrUploadURLExpired, "没有 ticket 的 key 必须被拒绝")
 }
 
-func TestCreate_ObjectMissingOnMinIO(t *testing.T) {
+func TestCreate_ObjectMissingOnS3(t *testing.T) {
 	repo := newFakeRepo()
 	store := newFakeStorage()
 	svc := newTestService(repo, store)
 	registerTicket(t, repo, 42, "videos/42/u1.mp4")
-	// 未在 store.objectSizes 登记 = MinIO 上不存在
+	// 未在 store.objectSizes 登记 = S3 上不存在
 
 	_, err := svc.Create(context.Background(), 42, CreateParams{
 		Title: "empty", ObjectKey: "videos/42/u1.mp4", DurationSeconds: 10,
@@ -746,7 +746,7 @@ func TestListMine_InvalidInputs(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidCursor)
 }
 
-// TestDeleteRemovesObjects 删除必须连带删 MinIO 对象（软删 ≠ 内容不可达）。
+// TestDeleteRemovesObjects 删除必须连带删 S3 对象（软删 ≠ 内容不可达）。
 func TestDeleteRemovesObjects(t *testing.T) {
 	repo := newFakeRepo()
 	store := newFakeStorage()

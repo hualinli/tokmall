@@ -21,8 +21,8 @@ const (
 	defaultDBPassword           = "tokmall"
 	defaultDBDatabase           = "tokmall"
 	defaultDBSSLMode            = "disable"
-	defaultMinIOEndpoint        = "localhost:9000"
-	defaultMinIOBucket          = "tokmall"
+	defaultS3Endpoint           = "localhost:9000"
+	defaultS3Bucket             = "tokmall"
 	defaultUploadExpiry         = 15 * time.Minute
 	defaultDownloadExpiry       = 2 * time.Hour
 	defaultAvatarExpiry         = 7 * 24 * time.Hour
@@ -99,7 +99,7 @@ type Config struct {
 	// 配错（过宽）会让客户端伪造 XFF 绕过按 IP 的限流。
 	TrustedProxies []*net.IPNet
 	DBConfig
-	MinIOConfig
+	S3Config
 	RedisConfig
 	// FeedRankStrategy 关注 Feed 排序策略。当前生产只支持 time（默认）。
 	// hot 仅保留为 feed.HotRanker 的单元实验，因分页语义尚未闭合而拒绝启动配置。
@@ -197,7 +197,7 @@ type DBConfig struct {
 	SSLMode  string
 }
 
-type MinIOConfig struct {
+type S3Config struct {
 	Endpoint  string
 	AccessKey string
 	SecretKey string
@@ -284,19 +284,19 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	minIOUseSSL, err := envBool("MINIO_USE_SSL", false)
+	s3UseSSL, err := envBool("S3_USE_SSL", false)
 	if err != nil {
 		return nil, err
 	}
-	uploadExpiry, err := envDuration("MINIO_UPLOAD_EXPIRY", defaultUploadExpiry)
+	uploadExpiry, err := envDuration("S3_UPLOAD_EXPIRY", defaultUploadExpiry)
 	if err != nil {
 		return nil, err
 	}
-	downloadExpiry, err := envDuration("MINIO_DOWNLOAD_EXPIRY", defaultDownloadExpiry)
+	downloadExpiry, err := envDuration("S3_DOWNLOAD_EXPIRY", defaultDownloadExpiry)
 	if err != nil {
 		return nil, err
 	}
-	avatarExpiry, err := envDuration("MINIO_AVATAR_EXPIRY", defaultAvatarExpiry)
+	avatarExpiry, err := envDuration("S3_AVATAR_EXPIRY", defaultAvatarExpiry)
 	if err != nil {
 		return nil, err
 	}
@@ -451,12 +451,12 @@ func Load() (*Config, error) {
 			Database: envString("DB_DATABASE", defaultDBDatabase),
 			SSLMode:  envString("DB_SSL_MODE", defaultDBSSLMode),
 		},
-		MinIOConfig: MinIOConfig{
-			Endpoint:          envString("MINIO_ENDPOINT", defaultMinIOEndpoint),
-			AccessKey:         envString("MINIO_ACCESS_KEY", "tokmall"),
-			SecretKey:         envString("MINIO_SECRET_KEY", "tokmall123"),
-			Bucket:            envString("MINIO_BUCKET", defaultMinIOBucket),
-			UseSSL:            minIOUseSSL,
+		S3Config: S3Config{
+			Endpoint:          envString("S3_ENDPOINT", defaultS3Endpoint),
+			AccessKey:         envString("S3_ACCESS_KEY", "tokmall"),
+			SecretKey:         envString("S3_SECRET_KEY", "tokmall123"),
+			Bucket:            envString("S3_BUCKET", defaultS3Bucket),
+			UseSSL:            s3UseSSL,
 			UploadURLExpiry:   uploadExpiry,
 			DownloadURLExpiry: downloadExpiry,
 			AvatarURLExpiry:   avatarExpiry,
@@ -611,7 +611,7 @@ func (c *Config) validate() error {
 	required := []string{
 		"JWT_SECRET", "FEED_CURSOR_SECRET",
 		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE", "DB_SSL_MODE",
-		"MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET", "MINIO_USE_SSL",
+		"S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_BUCKET", "S3_USE_SSL",
 		"REDIS_ADDR", "REDIS_PASSWORD", "REDIS_USE_TLS",
 	}
 	for _, key := range required {
@@ -638,13 +638,13 @@ func (c *Config) validate() error {
 		return errors.New("production configuration invalid: DB_SSL_MODE must enable TLS")
 	}
 	if !c.UseSSL {
-		return errors.New("production configuration invalid: MINIO_USE_SSL must be true")
+		return errors.New("production configuration invalid: S3_USE_SSL must be true")
 	}
 	if !c.UseTLS {
 		return errors.New("production configuration invalid: REDIS_USE_TLS must be true")
 	}
 	if host, _, err := net.SplitHostPort(c.Endpoint); err != nil || strings.TrimSpace(host) == "" {
-		return errors.New("production configuration invalid: MINIO_ENDPOINT must use host:port format")
+		return errors.New("production configuration invalid: S3_ENDPOINT must use host:port format")
 	}
 	return nil
 }

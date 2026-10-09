@@ -27,13 +27,13 @@ type Client struct {
 	avatarExpiry   time.Duration
 }
 
-func New(cfg config.MinIOConfig) (*Client, error) {
+func New(cfg config.S3Config) (*Client, error) {
 	mc, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.UseSSL,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("init minio client: %w", err)
+		return nil, fmt.Errorf("init S3 client: %w", err)
 	}
 	c := &Client{
 		mc:             mc,
