@@ -1,75 +1,31 @@
-# TokMall 文档导航
+# 文档导航
 
-> 更新于 2026-10-01。这里记录**当前实现**；旧方案中的示例 DDL、路由和技术选型不能代替代码。
+> 核对日期：2026-10-07。描述当前工作区实现（包含尚未提交的修复）；已实现能力、历史实验、未来事项分别记录。
 
-## 当前进度
+## 按问题阅读
 
-- **Commerce v1**（`ab9d062` / `b5349ea`）：商品/SKU/库存、单 SKU 下单、模拟支付、
-  取消/超时关单、视频挂商品、Feed/详情商品卡、作者成交统计、买卖双方订单查询与履约。
-- **安全与正确性收口**（`ab8c92a`）：修复审计发现的 P0/P1（限流绕过、超时订单可支付、
-  并发 refresh 双签发、singleflight 故障放大、输入校验与错误语义等 10 项）。
-- **售后闭环**（`6e1dd1e`）：全额退款申请/裁决/库存回补策略，订单状态机新增
-  REFUND_REQUESTED/REFUNDED，集成测试覆盖并发裁决与竞争。
-- **Transactional Outbox**（`ff288ac`）：事件与业务同事务、至少一次投递、
-  幂等消费（回执与投影同事务）、DLQ 与人工重放、作者日销投影、`cmd/outboxctl`。
-- **对账与可证明性**（`1436fd5`、`68192ea`）：六项对账检查、对账驱动重放、
-  读模型重建、契约 schema 级校验、CI 四个 job、压测客户端与故障演练脚本。
-- **热榜与媒体校验**（2026-10）：`GET /feed/hot`（分钟桶 + 冻结窗口 + 分数游标，
-  补上 HotRanker 缺失的游标闭合）；上传视频的异步 ffprobe 校验 + faststart remux
-  （实测把 moov 从尾部移到头部）。见 ADR-027/028 与
-  [`gcfeed-comparison-and-borrowing.md`](gcfeed-comparison-and-borrowing.md)。
-- **本地观测栈**（2026-10）：`make monitoring` 起 Prometheus + Grafana；
-  8 条记录规则 + 6 条告警 + 11 面板看板（JSON 入库），并有测试保证规则引用的指标真实存在。
-- **优惠券域 v1**（2026-10）：满减券的发行量/每人限领/领取截止/状态机/退款退券，
-  并发抢券恰好发满不超发，对账从 6 项扩到 9 项；`scripts/drill_coupon.sh` 可复现。
-- **对照同类项目的借鉴**（2026-10）：读完 west2-online/DomTok 后落地四项——
-  缓存穿透防护（布隆过滤器 + 负缓存）、超时关单双触发（延迟事件 + 轮询安全网）、
-  请求级可观测性（关联 ID 自动贯穿 + traceparent + 路由模板指标）、CI 门禁增强
-  （CodeQL/govulncheck/fmt 与 tidy 漂移检查）。详见
-  [`domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md)。
-- 仍未实现：真实支付渠道、部分退款/退货入库、佣金结算、秒杀、跨商家带货授权、
-  Agent 客服、生产级物流、告警规则与链路追踪。边界清单见
-  [`interview-walkthrough.md`](interview-walkthrough.md) §15。
-
-## 阅读顺序与事实来源
-
-| 需要了解 | 看哪里 | 说明 |
+| 目的 | 唯一入口 | 内容 |
 |---|---|---|
-| **面试讲解主文档（先看这个）** | [`interview-walkthrough.md`](interview-walkthrough.md) | 问题导向的十个故事 + 问答速查 + 边界清单 |
-| 同类开源项目对比与借鉴（电商） | [`domtok-comparison-and-borrowing.md`](domtok-comparison-and-borrowing.md) | 与 DomTok（Kitex 微服务电商）逐模块对比：借鉴清单 + 避坑清单 + 落地的五项；附录含 fzuhelper-server 核查 |
-| 同类开源项目对比与借鉴（Feed） | [`gcfeed-comparison-and-borrowing.md`](gcfeed-comparison-and-borrowing.md) | 与 GCFeed（短视频 Feed 系统，核心域高度重叠）对比：热榜与媒体校验的落地 + 16 条避坑清单 |
-| 审核结论与修复计划 | [`project-audit-2026-10.md`](project-audit-2026-10.md)、[`remediation-plan.md`](remediation-plan.md) | 审计发现（编号 BE-*/FE-*/CT-*）与分阶段计划 |
-| 项目结构、里程碑、开发命令 | [`AGENTS.md`](../AGENTS.md) | 项目工作记忆 |
-| 当前模块边界和数据所有权 | [`backend-architecture.md`](backend-architecture.md) | 对照 `cmd/api/main.go` 更新 |
-| Commerce v1 的当前业务范围 | [`commerce-business.md`](commerce-business.md) | 已实现与后续需求分开 |
-| Commerce v1 的当前技术实现 | [`commerce-v1-technical-design.md`](commerce-v1-technical-design.md) | 以现有代码重写 |
-| Feed 对照 GCFeed 的后续计划 | [`feed-evolution-plan.md`](feed-evolution-plan.md) | 先正确性与压测，再决定缓存/分发演进；未实现 |
-| Mall 对照 DomTok 的后续计划 | [`commerce-evolution-plan.md`](commerce-evolution-plan.md) | 先交易基线，再做售后与工程化；未实现 |
-| 准生产级后续工作 | [`interview-production-readiness-plan.md`](interview-production-readiness-plan.md) | 阶段 4 起仍是计划 |
-| 架构取舍 | [`architecture-decisions.md`](architecture-decisions.md) | ADR-001～020（014 起为售后/Outbox/对账/安全收口） |
-| 压测结论 | [`performance-baseline.md`](performance-baseline.md) | 测试时点的历史数据，不能当作当前性能承诺 |
-| API 形状 | [`openapi.yaml`](../internal/api/openapi.yaml) | route-sync 测试检查路由；最终行为以代码和测试为准 |
-| 表结构 | [`migrations/`](../migrations/) | 按编号执行，禁止 AutoMigrate |
-| 前端运行和测试 | [`web/README.md`](../web/README.md) | React/Vite/Playwright |
+| 启动与项目概览 | [根 README](../README.md) | 当前链路、运行入口、验证证据 |
+| 模块与数据边界 | [后端架构](backend-architecture.md) | 装配、数据所有权、读写与后台任务 |
+| 产品规则 | [商城业务](commerce-business.md) | 角色、状态、支持范围与异常分支 |
+| 交易实现 | [商城技术设计](commerce-v1-technical-design.md) | 锁、事务、幂等、库存/资金/券、归因与对账 |
+| 为什么这样设计 | [架构决策](architecture-decisions.md) | ADR-001～029，保留稳定编号供源码引用 |
+| 如何运行、排障、升级 | [开发与运维](development-and-operations.md) | 环境、测试矩阵、工具、迁移、脚本限制 |
+| 数字从哪里来 | [性能基线](performance-baseline.md) | 历史条件、结果、适用范围和待补实验 |
+| 如何解释和接受追问 | [面试讲解](interview-walkthrough.md) | 问题、机制、不变量、失败顺序、证据 |
+| 下一步何时做 | [后续计划](roadmap.md) | 当前真实缺口、触发条件与验收 |
+| 前端范围 | [web README](../web/README.md) | 已接入页面、生成类型与浏览器测试 |
+| 修改约定 | [AGENTS.md](../AGENTS.md) | 工程约束与工作方式 |
 
-## 历史证据
+## 事实优先级
 
-- [`interview-notes/`](interview-notes/)：按实施阶段记录的决策和实验；“本阶段尚未实现”应按该笔记写作时点理解。
-- [`performance-baseline.md`](performance-baseline.md)：保留原始条件和结果，旧 QPS 不是当前容量承诺。
+当前行为以 [服务装配](../cmd/api/main.go)、各模块代码、[版本化迁移](../migrations/) 和测试为准。[OpenAPI](../internal/api/openapi.yaml) 是 API 契约，字段/路由有自动检查；配置默认值来自 [config](../internal/config/config.go)，命令来自 [Makefile](../Makefile) 和 [工具入口](../cmd/)。历史 QPS、旧提交和原实施计划不能代替当前代码。
 
-旧版 Feed 手册、跨域路线图、项目对比和通用提交速查已从当前文档树移除；早期取舍收敛到 ADR，历史全文仍可从 Git 历史查看。未来工作以两份演进计划与准生产级计划为入口。
+真实依赖测试必须显式开启；默认 `go test ./...` 不证明实际 PG/Redis/MinIO 链路。当前后端已实现券、热榜、媒体校验、两级缓存、告警规则与日志 trace 关联；前端接入范围及完整 OTel/告警通知的缺口应分别描述。
 
-## 验证命令
+## 整理原则
 
-```bash
-go test ./...                     # 单元测试 + 契约 schema 校验
-make dev                          # 依赖容器 + 后端 + 前端
-make drill                        # 端到端业务闭环演练（内容→…→退款→投影）
-make drill-failure                # 故障演练（Redis 停机 / 事件丢失 / 对账重放）
-make reconcile                    # 对账（REPLAY=1 重放，REBUILD=1 重建读模型）
-make loadgen CONCURRENCY=50 DURATION=20s
-cd web && pnpm test:e2e
-make stop && docker compose stop postgres minio redis
-```
+已完成的分阶段实施计划、重复审计和零散面试笔记不再作为当前入口。其有效机制和失败案例归入架构决策、交易设计及面试讲解；性能结果保留历史语义。旧全文与外部项目对照可从 Git 历史查看，当前文档不再维护第二套状态表或外部项目的逐文件评价。
 
-真实 PostgreSQL 集成测试需先启动项目 PostgreSQL，并显式设置 `TOKMALL_RUN_PG_INTEGRATION=1` 与 `TOKMALL_TEST_DATABASE_DSN`。测试使用独立 schema，结束时清理。`docs/performance-baseline.md` 中的 5433 容器与旧压测命令仅是历史记录；当前 Compose 使用 5432。
+本轮主要整理文档；核验时恢复了前次既定的媒体回写接口与行锁保护。其他脚本偏差和实现边界记录在后续计划，没有将其写成已修复或已重新压测。

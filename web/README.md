@@ -1,36 +1,30 @@
 # TokMall 前端
 
-React + TypeScript + Vite + TanStack Router/Query + Tailwind。API 类型从仓库的 [`internal/api/openapi.yaml`](../internal/api/openapi.yaml) 生成；接口形状不要在页面里手写另一套。前端当前覆盖 Feed、登录注册、上传发布、互动、商品管理/购买及订单查询、模拟履约与售后退款。
+React/TypeScript/Vite/TanStack Router与Query/Tailwind，API类型来自 [OpenAPI](../internal/api/openapi.yaml)。当前页面见 [routes](src/routes/)，不要在页面手写第二套接口形状。
 
-## 本地运行
+## 已接入范围
 
-在仓库根目录启动完整开发环境：
+全局/关注Feed、登录注册/refresh/登出同步、上传与作者发布、点赞/关注/公开主页、商品/SKU/补库存/挂商品、单SKU购买、买卖双方订单/履约/全额退款、作者毛额/退款/净成交总计。
+
+后端已实现优惠券和热榜，但前端尚无发券/领券/结账选券界面，也没有调用`/api/v1/feed/hot`。媒体worker默认开启，前端尚未完整展示校验PENDING/PASSED/REJECTED/SKIPPED，待发布按钮可能先遇到状态冲突。真实支付与物流均未接入；后续事项见 [roadmap](../docs/roadmap.md)。
+
+## 运行和验证
+
+Node22、pnpm11与CI对齐。先安装依赖，再从根目录`make dev`，前端:5173代理`/api`和`/health`到本地API:8080；配置见 [vite.config.ts](vite.config.ts)。后端环境与迁移见 [开发运维](../docs/development-and-operations.md)。
 
 ```bash
-make dev
-# 前端 http://localhost:5173；后端 http://localhost:8080
-```
-
-Vite 将 `/api` 请求代理到本地后端。只开发前端时先确保后端及 PostgreSQL、Redis、MinIO 已运行，再执行：
-
-```bash
-cd web
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
-```
-
-项目用模拟支付与模拟发货，不接收真实款项，也没有真实物流。订单页是 `/orders`，支持买家/商家视角、订单详情，以及买家申请退款 / 商家同意或拒绝的售后链路（`src/features/order/`）。
-
-## 验证与生成
-
-```bash
-cd web
-pnpm gen       # OpenAPI 类型 + TanStack 路由树（两个生成物随仓库提交，见 .gitignore 注释）
-pnpm typecheck # 先 gen 再 tsc -b --noEmit
+pnpm gen                    # 生成API类型与路由树
+pnpm typecheck              # gen + tsc
 pnpm lint
-pnpm build
-pnpm test      # Vitest 单测（formatCount / 缓存更新器 / safe-redirect / 重试策略 / 关注计数）
-pnpm test:e2e  # Playwright；需后端与依赖容器在运行
+pnpm exec vitest run
+pnpm build                  # gen + tsc + Vite
+pnpm test:e2e               # 后端与PG/Redis/MinIO需已运行
 ```
 
-根目录的 `go test ./...` 负责后端与 OpenAPI 路由双向同步测试。Playwright 的核心交易用例覆盖视频挂商品、下单模拟支付、商家模拟发货、买家确认完成、退款（买家申请 → 商家同意 → 库存回补）和作者统计。测试完成后可执行 `make stop && docker compose stop postgres minio redis` 停止本轮启动的服务。
+生成物`src/api/types.ts`与`src/routeTree.gen.ts`提交到仓库，CI重新生成并检查漂移。根目录Go测试检查路由/schema契约，不验证浏览器交互。
+
+[Playwright](playwright.config.ts)使用单worker，必要时启动Vite，复用已有前端；它不替你启动后端。当前E2E合成媒体要求测试后端显式`MEDIA_PROBE_ENABLED=false`，与真实媒体准入测试分开。用例覆盖认证、Feed播放/分页、社交、上传、交易/退款与[过期订单重新购买](e2e/checkout-retry.spec.ts)；关注/点赞既检查乐观UI也等待服务端事实。单测与E2E通过数是某次运行结果，不能永久写成固定覆盖承诺。
+
+Token目前持久化在localStorage，多标签用BroadcastChannel/storage事件同步；这不防同源XSS，HttpOnly Cookie/CSRF改造仍未实现，见ADR-018。

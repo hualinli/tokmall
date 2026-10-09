@@ -1,59 +1,67 @@
-# Commerce v1 当前技术实现
+# Commerce 当前技术实现
 
-> 更新于 2026-09-26。本文只描述已实现的模块化单体。原始方案中的示例 DDL、`author_sales_stats` 物化表、真实支付回调和 Kafka 管线已从本文移除；历史讨论可从 Git 历史查看。路由与数据结构以 [`OpenAPI`](../internal/api/openapi.yaml) 和 [`migrations`](../migrations/) 为准。
+> 更新于 2026-10-07。以下以当前工作区源码、OpenAPI 契约和 migrations/000001–000024 为准；本文保留会影响正确性的事务与不变量，不重复列完整 DDL 或端点清单。路由契约见 [OpenAPI](../internal/api/openapi.yaml)。
 
-## 1. 范围和交付状态
+## 模块边界
 
-Commerce v1 已完成：商品/SKU/库存、单 SKU 订单、买家模拟支付、取消/超时关闭、视频挂商品、Feed/视频详情商品卡、作者成交统计，以及买家/商家订单查询、模拟发货、买家确认完成和前端订单页。阶段 3 基线为 `ab9d062`，订单收尾为 `b5349ea`。
+这是共享 PostgreSQL 的模块化单体。product 管商品/SKU，inventory 管库存与流水，order 维护交易事实和订单状态，coupon 管券规则，promotion 管视频商品关系，attribution 提供作者统计，outbox/reconcile 负责异步投影和校验。模块以消费侧接口或自己的只读 SQL 投影协作，不共享其他模块的持久化 model。商品、订单和券的归属都来自认证上下文中的用户 ID；当前没有独立 merchants 表。入口分别见 [商品](../internal/product/)、[库存](../internal/inventory/)、[订单](../internal/order/)、[优惠券](../internal/coupon/)、[推广](../internal/promotion/)、[归因](../internal/attribution/)。
 
-Commerce v1 不包含真实支付渠道、真实物流、退款/售后、佣金结算、秒杀或跨商家推广授权。Outbox + Kafka 是独立的后续工程化阶段；[播放事件 Kafka 化](performance-baseline.md)因缺少当前性能动机而搁置。
+## 订单状态与事务
 
-## 2. 模块边界
+~~~text
+PENDING_PAYMENT ──▶ PAID ──▶ FULFILLING ──▶ COMPLETED
+       │              │             │
+       ├─▶ CANCELED   └─▶ REFUND_REQUESTED ◀─┘
+       └─▶ EXPIRED                 │
+                              ┌────┴────┐
+                              ▼         ▼
+                         REFUNDED   申请前状态
+~~~
 
-| 模块 | 拥有的写入与规则 | 跨模块读取方式 |
-|---|---|---|
-| `product` | 商品、SKU、上下架 | `order` 使用自己的在售 SKU 只读投影 |
-| `inventory` | 商家库存调整与流水幂等 | `order` 在同一 PostgreSQL 事务中条件扣减/回补库存和写流水 |
-| `order` | 订单、订单项快照、支付事实、状态机、超时关单 | 来源视频与作者只保存 ID 快照 |
-| `promotion` | `video_products` 的挂载、排序、取消 | `feed`/`video` 使用各自的商品卡 read model |
-| `attribution` | 无交易写入；查询作者成交统计 | 直接只读 `orders`、`order_items`，不依赖其他模块的 model 类型 |
+订单状态图见 [order/service.go](../internal/order/service.go)，数据库约束随 [迁移](../migrations/) 演进。COMPLETED 是履约终态，不接受退款；退款申请只允许从 PAID 或 FULFILLING 进入。REFUND_REQUESTED 会把订单移出履约命令允许的状态；拒绝时依据订单上保存的 refund_from_status 回到 PAID 或 FULFILLING。状态图定义“可达边”，履约命令另有自己的状态守卫，不能复用完整状态图。
 
-所有依赖在 `cmd/api/main.go` 装配。商家是商品所有者（`merchant_id`），作者是视频及归因来源（`author_id`）；两个概念即使在当前“只挂本人商品”的授权简化下也不混用。
+### 创建与幂等
 
-## 3. 数据与迁移
+[订单仓储](../internal/order/repository.go)在一个 PostgreSQL 事务内完成订单创建：
 
-| 迁移 | 当前用途 |
-|---|---|
-| `000007`～`000011` | 商品/SKU、库存/流水及其幂等与数据库不变量；`000008`～`000010` 还调整了约束、封面键和播放事件语义 |
-| `000012` | `video_products`、`orders`、`order_items`、`payments`；单 SKU 订单项唯一约束、订单状态及时间戳 CHECK、幂等唯一键 |
-| `000013` | 数据库触发器保证同一视频最多 5 个有效商品挂载，并发请求不能绕过上限 |
-| `000014` | `fulfilling_at`、`completed_at` 及状态/时间戳约束；买家和商家订单列表索引 |
+1. 先按 user_id 与 idempotency_key 查已存在订单。请求指纹包括 SKU、数量、来源和可选持券 ID；相同载荷重放原订单，不同载荷返回冲突。首次并发请求再由唯一约束和 INSERT ... ON CONFLICT 仲裁。
+2. 锁定可售商品和 SKU 以读取稳定价格与归属；若有视频来源，再验证该视频商品关系仍有效。订单项保存商品标题、规格、单价、商家和数量快照。
+3. 若使用优惠券，先锁持券行并检查用户归属、同商家、未使用、有效期和门槛，再计算折扣。与库存有关的下单锁顺序是商品/SKU 共享锁、可选的来源关系共享锁、可选的持券行更新锁、订单幂等 claim，之后才条件更新库存。
+4. 插入订单与单条订单项，按 quantity >= 请求数量条件扣减库存并写 ORDER_CREATED 流水；再将持券状态从 UNUSED 条件更新为 USED，关联订单。
+5. 在同一事务写入到期时间等于 expires_at 的延迟 Outbox 事件。任何库存不足、券状态竞争或写入失败都会回滚整张订单、库存和券变更。
 
-订单项在创建时保存商品标题、规格、单价、商家 ID 和数量快照。历史订单展示与金额核验不回查当前商品。来源 `video_id`、`author_id`、`product_id` 也是下单事实快照；视频删除或商品下架不改写历史归因。
+v1 的单 SKU 边界由数据库对每单唯一 order_item 约束，不能只靠 handler 约定。服务端以整数分计算 original_amount，优惠券规则由 [coupon.DiscountFor](../internal/coupon/service.go) 计算；支付金额满足 total_amount = original_amount - discount_amount 且必须大于零，数据库 CHECK 再兜底。买家不能提交价格、折扣额或商家 ID。
 
-## 4. 交易链路和状态机
+### 支付、取消与超时
 
-```text
-PENDING_PAYMENT ──模拟支付──▶ PAID ──商家模拟发货──▶ FULFILLING
-       │                                                   │
-       ├──买家取消──▶ CANCELED                             └──买家确认──▶ COMPLETED
-       └──超时关单──▶ EXPIRED
-```
+当前支付端点是受认证保护的买家模拟命令：它直接写入成功支付事实，不会调用支付渠道。订单行先以 FOR UPDATE 锁定；支付单号与模拟渠道交易号是幂等身份，完全相同的成功支付重放为 replay，不同订单、金额或身份冲突。金额必须等于订单实付额。真实渠道接入必须另加回调验签、时间窗和商户金额校验，不能把此命令改名为渠道回调。
 
-- `POST /api/v1/orders` 的用户身份来自 Bearer Token。相同 `(user_id, idempotency_key)` 和相同请求指纹返回原订单；复用 key 但改载荷返回冲突。订单、订单项、条件扣库存和库存流水在一个 PostgreSQL 事务中完成；并发买家不能超卖。
-- `POST /api/v1/orders/{id}/pay` 是**受 JWT 保护的买家模拟支付命令**，不是公网支付渠道回调。订单锁、支付号/模拟渠道交易号幂等、金额核验和 `PENDING_PAYMENT → PAID` 同属一笔事务。真实渠道接入需要独立适配器先验签、校验时间窗及商户金额，再提交可信支付事实；详见 [支付安全边界](interview-notes/payment-cancel-api-security.md)。
-- 买家取消与超时 Worker 都只处理待支付订单。订单状态、库存回补和流水在一个事务中提交；Worker 用 `FOR UPDATE SKIP LOCKED` 多实例扫描。支付、取消和关单由订单行锁与条件状态更新仲裁。
-- 商家可将 `PAID → FULFILLING`，买家可将 `FULFILLING → COMPLETED`。转移由归属条件 `FOR UPDATE` 锁定，重复同一操作返回 `replayed=true`；非本人订单与不存在订单同为 404。`000014` 约束履约时间戳与状态一致。完成后的订单不能取消或回补库存。
+若支付请求到达时 expires_at 已过，事务会先将待支付订单改为 EXPIRED、回补库存与库存流水、释放持券，然后提交；提交后才向调用者返回订单过期错误。这样业务失败不会撤销关单副作用。买家取消和过期 Worker 也只对 PENDING_PAYMENT 做条件状态更新；订单行锁、WHERE status 条件和库存流水唯一键共同防止支付、取消、超时并发时重复回补。到期 Outbox 事件用于加速处理，5 秒轮询 Worker 是安全网；数据库订单状态才是事实源。实现见 [订单仓储](../internal/order/repository.go)、[超时事件处理](../internal/order/timeout_handler.go) 和 [轮询 Worker](../internal/order/expiry_worker.go)，决定见 [ADR-021](architecture-decisions.md)。
 
-## 5. 查询、推广和统计
+### 履约与退款
 
-- 系统提供 `GET /api/v1/orders`、`GET /api/v1/orders/{id}` 与商家侧 `/api/v1/merchant/orders`、`/api/v1/merchant/orders/{id}`。列表按 ID 倒序，`before_id` 是上一页最后一条，最多 50 条；批量查询订单项，避免 N+1。买家按 `user_id`、商家按 `merchant_id` 在 SQL 中限定可见范围。
-- 作者只能给自己的已发布视频挂自己创建的在售商品。挂载幂等，取消后允许在商品下架或视频不可售时清理关系。Feed 按页批量装配商品卡；缓存的 Feed 主体与动态商品卡分开，下架商品卡保留但不可购买。
-- `GET /api/v1/authors/{id}/sales` 仅作者本人可见，只计 `PAID`、`FULFILLING`、`COMPLETED` 且有支付事实的订单。返回订单数、去重买家数、销量、GMV，以及按视频和商品拆分。统计从订单事实实时计算，在只读 `REPEATABLE READ` 快照中保持各分组一致；当前没有 `author_sales_stats` 物化表。
-- 前端可从商品卡进入详情并下单模拟支付，也提供订单列表、详情、商家模拟发货和买家确认完成。操作均写明“模拟”，不暗示真实收款或物流。
+商家只能将自己订单从 PAID 推进到 FULFILLING；买家只能将自己的订单从 FULFILLING 推进到 COMPLETED。归属过滤、订单行锁和条件更新共同仲裁并发操作；重复同一履约动作返回重放结果，其他非法转换拒绝。
 
-## 6. 验证与后续边界
+[退款仓储](../internal/order/refund_repository.go)的申请和裁决都先锁订单行，再校验状态、改退款单与订单状态。数据库部分唯一索引确保同一订单最多一笔 REQUESTED 或 SUCCEEDED 退款；被拒绝的退款保留历史单据，之后允许重新申请。商家同意即代表模拟退款成功，金额固定等于订单 total_amount，资金事实、订单 REFUNDED、库存/券处理和 OrderRefunded Outbox 事件同事务提交。已发货的订单不回补库存；退货质检和重新入库不在实现范围。订单完成后不接受售后申请。全额退款取舍见 [ADR-015](architecture-decisions.md)。
 
-`go test ./...` 和 OpenAPI route-sync 覆盖接口契约。订单、推广和归因有显式开启的隔离 PostgreSQL 集成测试；其中订单测试覆盖 500 并发/100 库存、幂等并发、支付/取消/过期竞争、买卖双方权限、分页及并发发货。前端 Playwright 覆盖视频挂商品到支付、发货、完成和作者统计的浏览器链路。运行方式见 [文档导航](README.md)。
+## 库存、优惠券与历史金额
 
-后续若测得写吞吐、跨服务事务或查询聚合成为瓶颈，再评估 Outbox + Kafka、异步统计投影与对账任务。真实渠道回调必须独立设计鉴权与审计；不能把当前买家模拟支付端点改名当作回调。
+库存调整在事务里先按 (sku_id, reason, biz_id) 插入唯一流水作为幂等 claim，再条件更新数量；库存不足时两者一起回滚，重复 key 必须匹配原业务载荷，否则冲突。下单通过带数量下界的原子扣减防超卖。取消/超时和未发货退款按订单数量回补；已发货退款不回补。库存余额应等于库存流水变更之和，具体写入见 [库存仓储](../internal/inventory/repository.go)，数据库幂等约束见 [000011](../migrations/000011_inventory_idempotency_and_invariants.up.sql)。
+
+优惠券仅有商家满减券。领取事务先锁券模板行，再检查有效期和领取上限、条件递增发行量、检查每人限领并创建持券；数据库 CHECK 限制发行量。使用时必须匹配订单商家，不能跨商家；规则检查未使用状态、有效期和商品金额门槛。一张券不能同时被两张仍占用的订单核销。并发策略和规则见 [券仓储](../internal/coupon/repository.go)、[订单用券](../internal/order/repository.go) 与 [ADR-024](architecture-decisions.md)。
+
+取消、超时和成功退款会释放券：在券仍有效时改回 UNUSED，过期时改为 EXPIRED，并清空持券记录上的 order_id/used_at。订单本身保留 user_coupon_id，订单项也保留成交快照，作为历史交易记录；迁移 000021/000024 的部分唯一索引允许关闭或退款订单留下此引用，同时让持券可在之后再次使用。退款回券与订单终态在同一事务内提交，失败时一起回滚。金额拆分和重用约束见 [000019](../migrations/000019_coupon.up.sql)、[000021](../migrations/000021_coupon_reuse.up.sql) 与 [000024](../migrations/000024_closed_order_coupon.up.sql)。
+
+## 推广、归因与对账恢复
+
+推广关系只允许视频作者挂自己的在售商品，挂载时视频必须已发布；数据库约束限制每条视频最多 5 个有效商品。下单来源由客户端提交，订单仓储只检查 video_products 中仍为 ACTIVE 的关系及商品 ID，没有重新检查视频当前是否仍为 PUBLISHED，也无法证明买家真的从该视频点击进入。因此来源快照适合当前演示统计，不能作为结算或反作弊凭据；封禁/删除视频后仍 ACTIVE 的旧关系也可能被直接提交归因。商品下架不会改写历史订单，商品卡变为不可购买。实现见 [推广仓储](../internal/promotion/repository.go)、[订单来源校验](../internal/order/repository.go) 和 [000013](../migrations/000013_enforce_video_product_active_limit.up.sql)。
+
+作者销售接口在 REPEATABLE READ 只读事务中直接聚合订单事实，保证总计和视频/商品拆分来自同一快照。它按已成功支付的订单计算订单数、去重买家、销量和实付 GMV；之后成功退款的订单仍留在毛额里，退款金额单独统计，所以净额由调用方按 GMV 减退款额计算。另有 Outbox 消费者把支付毛额记在支付日、退款金额记在退款日，写入 author_sales_daily 投影；该表不替代当前销售接口的实时查询。实现见 [实时统计](../internal/attribution/repository.go) 和 [日销投影](../internal/attribution/projector.go)，口径取舍见 [ADR-017](architecture-decisions.md)。
+
+支付成功、退款成功及下单超时事件与对应业务事实同事务写入 Outbox。消费者在一个数据库事务里提交事件回执与投影，提交后才 XACK；重复事件按 event_id 去重，失联消费者由 XAUTOCLAIM 接管，超过投递上限进入 DLQ。当前传输使用 Redis Streams，Kafka 未接入。实现见 [Outbox 仓储](../internal/outbox/repository.go) 和 [消费者](../internal/outbox/consumer.go)，传输决策见 [ADR-014](architecture-decisions.md)。
+
+当前 reconcile 定义九项检查：库存余额与流水守恒、订单库存流水、退款单与订单/支付一致、订单与支付一致、作者日销投影、券发行量、券核销、订单金额拆分、Outbox 消费回执。对账只报告差异，不自动改订单、支付、库存或券等事实数据。它能将超过宽限期且已发布但没有消费回执的事件，以原 event_id 放回 Outbox；相同 ID 保持消费幂等。确认交易事实可信后，可以从订单与退款事实重建 author_sales_daily。DLQ 需由运维显式重放。恢复只覆盖事件投递和作者读模型，不能代替资金、库存或券的人工核查。实现见 [对账](../internal/reconcile/repository.go)、[对账服务](../internal/reconcile/service.go) 和 [reconcile 命令](../cmd/reconcile/)。
+
+## 明确边界
+
+当前不接真实收款或真实退款渠道，不提供物流、退货入库、部分退款、COMPLETED 后退款、购物车、多 SKU 订单、跨商家订单、跨商家推广、佣金结算或秒杀。优惠券前端购买流程与热榜前端调用也尚未实现。未来范围见 [路线图](roadmap.md)；模块取舍集中记录在 [架构决策](architecture-decisions.md)。

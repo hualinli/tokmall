@@ -1,635 +1,125 @@
-# 架构决策记录（ADR-001～013）
+# 架构决策记录（ADR-001～029）
 
-> 从早期 Feed 补充手册提取的历史决策，保留当时的取舍，不作为当前功能清单。当前行为以代码、迁移、OpenAPI 和 [`README.md`](README.md) 为准。2026-09-26 整理。
+> 更新于 2026-10-07。保留稳定编号供源码与其他文档引用。本文记录仍有解释价值的决策及其当前实现；历史实验、当时的故障故事和旧性能数字不作为现状依据。实现以代码和 [migrations](../migrations/) 为准，系统边界见 [后端架构](backend-architecture.md)。
 
-## 当前适用性提示
+### ADR-001：JWT 认证，不采用服务端 Session
 
-| ADR | 今天应如何理解 |
-|---|---|
-| 001、011 | JWT 仍在用；Redis 已用于 refresh 黑名单和轮换，001 中“未引入 Redis”的背景只属于 V1。 |
-| 002 | 当前路由按场景区分。 |
-| 003 | 早期只返回商品 ID 的选择已被批量商品卡装配替代；以现有 Feed/视频接口为准。 |
-| 004 | 拉模式仍在用；每作者 K=5 已被完整时间线查询替代。原文仅是历史决策，见 [`feed-evolution-plan.md`](feed-evolution-plan.md) F0。文中的演进阈值也是旧假设。 |
-| 005 | 先写库后删缓存仍是基础策略，但并发旧值回填和个性化缓存失效需要单独验证；不能把本 ADR 当作严格一致性的证明。 |
-| 006～009、013 | 设计原则仍有参考价值；具体表、约束和状态以迁移及代码为准。 |
-| 010 | “E2E 无法进 CI”是当时限制，后续 CI 能力需重新评估。 |
-| 012 | 首页面缓存仍在用；商品卡和点赞数在请求时动态装配。性能数字是当次实验，不代表当前容量。 |
+采用短时 access JWT 与 refresh JWT，便于 HTTP API 无 cookie 状态地认证。代价是 JWT 本身不可撤销，因此当前只对 refresh token 引入 Redis 撤销与轮换（ADR-011）；access token 仍靠短 TTL 失效。签名密钥必须显式配置。实现见 [token manager](../internal/token/token.go) 和 [配置校验](../internal/config/config.go)。
 
-## 历史决策原文
+### ADR-002：Feed 路由按场景拆分
 
-### ADR-001：选择 JWT 而非 Session（V1）
+全局 Feed、关注 Feed、作者视频列表等场景使用独立路由，便于分别定义认证、限流和 OpenAPI schema。当前路由由 [cmd/api/main.go](../cmd/api/main.go) 注册，契约以 [OpenAPI](../internal/api/openapi.yaml) 为准，route-sync 由 [main_test.go](../cmd/api/main_test.go) 检查。
 
-**上下文**：Feed v1 需要认证机制识别当前用户。
+### ADR-003：商品卡由消费模块按需批量装配
 
-**候选方案**：
-1. JWT Bearer Token（无状态）
-2. Session + Redis Cookie（有状态）
+Feed 和视频模块不共享商品模块的 Go model，也不把商品交易事实复制进 Feed。当前按页批量读取并装配 `product_cards`；商品状态在响应装配时读取，见 [Feed 商品卡 read model](../internal/feed/product_cards.go) 和 [视频商品卡 read model](../internal/video/product_cards.go)。早期只传商品 ID 的方案已被当前 API 行为替代。
 
-**决策**：V1 选择 JWT。
+### ADR-004：关注 Feed 使用拉模式完整时间线
 
-**理由**：
-- 减少架构复杂度：Redis 的引入应与缓存需求绑定，而非认证需求
-- 接口测试友好：无需 cookie 管理
-- Payload 可直接携带 user_id/role，避免 token 解码后额外查询
+关注 Feed 在请求时读取关注作者的完整候选时间线；低关注量使用有界归并，关注量较大时走全局时间索引。旧的每作者 TOP 5 是历史实现。生产排序只有与 `(published_at, id)` 游标一致的 `TimeRanker`；推模式和 HybridRanker 未实现。实现见 [feed/service.go](../internal/feed/service.go) 和 [ranker.go](../internal/feed/ranker.go)，生产配置入口见 [main.go](../cmd/api/main.go)。
 
-**代价**：
-- Token 签发后无法主动失效（除非建黑名单）
-- Payload 大小固定，不适合携带大量数据
-- 密钥轮换需要优雅过渡
+### ADR-005：数据库提交后失效缓存
 
-**V2 演进条件**：
-- 需要实时封禁用户
-- 需要检测 token 在多设备间被盗用
-- 认证复杂度已证明值得引入 Redis 会话存储
+采用 Cache-Aside，先提交事实写入，再失效派生缓存。当前首页可使用 Redis L2 与进程内 L1；缓存失效失败不会回滚业务写入，短暂陈旧由缓存 TTL 兜底，因此不承诺强一致。实现见 [tiered_cache.go](../internal/feed/tiered_cache.go)。
 
-### ADR-002：Feed 路由按场景分路径
+### ADR-006：Repository、Service、Handler 分层翻译错误
 
-**上下文**：Feed 有不同的获取场景——全局时间线、关注 Feed、作者主页。
+Repository 将 ORM/数据库错误翻译为领域错误；Service 根据业务上下文处理并记录故障；Handler 将领域错误映射为统一 HTTP 错误，未知错误返回 500。错误接口由消费侧定义，避免 service 和 handler 依赖 GORM 类型；统一 HTTP 映射见 [response.go](../internal/response/response.go)。
 
-**候选方案**：
-1. 统一端点 + `type` 参数：`GET /api/v1/feed?type=global`
-2. 按场景分路径：`GET /api/v1/feed`、`GET /api/v1/feed/following`、`GET /api/v1/users/{id}/videos`
+### ADR-007：数据库 upload ticket 约束上传凭证
 
-**决策**：方案 2（分路径）。
+上传票证记录用户、对象 key、有效期和一次性核销状态，防止客户端伪造 key 或引用他人对象。当前实现进一步把预签名 PUT 限定到 staging key，并在核销时封存实际字节；初期的“直接上传最终 key、只检查对象存在”已被 ADR-029 的流程取代。见 [video/service.go](../internal/video/service.go)、[video/repository.go](../internal/video/repository.go) 和 [storage.go](../internal/storage/storage.go)。
 
-**理由**：
-- 路由层可直接对 `/feed` 和 `/feed/following` 配置不同的限流策略
-- 中间件可差异化：`/feed/following` 必然要求认证，`/feed` 可匿名（可选）
-- OpenAPI 文档更清晰：每个场景有独立的 path 和 schema
+### ADR-008：视频状态机由应用规则和数据库条件更新共同保护
 
-**代价**：
-- URL 比方案 1 多出几个端点
-- 但如果后续增加"热门 Feed"（`/feed/trending`）、"推荐 Feed"（`/feed/recommended`），扩展性优势更明显
+状态转换集中定义，并在写入时带上来源状态、作者和目标记录条件；用 `RowsAffected` 仲裁并发，而不是依赖先查后写。数据库 CHECK 约束补足不可变状态不变量。媒体探测状态另有发布门禁，见 ADR-028。实现见 [video/service.go](../internal/video/service.go) 与 [迁移 000022](../migrations/000022_probe_publish_gate.up.sql)。
 
-### ADR-003：Feed 商品信息使用松耦合设计
+### ADR-009：视频不可见时统一返回 404
 
-**上下文**：Feed v1 为 Commerce 模块预留接口。Feed 列表中是否应该嵌入完整的商品信息。
+已删除视频对所有人不可见；待发布视频只对作者可见。对无权访问的资源统一返回“未找到”，降低枚举资源和推断他人资源归属的风险。服务层策略见 [video/service.go](../internal/video/service.go)。
 
-**候选方案**：
-1. 紧耦合：Feed item 直接嵌套 product 对象
-2. 松耦合：Feed item 只返回 `product_ids` 数组
+### ADR-010：测试覆盖分层协议边界
 
-**决策**：方案 2（松耦合）。
+纯业务规则使用单元测试，handler 使用 Hertz 内存链路，数据库约束/事务使用显式启用的 PostgreSQL 集成测试；契约测试检查路由与 OpenAPI、schema 与 DTO，前端另有 Vitest 和 Playwright。集成脚手架使用 [testsupport](../internal/testsupport/testsupport.go) 的隔离 schema。Fake 测试不能替代 SQL、锁和真实错误翻译验证。
 
-**理由**：
-- 当时 Feed v1 尚未引入 Commerce，松耦合有利于先独立开发和测试
-- 商品详情有自己的缓存策略和错误处理，不应让 Feed 的响应延迟受商品查询影响
-- 当前已按页批量装配 `product_cards`；本段仅保留早期方案比较
+### ADR-011：refresh token 黑名单与原子轮换
 
-**代价**：
-- 客户端需要额外一次请求获取商品详情
-- 当前由 Feed/视频模块直接装配商品卡，未引入 API Gateway 或 BFF
+Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access token 不查黑名单。轮换使用 `SETNX` 原子 Claim 旧 `jti`，并发刷新只有一次能成功，再签发新 token；登出对无效/过期 refresh token 作为幂等成功处理。Redis 故障会影响 refresh/logout。实现见 [user/service.go](../internal/user/service.go) 和 [blacklist.go](../internal/user/blacklist.go)；前端 token 暂存 localStorage 的权衡见 ADR-018。
 
-### ADR-004：拉模式 + K=5 作为关注 Feed 默认策略
+### ADR-012：首页默认第一页使用 Cache-Aside 与 singleflight
 
-**上下文**：关注 Feed 需要展示用户关注作者的最新视频。
+只缓存默认首页第一页，避免将深页、任意 limit 和复合排序键引入缓存。并发回源用 singleflight 合并，并在合并函数内再次检查缓存。Feed 主体可缓存，商品卡按页动态装配；缓存故障时回源数据库。实现见 [feed/service.go](../internal/feed/service.go)；两级缓存失效见 ADR-025。
 
-**候选方案**：
-1. 推模式：发布时写入粉丝收件箱
-2. 拉模式 + K=5：请求时实时查询
+### ADR-013：按数据不变量评估数据库约束
 
-**决策**：V1 选择拉模式 + K=5。
+唯一约束是幂等写入的基础，CHECK 约束保护状态和金额不变量；外键按写入压力、孤儿容忍度和补偿能力逐表决定，不因“简化”而批量删除。约束变更必须有迁移和明确的应用层/对账兜底，当前结构见 [migrations](../migrations/)。
 
-**理由**：
-- V1 用户规模小，拉模式足够支撑
-- 推模式引入 Kafka fanout worker，复杂度高
-- K=5 × 最多 1000 关注 = 最多 5000 条候选，内存归并可接受
-- 关注列表缓存命中率高，进一步降低延迟
+### ADR-014：Transactional Outbox 默认通过 Redis Streams 传输
 
-**代价**：
-- 用户每次刷 Feed 都需要做数据库查询
-- 关注数 > 1000 的用户 feed 加载较慢（可通过截断缓解）
+业务事实和 Outbox 事件在同一 PostgreSQL 事务写入；Relay 采用租约、退避与死信，Streams 消费组提供确认和待处理消息认领，端到端语义是至少一次。数据库消费回执与投影在同一事务提交，随后才 ACK。Redis Streams 是当前实现；Kafka 仅是 Publisher 抽象的可替换方向，仓库没有已接入的 Kafka broker 或 consumer。实现见 [transport.go](../internal/outbox/transport.go)、[relay.go](../internal/outbox/relay.go) 和 [consumer.go](../internal/outbox/consumer.go)。消费回执和对账重放用于补偿 Redis 的持久性边界。
 
-**V2 演进条件**：
-- 关注数超 1000 的用户占比 > 10%
-- Feed 读取 P99 > 500ms
-- 此时启动推拉混合实验
+### ADR-015：退款只支持全额，不自动处理退货入库
 
-### ADR-005：先写数据库再删缓存
+退款金额等于订单实付金额；已发货订单退款不回补库存，已完成订单不允许申请。部分退款需要新的退款累计模型；退货入库需要质检和重新上架流程，目前均未实现。见 [refund_service.go](../internal/order/refund_service.go) 和 [refund_repository.go](../internal/order/refund_repository.go)；未发货退款的库存回补和占用券释放见 ADR-029。
 
-**上下文**：视频发布、删除、状态变更后，需要保证缓存最终与数据库一致。
+### ADR-016：用本地事务、Outbox 和对账替代分布式事务
 
-**决策**：采用 Cache-Aside + 先写数据库再删缓存。
+交易写入在 PostgreSQL 本地事务提交；跨模块副作用通过 Outbox 至少一次投递和幂等消费者完成，周期对账发现缺少回执时可重放。当前不引入 2PC，也没有跨 PostgreSQL、Redis、MinIO 的原子事务。见 [outbox](../internal/outbox/) 和 [reconcile](../internal/reconcile/) 实现。
 
-**理由**：
-- 写数据库成功 → 删缓存 → 下次读重建，数据最终一致
-- 如果使用先删缓存再写数据库，在并发读下会导致脏数据写入缓存
-- 延迟双删（先删→写→再删）可进一步降低不一致窗口，但 V1 不引入——面试时能讨论即可
+### ADR-017：作者销售投影保留毛额并单列退款
 
-**代价**：
-- 删缓存失败会导致短暂不一致，但 TTL 到期后自动修复
-- 极端场景（删缓存失败且 TTL 很长）可通过消息队列补偿
+`order_count`、`units_sold` 和 `gmv` 统计曾支付过的所有订单，包括后来退款的订单；退款订单数和金额按退款发生日单列。消费者若需要净成交额再计算毛额减退款。投影见 [attribution/projector.go](../internal/attribution/projector.go)，对账见 [reconcile/repository.go](../internal/reconcile/repository.go)，两边必须使用相同口径。
 
-### ADR-006：错误三层处理链
+### ADR-018：当前前端把 token 存在 localStorage，并同步多标签状态
 
-**上下文**：user 模块首个 repository 直接向调用方抛 `gorm.ErrRecordNotFound` 等 ORM 错误，service/handler 被迫 import gorm 才能判断错误类型。
+`BroadcastChannel` 与 storage 事件让多个标签页共享轮换后的 token 对和登出状态，避免标签页长期持有已轮换 token。localStorage 中的 refresh token 可被同源 XSS 读取；HttpOnly Cookie、CSRF 防护和前端凭据模式改造尚未实施。实现见 [auth-sync.ts](../web/src/lib/auth-sync.ts) 和 [auth-store.ts](../web/src/lib/auth-store.ts)。
 
-**候选方案**：
-1. 全链路共用 ORM 原始错误
-2. 每层各自定义错误、层层翻译
-3. repo 翻译成领域哨兵 → service 判定分类 → handler 映射 HTTP（选定）
+### ADR-019：库存以 PostgreSQL 条件更新为准，不做 Redis 预扣
 
-**决策**：方案 3。
+下单在数据库事务内按库存条件扣减并写库存流水，数据库约束/幂等流水保护不变量。当前没有 Redis 预扣、秒杀队列或异步下单；只有测量到库存行锁是实际瓶颈时才重新评估。扣减和流水见 [order/repository.go](../internal/order/repository.go)。
 
-**理由**：
-- 错误词汇表只有一份（领域哨兵），由 repo 的实现方从 ORM 错误翻译；接口属于消费者，哨兵与接口同包定义
-- service 是唯一有业务上下文的地方，负责"已知/未知判定 + 日志分级 + 上下文包装"：已知业务失败（邮箱重复）不打 Error 日志，未知故障（死锁）才 slog.Error + `%w` 包装
-- handler 无领域知识，只做哨兵 → BizError 的映射，未知错误兜底 500
-- 判断规则：repo 只包装"service 需要 errors.Is 分支"的错误，其余原样上抛
+### ADR-020：对非作者的资源操作也统一隐藏存在性
 
-**代价**：
-- 每层多一层映射代码
-- 错误类型数量必须克制：错误数量 ≈ 业务分支数量，否则退化成分类学
+非作者对视频执行删除等操作，与资源不存在使用同一 404 语义，避免自增 ID 暴露资源是否存在。权限必须由服务端身份和资源所有权判断，不接受请求体提供的 user ID 替代认证身份。服务层权限策略见 [video/service.go](../internal/video/service.go)，HTTP 身份来自 [auth middleware](../internal/middleware/auth.go)。
 
-**V2 演进条件**：
-- 微服务化后需引入 RPC 错误码协议（如 gRPC status），哨兵映射到协议错误码
+### ADR-021：订单超时采用延迟事件加速与轮询兜底
 
-### ADR-007：upload_tickets 防伪造上传凭证（V1）
+下单事务写入 `commerce.order.timeout.v1`，`available_at` 等于订单到期时间；消费者在到期后尝试条件关单。周期 worker 使用 `FOR UPDATE SKIP LOCKED` 扫描仍待支付订单。支付请求也执行 lazy expiry。三条路径共享数据库订单状态与库存/券释放规则，消息只加速关单，数据库仍是唯一事实源。实现见 [order/repository.go](../internal/order/repository.go)、[timeout_handler.go](../internal/order/timeout_handler.go) 和 [expiry_worker.go](../internal/order/expiry_worker.go)。
 
-**上下文**：创建视频时必须校验 object_key 是 upload-url 阶段发放的，防止客户端伪造 key 引用他人文件。
+### ADR-022：缓存穿透使用进程内布隆过滤器与 Redis 负缓存
 
-**候选方案**：
-1. 客户端幂等 key + 内存/Redis 缓存已发放 URL
-2. `upload_tickets` 表：upload-url 写入凭证，创建视频时条件核销（选定）
-3. 仅校验 object_key 格式（videos/{user_id}/{uuid}.mp4）
+布隆过滤器只在“确定不存在”时短路数据库；首次全量加载完成前必须放行请求，重建时新旧缓冲同时查询。Redis 负缓存跨实例复用真实 miss 并带 TTL 抖动。只有数据库确认记录不存在才写负缓存；权限或可见性拒绝不能写，否则会把有权用户的读取错误缓存为 404。见 [existence](../internal/existence/) 和 [video/existence.go](../internal/video/existence.go)。
 
-**决策**：方案 2。
+### ADR-023：对象存储通过三态熔断装饰器隔离故障
 
-**理由**：
-- 凭证必须可被多实例共享查询/核销，内存方案在多实例下失效；Redis 是 M4 的引入项，不为凭证提前引入
-- 条件核销（`WHERE user_id=? AND object_key=? AND used=false AND expires_at>now()`）由数据库保证"一次性"，无需事务锁
-- 校验顺序：StatObject（文件真实存在）→ ConsumeTicket（核销）→ CreateVideo（落库）。StatObject 失败不烧凭证，客户端可重试
-- NoSuchKey 由 storage 层翻译为 `ErrObjectNotFound`（哨兵属于产生它的包），service 映射为 400 UPLOAD_URL_EXPIRED 而非 500
+熔断器采用 closed/open/half-open 与受限探测；对象不存在和无效大小等业务答复不计为依赖故障，熔断打开映射为可重试的 503。bucket 启动检查失败会记录警告并继续启动。当前 [storage 装饰器](../internal/breaker/storage.go) 将预签名和对象读写都放在同一个熔断器内；预签名通常可基于已缓存的 bucket region 本地签名，但首次 region 未命中可能向 MinIO 查询。上传票证仅在预签名成功后写入数据库；因此预签名失败或熔断打开时不会留下新票证，而 region 已缓存时 MinIO 不可用也可能仍能签出 URL。具体边界由 MinIO 客户端版本及 region 缓存状态决定。
 
-**代价**：
-- 表会积累过期未用凭证，需定时清理（V1 未做，量级可忽略）
-- 没有 Idempotency-Key：客户端重试会拿到新 URL，但不会产生脏数据
+### ADR-024：优惠券 v1 为商家范围满减券
 
-**V2 演进条件**：
-- 引入 Redis 后可用 Idempotency-Key 语义（同键 5 分钟内返回同一 URL）
-- 凭证清理任务随孤儿对象清理一起实现
+规则集中在 `coupon.DiscountFor`；当前不支持折扣券、叠加券、商品/品类范围。券模板属于一个商家，下单时只允许用于同一商家的 SKU；这是商家范围而非全平台通用券。门槛按整单商品金额计算。领券锁模板行、条件更新发行数并校验用户限领；订单写入原价、优惠和实付金额，数据库检查金额恒等式。见 [coupon/service.go](../internal/coupon/service.go)、[order/repository.go](../internal/order/repository.go) 和 [迁移 000019](../migrations/000019_coupon.up.sql)。退款成功时退回仍有效的券，过期券标记为 `EXPIRED`。
 
-### ADR-008：视频状态机的双层防护
+### ADR-025：L1 跨实例失效使用版本号和短周期探测
 
-**上下文**：视频状态转换（PENDING_REVIEW → PUBLISHED/DELETED 等）必须防并发竞态和非法迁移。
+首页 L1 是进程内分片 LRU，L2 是 Redis。写入后清理本地 L1 和 Redis L2，并递增 `feed:version`；其他实例按配置的探测间隔发现版本变化，L1 TTL 作为最终兜底且不得大于 L2 TTL。Redis 版本读取失败时会沿用旧版本，缓存 fail-open。实现见 [tiered_cache.go](../internal/feed/tiered_cache.go) 和 [配置校验](../internal/config/config.go)。当前实现中若 L2 `Del` 返回错误，失效函数会提前返回、不执行版本 `Bump`；若 `Bump` 失败，远端也不会获知版本变化。这两种情况中业务写仍成功，远端 L1 依赖 TTL 收敛。
 
-**候选方案**：
-1. 应用层先查后改（Read-Modify-Write），无数据库约束
-2. 表驱动状态机 + DB 条件更新（`WHERE id=? AND status=from`）（选定）
+### ADR-026：Redis 慢命令日志忽略预期阻塞命令
 
-**决策**：方案 2。
+慢命令 Hook 记录命令名、耗时和 key 前缀，不记录完整的用户/订单 key。`XREADGROUP`、阻塞队列读取及订阅等正常等待命令被排除，避免把消费者等待误判为 Redis 延迟。实现见 [cache/slowlog.go](../internal/cache/slowlog.go)。
 
-**理由**：
-- 状态机表集中定义合法迁移（`canTransition`），替换 if-else 瀑布，未来插入真实审核流程只改表不改结构
-- DB 条件更新 + RowsAffected 判定：并发请求只有一个能命中前置状态，其余返回 ErrStatusConflict，竞态被数据库强制而非应用层约定
-- 产品语义：作者可从任意非终态删除（含审核中），故 `PENDING_REVIEW → DELETED` 合法；该迁移由单测先行暴露缺失后补入状态机表
-- 状态由自定义类型 `Status` 承载，编译期防拼错
+### ADR-027：热榜用分钟桶、冻结窗口和分数游标
 
-**代价**：
-- 每个迁移需要 from 状态，调用方必须知道当前状态（Delete 需先查）
+独立热榜将互动分值写入分钟桶，由后台任务物化为冻结的 v2 窗口；窗口有 2000 条上限和 10 分钟 TTL。分页游标签名包含 `window_end`、`hot_score`、`video_id`，按分数和 ID 严格续页；已存在的窗口不重写，过期窗口拒绝旧游标。首页窗口缺失时 singleflight 合并回源；空首页或首页 Redis 故障会降级为时间流，返回时间游标，后续请求继续时间流。已有热榜游标遇到窗口过期或 Redis 故障会返回错误，不切换排序以避免重复或漏项。实现见 [hot.go](../internal/feed/hot.go)、[hot_cache.go](../internal/feed/hot_cache.go) 和 [hot_service.go](../internal/feed/hot_service.go)。热榜窗口已经具备冻结分数游标，但关注 Feed 的实验 `HotRanker` 仍不支持在线游标分页，不能混为同一实现。
 
-**V2 演进条件**：
-- 引入审核队列后增加 PROCESSING → PENDING_REVIEW 的真实异步迁移
+### ADR-028：媒体探测放入异步 worker，并区分跳过与拒绝
 
-### ADR-009：统一视频可见性策略
+上传请求只检查对象存在性/大小；异步 worker 才调用 ffprobe 验证媒体策略，并在需要时用 ffmpeg remux faststart。状态为 `PENDING/PASSED/REJECTED/SKIPPED`：ffprobe 缺失或校验关闭是 `SKIPPED`，文件损坏或不符合策略是 `REJECTED`；只有 `PASSED/SKIPPED` 可以发布。探测结果通过条件更新写回；暂时下载失败只推迟重试，`DELETED` 视频不取件。数据库迁移加入状态约束、重试时间及发布门禁。见 [probe_worker.go](../internal/video/probe_worker.go)、[probe_repository.go](../internal/video/probe_repository.go) 和 [迁移 000020](../migrations/000020_video_media_probe.up.sql)。多个 worker 可能重复探测，当前没有独占租约。
 
-**上下文**：视频有 PUBLISHED/PENDING_REVIEW/DELETED 等状态，不同接口需要一致的回答"谁能看到什么"。
+### ADR-029：上传封存、对象清理补偿与订单资源释放
 
-**候选方案**：
-1. 各 handler 自行判断
-2. service 集中实现策略，任何不可见一律 ErrNotFound（选定）
+- 预签名 PUT 只写 `staging/`，绑定声明长度和 Content-Type；视频上限 512 MiB、图片上限 5 MiB。服务端 StatObject 校验真实大小后按源 ETag 条件复制到最终 key，避免并发重传替换已校验字节。见 [storage.go](../internal/storage/storage.go) 和 [video/service.go](../internal/video/service.go)。
+- 票证核销持有数据库行锁；封存、视频/封面票证核销和视频创建在同一数据库事务中。MinIO 封存失败会回滚票证核销和视频创建，仍有效的票证可重试；MinIO 复制不是事务性回滚的一部分，复制成功而后续数据库步骤失败时可能留下无引用最终对象。封存期间对象存储调用使用 30 秒 deadline。事务与行锁见 [video/repository.go](../internal/video/repository.go)。
+- 删除状态和 `object_delete_jobs` 同事务写入；API 进程内 worker 每 10 秒取任务，删除失败延迟 1 分钟重试。未使用票证和 staging 对象等原 PUT 过期后清理；媒体回写与删除共用视频行锁。旧部署发出的、目标为最终 key 的 PUT URL 不能被新代码撤销，升级时须等待其最长有效期结束。见 [cleanup_worker.go](../internal/video/cleanup_worker.go) 和 [迁移 000023](../migrations/000023_object_cleanup.up.sql)。
+- 取消、轮询超时、延迟事件超时、支付时 lazy expiry 和退款成功都释放订单占用券；有效券回到 `UNUSED`，过期券记为 `EXPIRED`，订单继续保留历史引用。唯一索引排除 `REFUNDED/CANCELED/EXPIRED` 订单。实现见 [order/repository.go](../internal/order/repository.go)、[refund_repository.go](../internal/order/refund_repository.go) 和 [迁移 000024](../migrations/000024_closed_order_coupon.up.sql)。
+- 退款成功事件和作者日销投影继续使用毛额加单列退款口径（ADR-017）；退款申请本身不改变已支付成交事实。
 
-**决策**：方案 2。
-
-**理由**：
-- 不泄露存在性：未发布/已删除对无权限者返回 404 与"不存在"同语义，无法枚举
-- DELETED 对所有人（含作者）不可见——"删除 = 不存在"；该语义由 E2E 抓到的 bug（删除后作者仍可见）驱动补全
-- 策略只实现一次，Feed 查询、详情、将来的推荐系统复用同一语义
-- 所有可见性检查集中在 service 的 Get 方法内，不散落 handler
-
-**代价**：
-- 接口语义统一为"拿不到就是不存在"，无法区分"未发布"和"已删除"（这是刻意的）
-
-### ADR-010：测试分层策略与 E2E 的必要性
-
-**上下文**：M1 期间 fake repo 单测全绿，但 E2E 真库验收抓出两个单测测不出的 bug：`column` 自定义类型拼接破坏 gorm SQL 生成（整条条件被当参数值绑定）；NoSuchKey 被分类为 500 而非 400；删除后作者仍可见。
-
-**候选方案**：
-1. 仅单测（fake repo / fake storage）
-2. 单测 + 里程碑 E2E 验收（选定）
-
-**决策**：方案 2。
-
-**理由**：
-- fake repo 测业务分支（错误映射、状态机、凭证校验），但不经过 SQL 生成、不经过真实错误分类（minio NoSuchKey）
-- E2E 用真实 Postgres + MinIO 跑完整上传时序，验证协议边界语义：错误码分类、HTTP 状态、可见性
-- 每个里程碑结束时跑一遍 E2E 是"写测试证明问题存在"工作方式的落地点
-- 单测断言用 require.ErrorIs 而非 Equal，验证错误包装链而非表面相等
-
-**代价**：
-- E2E 依赖本地容器环境，无法进 CI 单测流水线（可后续用 Testcontainers 自动化）
-
-**V2 演进条件**：
-- 引入 CI 后可用 Testcontainers 把 E2E 自动化；新模块上线前必须过一遍 E2E 验收
-
-### ADR-011：Refresh Token 黑名单 + 旋转（无状态 JWT 的可撤销性）
-
-**上下文**：JWT 无状态（ADR-001）的代价是"签发后无法主动失效"。M4 前 login/register 签发 refresh token 但没有 /refresh 消费方，logout 不存在——token 泄露则 7 天内可无限使用。
-
-**候选方案**：
-1. 纯无状态（现状）：无法登出，泄露不可撤销
-2. 黑名单只拉黑 refresh token（选定）
-3. per-user 当前 jti 白名单（只认最新签发的一个）
-
-**决策**：方案 2 + refresh token rotation；**access token 不进黑名单**。
-
-**理由**：
-- access 15min 短命，为它查 Redis 牺牲无状态 + 每个请求一次额外往返（feed 12k QPS 场景是纯开销）；工业标准是 access 短 TTL + refresh 可撤销
-- 黑名单 key `blacklist:refresh:{jti}`，**TTL = token 剩余寿命**，到期自动消失——零清理任务，"TTL 即生命周期"
-- `SET key val EX ttl NX` 单命令原子：NX 防止重复 Block 缩短已有更长的 TTL
-- rotation 顺序：**先拉黑旧 jti 再签发新 token**——两步骤间崩溃的后果是旧 token 作废、用户重登，而不产生新旧双活（无事务下的安全优先排序）
-- 幂等：logout 收到无效/过期/类型不符的 token 一律视为已登出（成功 no-op），只有 Redis 故障才报错
-- 顺带修复：软删用户（000002）的 refresh token 必须作废——Refresh 时查用户存在性，ErrNotFound → 401
-
-**代价**：
-- 并发用同一 token 刷新时可能都通过检查各自签发（短暂双活窗口，TOCTOU）
-- logout/refresh 依赖 Redis 可用性（Redis 挂则无法登出，只能等 TTL）
-
-**V2 演进条件**：
-- 需要多设备管理/强制下线时切换方案 3（白名单存 per-user 当前 jti，天然解决并发双活）
-
-### ADR-012：Feed 首页缓存策略（Cache-Aside + singleflight + double-check）
-
-**上下文**：100 万数据下无缓存 feed 6,576 QPS（7 行基线 12,219 是假象，索引深度随数据量增长），db_pool_wait_count 5.8 万，25 连接饱和。M4 引入 Redis 缓存读路径。
-
-**候选方案**：
-1. Redis ZSET 缓存整个已发布视频有序列表，分页在缓存层做
-2. 只缓存"默认 limit + 无游标"的第一页 JSON（选定）
-3. 每页独立 key 缓存
-
-**决策**：方案 2，Cache-Aside + 先写库再删缓存（ADR-005）+ singleflight + singleflight 内二次检查（double-checked locking）。
-
-**理由**：
-- 流量长尾：首页 QPS 占绝大多数，深层翻页命中率低不值得缓存；ZSET 方案有 score 精度问题（`(published_at,id)` 复合键装不进 double）和详情批量回源（fanout）复杂度，记入 V2
-- 缓存的是 **service 拼完 URL 的产物**（FeedResult），repo 层缓存不了——缓存代码必须在 service 之后
-- 自定义 limit 与缓存内容绑定，混用会串数据，故只缓存默认 limit
-- **singleflight 只合并时间上重叠的调用**：缓存刚过期瞬间仍有缝隙，压测抓出的 flaky 证明其存在——必须二次检查（等待期间别人可能已回填），这才是防击穿的完整形态
-- 缓存故障（Redis 挂）**降级直连 DB**，缓存不是单点故障；Set 失败只影响命中率，不影响本次响应
-- 失效走消费侧接口：video 定义 `FeedCacheInvalidator`，main 装配 feed 的实现——video 不知道 feed 存在（模块边界不破）
-- 失效失败只 Warn 不回滚：DB 已写入，脏窗口由 TTL（60s）兜底
-- 压测验证：1M 数据无缓存 6,576 QPS / 缓存后 11,337 QPS（1.72x），db_pool_wait 归零
-
-**代价**：
-- 深层翻页不缓存；生产真实命中率取决于首页流量占比（压测 99.999% 是 10s 全首页流量的假象）
-- TTL 周期内（最多 60s）发布/删除后首页可能短暂滞后
-- 缓存后新瓶颈是 Redis GET + JSON 反序列化（~11.3k QPS 封顶）
-
-**V2 演进条件**：
-- 首页流量占比下降 / 需要覆盖翻页时：ZSET 列表缓存 + 详情 fanout
-- 命中路径直接返回预序列化 bytes，省掉每请求 Unmarshal
-
-### ADR-013：数据库约束取舍原则（FK/CHECK 的边界）
-
-**上下文**：对"数据库尽可能轻、尽可能少约束"诉求的裁定。两类"轻"含义相反：不加多余的（对）vs 尽量少约束（错）。
-
-**决策**：**唯一约束不可删**（幂等的地基，M3 的 ON CONFLICT 依赖冲突目标）；**CHECK 保留**（写入时零成本，防不可能状态）；**FK 按表评估**，不搞一刀切。
-
-**评估标准**（三个变量）：
-1. 写热不热（子表 INSERT 对父表行加共享锁，热行上锁竞争是删 FK 的真实动机）
-2. 孤儿行可否容忍（有无生命周期/对账任务消化）
-3. 当前量级下成本是否可测量（不可测量则保留完整性保证）
-
-**逐表结论**：
-| 约束 | 判定 | 理由 |
-|---|---|---|
-| follows/likes PK、users 唯一键 | 留 | 幂等（ON CONFLICT） |
-| CHECK 不自动关注 | 留 | 零成本防不可能状态 |
-| videos.author_id、follows.* FK | 留 | 低写频，防孤儿 |
-| likes.video_id FK | 留（观察） | 热写路径；翻转条件见下 |
-| upload_tickets.user_id FK | 唯一可讨论删 | ticket 是瞬态凭证，过期即废，孤儿由 expiry 生命周期消化 |
-
-**翻转条件**（触发时才删，删后必须有兜底）：
-- likes 单表写入达每秒几千行、压测出现锁等待/死锁 → 删 FK + 应用层校验 + 对账任务（如定时清理孤儿 likes）
-- 分库分表时 FK 天然失效，需提前断
-
-**代价**：
-- 保留 FK 在超高写入量级会有限制；当前量级（每秒个位数写）成本为 0
-- 任何约束的删除必须是 ADR 决策（写明代价与兜底策略），不是审美偏好
-
----
-
-> 以下 ADR-014～020 来自 Commerce v2 / 售后 / Outbox / 对账 这一轮演进，
-> 每一条都对应一次显式取舍，而不是"顺手加的"。
-
-### ADR-014：事件传输默认 Redis Streams，Kafka 作为可替换实现
-
-**上下文**：支付成功后的副作用（统计投影、通知、对账）需要可靠分发。项目已有 Redis；Kafka 的分区吞吐与保留策略在学习项目量级下是过剩能力，且本机/CI 拉取镜像与运维成本更高。
-
-**候选方案**：
-1. 直接上 Kafka
-2. Redis Streams（消费组 + XACK + PEL + XAUTOCLAIM）
-3. 数据库轮询表当队列（无 broker）
-
-**决策**：方案 2，并把传输抽象成 `outbox.Publisher` 接口；方案 1 保留为可替换实现，方案 3 否决（PEL/认领/消费组都要自己实现）。
-
-**理由**：
-- 需要的能力是"至少一次 + 消费组 + 崩溃后重投 + 可观测积压"，Streams 全部具备；
-- 事件语义、幂等键、DLQ、重放流程都不依赖具体 broker，抽象接口的迁移成本很低；
-- **代价必须写明**：Redis 持久化弱于 Kafka（AOF everysec 仍有秒级丢失窗口）、无跨机房复制。因此本项目不把"事件不丢"押在 broker 上，而是用 Outbox + 消费回执 + 对账重放兜底。
-
-**代价**：需要自己实现 DLQ 与重放（约 200 行）；Redis 内存占用需要 `MAXLEN` 近似裁剪。
-
-**V2 演进条件**：需要跨机房、需要按分区水平扩展消费、或事件保留期要求超过 Redis 内存预算时换 Kafka——只替换 `Publisher` 与消费者实现。
-
-### ADR-015：只做全额退款，不做部分退款/退货入库
-
-**上下文**：订单是单 SKU 订单（`order_items` 有唯一约束），金额语义简单。
-
-**决策**：退款金额恒等于订单实付金额；已发货退款不回补库存；COMPLETED 之后不接受退款申请。
-
-**理由**：
-- 部分退款需要"退款金额 ≤ 已支付金额 - 已退款金额"的累计校验与多笔退款单模型，属于新的资金模型，不应在没有真实需求时引入；
-- 已发货退款不回补库存是业务语义决定的：货已出库，退货入库需要质检/上架流程，不能等同于"库存 +1"；
-- 把边界写进文档（`docs/commerce-business.md`）比假装支持更诚实。
-
-**代价**：真实电商的售后场景覆盖不全。
-
-**V2 演进条件**：出现部分退款、退货入库、7 天无理由需求时，新增退款单状态与库存入库流程。
-
-### ADR-016：不做分布式事务，用本地事务 + Outbox 替代
-
-**上下文**："支付成功 + 通知/统计/对账"跨系统，天然无法共享本地事务。
-
-**候选方案**：
-1. 两阶段提交 / Seata 类协调者
-2. 本地事务 + Transactional Outbox + 至少一次投递 + 幂等消费
-3. 定时对账补偿（无事件）
-
-**决策**：方案 2，并以方案 3 作为兜底（对账重放）。
-
-**理由**：跨库两阶段提交引入协调者、悬挂、空回滚等复杂度，而本项目只有一个数据库；事件驱动的最终一致 + 幂等消费 + 对账补偿已经能覆盖所有已识别的失败模式，且每条失败模式都有演练。
-
-**代价**：下游是最终一致（秒级延迟）；需要维护 Outbox、DLQ 与对账三套机制。
-
-### ADR-017：退款口径——毛额永远记历史，退款单独归集
-
-**上下文**：对账第一次运行就报了 2 条差异：检查用"净额"（排除已退款订单），投影用"毛额 + 单独记退款"。
-
-**决策**：统一为
-`order_count / units_sold / gmv = 曾支付过的全部订单（含后来退款的）`，
-`refunded_orders / refunded_amount = 按退款发生日归集`；净额由使用方相减得到。
-
-**理由**：
-- 毛额是不可变的历史事实，"某天成交了多少"不应该因为后来的退款被改写；
-- 退款按发生日归集才能让"每日净额"对得上；
-- **对账口径必须与投影口径逐字一致**，否则对账本身就是噪音源——这条教训写进了 `internal/reconcile/repository.go` 的注释。
-
-**代价**：使用方需要自己做减法；报表口径需要文档说明。
-
-### ADR-018：refresh token 暂留 localStorage，只做多标签同步
-
-**上下文**：前端把 token 存在 localStorage，XSS 可直接取走 7 天有效的 refresh token；且每个标签页各自轮换，服务端 rotation 会把其他标签踢下线。
-
-**决策**：本轮只修"多标签互踢"（BroadcastChannel 同步 token 与登出），保留 localStorage；HttpOnly Cookie 方案记为后续。
-
-**理由**：改成 Cookie 需要后端新增 refresh 的 Cookie 分支、CSRF 防护与前端凭据模式调整（`credentials: include`），是一次跨端改造；在当前项目阶段，多标签掉线是**必然发生**的用户体验问题，而 XSS 需要先有注入点（当前前端零 `dangerouslySetInnerHTML`、零 `any`）。
-
-**代价**：XSS 场景下 refresh token 可被窃取。
-
-**V2 演进条件**：出现任何富文本/第三方内容渲染时，必须优先切 HttpOnly Cookie。
-
-### ADR-019：不做 Redis 预扣库存/秒杀
-
-**上下文**：热点库存行在并发下是数据库写热点。
-
-**决策**：维持数据库条件更新扣减；秒杀能力不做。
-
-**理由**：压测显示当前下单链路 911 req/s、零失败，瓶颈是连接池与往返次数而不是库存行锁；在没有可测瓶颈时引入 Redis 预扣，会带来"缓存与数据库对账""预扣失败补偿""超卖与少卖两种错"的复杂度，属于典型的过度设计。
-
-**V2 演进条件**：单 SKU 热点库存压测出现可测瓶颈（行锁等待成为 p99 主因）后，再评估入口限流 → Redis Lua 预扣 → 一人一单 → 异步下单 → 失败补偿 → 对账。
-
-### ADR-020：不可见资源统一 404（含非作者操作）
-
-**上下文**：删除视频对非作者返回 403，而其它入口（详情、发布、点赞）对不可见资源统一返回 404。视频 ID 是自增序列，403 等于告诉攻击者"这个 ID 存在但不是你的"。
-
-**决策**：非作者与不存在统一 404；`DELETE /videos/{id}` 的契约与测试同步修改。
-
-**理由**：存在性泄露是枚举攻击的第一步；统一语义也让客户端的错误处理更简单（404 即"当作没有"）。
-
-**代价**：合法用户无法从状态码区分"视频不存在"与"不是我的"——但客户端本来也不应该依赖这个区别。
-
-### ADR-021：订单超时用"延迟事件加速器 + 轮询安全网"，而不是纯消息调度
-
-**上下文**：订单超时需要把到期未支付的订单关掉并回补库存。可选项：
-(a) 纯轮询 Worker（`FOR UPDATE SKIP LOCKED`）；(b) 纯延迟消息（RocketMQ DelayLevel 等）；
-(c) 两者并存，数据库为事实源。
-
-**决策**：方案 (c)。下单事务里写一条 `commerce.order.timeout.v1` 事件，`available_at = expires_at`
-（复用 Outbox 的延迟能力）；中继到点投递，消费者回查订单状态并**条件更新**关单；
-轮询 Worker 保留为安全网。
-
-**理由**：
-- 纯消息调度的致命问题是**事实源错位**：消息丢一条 = 一笔订单的库存永久泄漏。
-  对照项目 DomTok 正是这么做的（RocketMQ 单主 ASYNC_FLUSH + 无幂等键 + DLQ 无人消费），
-  丢消息后既没有告警也没有补偿。
-- 延迟能力不必新增组件：`outbox_events.available_at` 本来就是重试退避用的字段，
-  中继的扫描条件 `available_at <= now()` 天然就是延迟队列的语义。
-- 幂等由条件更新提供：`WHERE id=? AND status='PENDING_PAYMENT' AND expires_at<=now()`，
-  已支付/已取消/已被 Worker 关掉的订单返回 0 行受影响，handler 视为 no-op。
-- 消息全丢时系统仍收敛：Worker 每 5s 扫一次，最坏退化为方案 (a)。
-
-**代价**：同一件事有两条路径，需要指标区分（`order_timeout_event_total{result}`：
-noop 多说明 Worker 够快，expired 多说明加速器在承担主责）；
-事件量增加一条 per order（可用 outbox 的归档策略控制表大小）。
-
-**V2 演进条件**：订单量增长到 outbox 表成为负担时，把超时事件改成"分区表 + 定期归档"，
-或引入独立的时间轮调度器；**但数据库作为事实源的约束不变**。
-
-### ADR-022：缓存穿透防护用"自研布隆过滤器 + 负缓存"，而不是引入 RedisBloom
-
-**上下文**：详情类接口（视频/商品）被不存在的 ID 反复请求时，每个请求都会打到数据库。
-需要"这个 ID 有没有可能存在"的廉价预判。
-
-**候选**：1) RedisBloom 模块（服务端插件）；2) 第三方布隆库 + Redis；3) 自研布隆过滤器（进程内）+ Redis 负缓存。
-
-**决策**：方案 3。
-
-**理由**：
-- 布隆过滤器的价值在于**零网络往返**：放 Redis 里就把它的优势抵消了一半（每次判断一次 RTT）；
-- 自研成本低（位数组 + splitmix64 双哈希 < 100 行），且能在测试里直接对照理论误判率
-  （实测 1.012% vs 目标 1.00%），引入依赖反而看不到这层数学；
-- **删除无法从布隆过滤器移除**，所以必须配"双缓冲轮换 + 定期全量重建"，
-  并保证重建期间新旧两份都查（不产生假阴性）；
-- 首次装载完成前必须放行所有请求（空过滤器会判定一切 ID 不存在，是灾难性假阴性）；
-- 负缓存（Redis）承担跨实例共享与 TTL 自动过期，TTL 带随机抖动（顺带防雪崩）。
-
-**代价**：每个实例各有一份过滤器，内存随预期元素数增长（100 万元素、1% 误判率 ≈ 1.2MB）；
-误判率随删除操作上升，靠重建拉回；负缓存引入最长 TTL 的"假 404"窗口（默认 30s+抖动）。
-
-**已知边界**：只对"记录确实不存在"写负缓存。可见性拒绝（未发布视频对非作者）
-**不能**写，否则作者本人在 TTL 窗口内看不到自己的视频——有专门的测试锁死这条。
-
-### ADR-023：依赖级熔断用自研三态熔断器，并以装饰器注入
-
-**上下文**：对象存储（MinIO）不可用时，每个走网络的调用都要等到底层超时（实测 3~5 秒），
-连接与 goroutine 被这些等待占满，一次下游故障会放大成全站不可用。
-
-**候选**：1) 引入 Sentinel/熔断库；2) 自研三态熔断器 + 装饰器；3) 只调小超时时间。
-
-**决策**：方案 2。方案 3 否决（调小超时只是缩短痛苦，仍然每个请求都打下游）。
-
-**理由**：
-- 熔断器的状态机（closed/open/half-open + 指数退避 + 探测限额）不到 300 行，
-  可单测、可注入时钟，且能按项目需要定制"失败分类"；
-- **失败分类是必须的**：`StatObject` 返回"对象不存在"是健康依赖的正常答复。
-  实测踩过——MinIO 恢复后的 half-open 探测因为返回 `NoSuchKey` 被判失败，
-  熔断器立刻重新打开。因此 `Config.IsFailure` 是接口的一部分，而不是可选项；
-- 装饰器注入（实现 `StorageClient` 接口面）让业务代码零改动，
-  也让"哪些调用真正走网络"这件事显式化：**预签名是本地签名运算，不走网络**，
-  所以它不需要熔断（第一版接错位置，实测才发现）；
-- 对外语义要正确：熔断打开返回 **503**（可重试）而不是 500（服务端 bug）。
-
-**代价**：多一层间接（排障时要意识到装饰器的存在）；阈值需要按依赖特性调整
-（对象存储用连续失败计数就够，低频依赖更适合失败率 + 最小样本数）。
-
-**配套**：对象存储的 bucket 检查不再作为启动门槛（依赖不可用不该让服务起不来）；
-`breaker_state/opens/rejections/probes` 四个指标 + 故障演练第 6 步。
-
-### ADR-024：优惠券 v1 只做满减券，规则收敛在一个纯函数里
-
-**上下文**：券是跨模块特性（券模板 ↔ 持券 ↔ 订单金额 ↔ 退款 ↔ 归因 ↔ 对账），
-同类项目（DomTok）在这里的失败方式很有代表性：没有发行量、领取次数由客户端传、
-核销是死代码、金额字段语义错位。
-
-**决策**：
-1. **只做满减券**（门槛 + 固定面额），不做折扣券/品类券/叠加券；
-2. **规则收敛在 `coupon.DiscountFor(持券, 券, 整单金额, now)`** 这一个纯函数里，
-   下单、视图、对账都调用它——规则只允许有一份实现；
-3. **领取用"锁券行 + 条件更新 + 数据库 CHECK"三层**保证不超发/不超领；
-4. **金额拆分写进订单**：`original_amount / discount_amount / total_amount`，
-   数据库 CHECK 保证 `total = original - discount`；
-5. **GMV 口径**：GMV 记实付（total_amount），优惠单列（ADR-017 的延伸）；
-6. **退款退券**：全额退款成功且券仍在有效期 → UNUSED；已过期 → EXPIRED。
-
-**理由**：
-- 券的复杂度来自"组合"（多券叠加是背包问题），v1 刻意不做组合，
-  把复杂度留给真正需要时的 ADR；
-- 规则纯函数化是防漂移的关键：DomTok 的门槛判断散在算价/创建/领取三处，
-  最后金额字段语义全乱；
-- 数据库 CHECK 是对账的前提：约束能挡住的脏数据不需要对账来发现。
-
-**代价**：v1 只支持全场满减（不支持品类/单品范围、不支持折扣券、不支持叠加）；
-过期券不会主动刷状态（读取时判定），因此"过期券数量"这类统计要走 SQL 而不是状态列。
-
-**V2 演进条件**：出现品类券/折扣券/叠加需求时，把 `DiscountFor` 升级为
-"券集合 → 最优组合"的贪心算法（并明确它不保证全局最优），同时补券范围表与对账口径。
-
-### ADR-025：两级缓存用"版本号 + 短 TTL 探测"做跨实例失效，而不是 Pub/Sub 广播
-
-**上下文**：Feed 首页缓存在 Redis（L2）命中时仍要付出"网络往返 + 大 payload 传输 +
-JSON 反序列化"的成本，压测基线里 11.3k QPS 的天花板就在这里。加一层进程内缓存（L1）
-能把这部分成本降到一次内存查表，但**多实例下的失效**是真正的难点。
-
-**候选**：1) L1 只在单实例内删除（多实例下会长期脏读）；2) Redis Pub/Sub 广播失效；
-3) 版本号（写路径递增）+ 短 TTL 本地版本缓存（读路径校验）；4) 干脆不做 L1。
-
-**决策**：方案 3。
-
-**理由**：
-- 方案 1 的失败模式太严重：多副本部署时，A 实例发布视频后 B 实例可能一直返回旧首页
-  （直到 L1 TTL 到期）；
-- 方案 2 需要每个实例维护订阅连接，**断线期间写入的失效消息会丢**（Pub/Sub 不持久），
-  恢复后本地副本可能长期陈旧——"丢消息导致永久脏"是缓存最不该有的失败模式；
-- 方案 3 没有"丢消息"这个失败模式：最坏情况是最长 `FEED_VERSION_INTERVAL`（默认 1 秒）
-  内读到旧值，而 L1 TTL（默认 5 秒）是最终兜底。代价是明确的、可配置的、可测量的
-  （`cache_l1_stale_total` 直接反映"别的实例写了新数据"的频率）。
-
-**实现要点**：
-- L1 是分片 LRU + TTL + 版本校验（`internal/cache/l1`），分片是为了避免单锁争用；
-- 版本号读取在本地缓存 1 秒（否则每次 L1 查询都要一次 Redis GET，收益减半）；
-  Redis 不可用时沿用上一次读到的版本（fail-open，宁可多命中）；
-- 写路径三件事缺一不可：删 L2、删本地 L1、递增版本号。少任何一个都会导致脏读，
-  有专门的测试（`TestInvalidateDropsBothTiersAndBumpsVersion`）锁死这三步；
-- 配置校验：`FEED_L1_TTL` 必须 ≤ `FEED_CACHE_TTL`（L1 活得比 L2 久没有意义）。
-
-**代价**：最长 1 秒的陈旧窗口（写多读少的场景可以调小 `FEED_VERSION_INTERVAL`）；
-每个实例多一份内存占用（`FEED_L1_CAPACITY` 控制，默认 512 条）。
-
-### ADR-026：Redis 慢命令日志排除阻塞命令
-
-**上下文**：缓存命中后瓶颈移到 Redis 读，因此引入慢命令 Hook（阈值 10ms）把
-"哪条命令慢"打进统一日志与指标。
-
-**决策**：**排除阻塞类命令**（`XREADGROUP`/`BLPOP`/`SUBSCRIBE` 等）。
-
-**理由**：实测踩到——Outbox 消费者用 `XREADGROUP ... BLOCK 5000` 阻塞等消息，
-慢命令计数因此持续增长，看起来像 Redis 变慢，其实是消费者在正常等待。
-不排除的话，这个指标会变成"永远在涨的噪音"，真正变慢的命令反而被淹没。
-
-**配套**：日志只打**命令名 + 耗时 + key 前缀**，不打完整 key（用户 ID/订单号是高基数
-且涉及隐私）；管道整体慢时记一条（含命令列表与大小），不逐条记。
-
-### ADR-027：热榜用"分钟桶 + 冻结窗口 + 分数游标"，而不是实时计算排序
-
-**上下文**：`HotRanker` 的分数 = `(log(plays)+2*log(likes))/(age+2)^1.5`，依赖请求时刻，
-因此 `SupportsCursorPagination()` 只能是 false（AGENTS.md 记为"排序键未与游标闭合"），
-生产环境一直无法启用。对照项目 GCFeed 给出了思路：把易变排序键**物化**成
-"按窗口命名的不可变快照"，让快照 ID 成为游标的一部分。
-
-**候选**：1) 保持现状（热榜不可用）；2) 物化窗口 + `window_end + offset` 游标（GCFeed 做法）；
-3) 物化窗口 + `(window_end, hot_score, video_id)` 分数游标。
-
-**决策**：方案 3。
-
-**理由**：
-- 方案 2 的 offset 在窗口重建后会漂移（窗口 TTL 到期后按分钟桶重新合并，
-  期间新互动改变了分数）→ 翻页重复或漏数。**分数游标只依赖"上一页最后一条的分数"**，
-  窗口内容怎么变都不会重复返回已翻过的条目；同分用 video_id 做次级排序保证严格单调。
-- 分数在写入时累加（点赞 +3 / 取消 -3 / 播放 +1），读时不计算——排序键因此是冻结的。
-
-**三个必须一起做的防护**（对照项目在这三处都有问题）：
-1. **后台物化**：worker 每分钟把 60 个桶合并好，读路径只读不算；
-2. **singleflight + double-check**：窗口缺失时才回源，且不继承首个请求的 ctx
-   （避免"首个调用者断连 → 所有等待者一起失败"）；
-3. **降级而非报错**：窗口为空（近期无互动）或 Redis 不可用时降级为时间流并打点，
-   热榜是锦上添花，不该让用户看到 500。
-
-**幂等计分**：只有"状态真的变化"才计分——仓储把 `RowsAffected > 0` 返回给 service
-（`AddLike`/`RemoveLike` 现在返回 `(changed, error)`），因此刷点赞接口刷不出热度。
-权重定义在 `feed`（排序模型的一部分），`interaction`/`video` 只上报动作名。
-
-**代价**：热榜是"最终一致"的（窗口 TTL 10 分钟、后台每分钟刷新），
-不反映秒级的热度变化——这是"可翻页"换来的必然取舍。
-窗口条目硬上限 2000（`ZREMRANGEBYRANK`），避免 ZSET 无限膨胀。
-
-### ADR-028：上传媒体校验放在异步 worker，且"工具缺失"与"文件损坏"必须区分
-
-**上下文**：上传走预签名 PUT 直传，`Create` 只做 `StatObject`（存在且非空）+
-客户端声明的时长范围校验。服务端对"这是不是一个能播的视频"一无所知；
-moov 在尾部的 mp4 必须被完整下载才能出首帧，代价直接落在用户身上。
-对照项目 GCFeed 在**上传请求里同步**跑 ffprobe(30s) + ffmpeg(2min)，失败直接 500。
-
-**决策**：异步 worker + 三种结果语义。
-
-**理由**：
-1. **不阻塞用户请求**：校验慢只影响"视频什么时候可发布"，不影响上传体验；
-   同步方案会把 HTTP 线程占满 30s~2min，且让宿主机是否装了 ffmpeg 变成接口可用性的前提。
-2. **工具缺失 ≠ 文件损坏**：`ErrToolMissing` → `SKIPPED`（降级放行 + 告警），
-   `ErrProbeFailed` → `REJECTED`。把两者混为一谈会让"CI/新机器没装 ffmpeg"
-   变成"所有视频被拒"，这是最危险的一类误判。
-3. **实测值与客户端声明分开落库**：`probed_duration_seconds` vs `duration_seconds`，
-   事后能回答"用户说 30 秒、实际 3 小时"这类问题。
-4. **失败分类要正确**：下载失败（对象存储暂时不可用）**不写结果**，留给下一轮重试；
-   只有"确定性的结论"才落库。
-
-**幂等与状态约束**：写回用条件更新 `WHERE media_probe_status = 'PENDING'`
-（多实例下只有一个 worker 能推进状态）；数据库 CHECK 保证
-`PASSED/REJECTED ⟺ probed_at 非空`、且 `REJECTED` 不允许处于 `PUBLISHED`。
-
-**faststart**：moov 在尾部时用 `-c copy -movflags +faststart` 重写并回写对象
-（不重新编码）；失败只降级（首帧慢一些），不影响校验结论。
-**实测**：上传 30s/moov 在尾部的 1.1MB 视频后，直接读对象存储确认
-`moov` 偏移 68 < `mdat` 偏移 3902。
-
-**代价**：需要 ffmpeg/ffprobe 与临时磁盘空间（媒体文件动辄上百 MB，
-worker 处理完必须删临时目录）；校验完成前视频停在 PENDING。
+对应的约束与升级修复位于 migrations 000020～000024：媒体状态/发布门禁、退券后的券重用、对象清理任务和历史数据修复。当前没有累计存储配额、每日上传配额或外部支付渠道结算。

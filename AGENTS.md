@@ -1,232 +1,83 @@
-# Project memory
+# 项目工作约定
 
-## 项目简介
+## 项目与事实入口
 
-TokMall：基于 CloudWeGo 技术栈（Hertz）的短视频 Feed + 商城一体化后端（学习项目）。
-目标不是一次实现 TikTok，而是通过可演进的系统掌握生产级后端能力：分层架构、状态机、
-幂等、游标分页、缓存、观测性。目前已带 React 前端（web/，OpenAPI 契约驱动，含 e2e）。
+TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreSQL 的模块化单体，配套 React 前端。目标是通过可演进系统掌握分层、状态机、幂等、缓存、观测与恢复。模块不共享业务 model；跨模块只读通过各自 read model / SQL，调用接口定义在消费侧，由 `cmd/api/main.go` 装配。
 
-当前形态：**模块化单体**。模块间不共享类型（只读共享表时用各自的 read model / 直接 SQL），
-未来拆服务时按模块边界拆。
+文档按职责维护，不在这里复制里程碑流水账：
 
-## 技术栈
+| 信息 | 事实入口 |
+|---|---|
+| 当前架构与数据边界 | [backend-architecture](docs/backend-architecture.md)、[main](cmd/api/main.go) |
+| 业务规则与交易实现 | [业务](docs/commerce-business.md)、[技术设计](docs/commerce-v1-technical-design.md) |
+| 设计取舍 | [ADR-001～029](docs/architecture-decisions.md) |
+| 运行／测试／迁移／排障 | [开发运维](docs/development-and-operations.md) |
+| 历史数字与未来工作 | [性能证据](docs/performance-baseline.md)、[roadmap](docs/roadmap.md) |
+| API / schema / 配置 | [OpenAPI](internal/api/openapi.yaml)、[migrations](migrations/)、[config](internal/config/config.go) |
+| 面试解释与证据 | [walkthrough](docs/interview-walkthrough.md) |
 
-- HTTP：CloudWeGo Hertz v0.10（含 hertz-contrib requestid / monitor-prometheus / logger-slog）
-- ORM：GORM + PostgreSQL（golang-migrate 管理 schema，禁止 AutoMigrate）
-- 对象存储：MinIO（预签名 PUT 直传 + 预签名 GET 播放 URL）
-- 认证：JWT（access 15min / refresh 7d，HS256）+ Redis 黑名单（refresh 可撤销，ADR-011）
-- 缓存：Redis（6380），cache-aside + singleflight + double-check（ADR-012）
-- 观测：slog 结构化日志（stdout + lumberjack 轮转文件）、Prometheus /metrics（默认只监听 127.0.0.1:9091）
-- 事件：Transactional Outbox + Redis Streams（消费组/XACK/XAUTOCLAIM）+ DLQ 与人工重放（ADR-014）
-- 对账：六项可执行检查 + 对账驱动重放 + 读模型重建（cmd/reconcile）
-- 契约：OpenAPI 3（internal/api/openapi.yaml）：route-sync（路由级）+ spec_test（schema ↔ DTO 字段/类型/必填）
-- 测试：后端 testify（require）+ hertz ut 内存链路 + 显式开启的真实 PG/Redis 集成测试（internal/testsupport 提供隔离 schema）；前端 Playwright e2e + Vitest 单测
-- 前端：React + TanStack Router + React Query + Vite + Tailwind（web/，openapi-typescript 生成类型）
+技术栈：Hertz/GORM/PostgreSQL/golang-migrate；Redis 缓存、限流与 Streams；MinIO；JWT；slog/Prometheus/Grafana；React/TanStack Router/Query/Vite/Tailwind。版本以 go.mod、web/package.json、锁文件与 CI 为准。schema 仅由迁移管理，**禁止 AutoMigrate**。
 
-## 目录结构
+当前后端已有商品/库存/订单/退款/券、Outbox/日销投影/九项对账、全局/关注/热榜 Feed、媒体校验、对象清理、两级缓存/穿透防护、熔断、告警规则与 traceparent。Kafka、真实支付物流、完整 OTel、累计上传配额及部分前端接入尚未实现，详情见 roadmap。当前迁移到 000024；目录入口见根 README，避免另一份易过期的目录树。
 
-```text
-cmd/api/main.go          服务入口：装配依赖 + 路由分组（公开组 /api/v1、受保护组）
-internal/
-  api/                   OpenAPI 契约（spec.go embed openapi.yaml + route-sync 测试）
-  config/                环境变量配置（默认值 + required）
-  database/              连接 + 连接池(25/5/1h) + migrate
-  cache/                 Redis 客户端 + 慢命令 Hook（ADR-026）；l1/ 是进程内一级缓存（分片 LRU + 版本校验）
-  storage/               MinIO 封装（预签名 PUT 直传、预签名 GET 播放 URL、StatObject 翻译 NoSuchKey、
-                         下载/回写供媒体校验 worker 使用）
-  mediaprobe/            ffprobe 探测 + 策略校验 + faststart remux（纯能力，可独立测试）
-  token/                 JWT Manager + GenClaims + Verify（access/refresh 类型区分）
-  middleware/            auth（Bearer 校验 + user_id/role 注入，AuthOptional 用于公开接口）、recovery、requestid
-  response/              BizError 统一错误码 + HTTP 状态映射 + Abort
-  health/                存活/就绪探针
-  user/                  注册/登录/me + refresh 旋转 + logout 黑名单（model + repository + service + handler）
-  video/                 发布/详情/发布/删除 + upload_ticket 防伪造（状态机）+ 作者视频列表 + 播放事件
-  interaction/           点赞/关注（幂等，ON CONFLICT DO NOTHING）+ 关注/粉丝列表
-  feed/                  Feed 游标分页（HMAC 签名游标）+ 首页缓存 + 关注 Feed（拉模式）+ Ranker 排序
-                         + read model + 热榜（hot*.go：分钟桶/冻结窗口/分数游标）
-  product/               商品/SKU、上下架与商品列表/详情
-  inventory/             库存与幂等流水
-  order/                 单 SKU 订单、模拟支付、取消/超时关单(lazy expiry)、买卖双方查询与履约、
-                         售后全额退款（申请/裁决/库存回补策略，状态机含 REFUND_REQUESTED/REFUNDED）
-  promotion/             已发布视频挂本人在售商品
-  attribution/           作者成交统计（实时聚合）+ 事件驱动的作者日销投影（projector.go）
-  outbox/                Transactional Outbox：仓储(SKIP LOCKED+租约)、中继(退避/DLQ)、
-                         传输抽象(Redis Streams)、消费组消费者(回执+投影同事务)、重放
-  reconcile/             六项对账检查 + 对账驱动重放 + 读模型重建
-  breaker/               三态熔断器（closed/open/half-open + 指数退避 + 失败分类）+ 存储装饰器
-  coupon/                优惠券域：满减券模板/领券（锁行+条件更新防超发）/我的券/规则纯函数
-  existence/             缓存穿透防护：自研布隆过滤器（双缓冲轮换）+ Redis 负缓存 + 重建任务
-  tracing/               W3C traceparent 解析/生成/透传（零依赖，可平滑升级到 OTel）
-  testsupport/           跨模块集成测试脚手架（隔离 schema + 迁移 + Redis 开关）
-  observability/         db_pool / feed_cache / outbox / reconcile / existence / http 指标、
-                         ContextHandler（日志自动注入 request_id/trace_id/route + 脱敏）
-migrations/             版本化 SQL 迁移（000001～000019；商域从 000007 起，退款在 000015，
-                         不变量加固在 000016，Outbox 与投影在 000017，users.status 在 000018，
-                         优惠券与订单金额拆分在 000019）
-cmd/outboxctl/          Outbox 运维命令：status / dlq list / dlq requeue / drain
-cmd/reconcile/          对账命令：--json / --replay / --rebuild，退出码 0=一致 1=有差异 2=失败
-cmd/loadgen/            压测客户端：commerce / feed / penetration（缓存穿透）三个场景
-web/                    React 前端（TanStack Router + React Query + Vite + Playwright e2e）
-observability/          Prometheus 抓取配置与记录/告警规则、Grafana provisioning 与看板 JSON
-scripts/                seed_perf.sql 造数、drill_commerce_loop.sh 端到端演练、
-                        drill_failure_modes.sh 故障演练、drill_coupon.sh 券闭环演练
-.github/workflows/      CI：后端/契约/前端/e2e 四个 job；security.yml：CodeQL + govulncheck
-docs/                   当前架构/业务文档 + Feed/Mall 演进计划 + ADR + 性能基线（git 跟踪）
-```
+## 改代码前必读
 
-## 里程碑状态
+- **分层与错误**：handler HTTP DTO → service 领域参数/视图 → repo model；model 不出 service。
+  repo 将 ORM 错误翻译为领域哨兵，service 分类并按业务/系统错误分级，handler 映射 BizError，未知返回500。
+  用 `errors.Is/As` 保留错误链，业务拒绝不打 Error。列名/状态类型在 GORM 边界显式转 string。
+- **权限与可见性**：身份来自认证中间件，资源归属在服务端验证；非作者与不存在用同一404。
+  DELETED 视频详情对所有人不可见，未发布仅作者可见。当前商家能力主要是 owner ID 授权，不虚构 MERCHANT 角色门禁。
+- **状态机**：视频表驱动允许迁移，数据库 `WHERE status=from` 最终防并发。
+  订单履约使用独立 `fulfillmentTransitions`，不得复用含退款分支的完整状态图。
+  全额退款仅允许 PAID/FULFILLING；COMPLETED 不接受申请，拒绝恢复申请前状态。
+- **幂等与账本**：点赞/关注唯一关系 + ON CONFLICT；同幂等键不同业务事实必须冲突。
+  下单指纹、支付身份、播放 event_id 均校验载荷一致；库存余额非负，流水业务键保证一次扣减/回补。
+- **库存与退款**：订单与库存同库同事务；未发货退款回补，已发货退款不回补，不能冒充退货入库。
+  商品/SKU/价格来自服务端，订单保留快照。跨模块库存写入仍存在于 order/product/inventory，DB 约束兜底。
+- **券**：规则集中在 `coupon.DiscountFor`，门槛按整单原价；模板锁/条件发行量/用户限领防超发。
+  商家券只用于同商家 SKU；`total = original - discount` 有 DB CHECK。
+  取消、三条超时路径和成功退款都退券（有效 UNUSED、过期 EXPIRED）；订单保留历史引用，唯一索引只约束仍占券订单。
+- **事件与对账**：事实与 Outbox 同事务，Enqueue 只接受 tx；投递至少一次，不宣称消息恰好一次。
+  消费回执与投影同事务，无回执表示投影未生效（正常应用路径）；不能人工删已消费回执后重放。
+  库内 DEAD 与消费侧 DLQ Stream 区分。PENDING 包含未来 timeout，积压只看已到期事件。
+  毛额统计所有曾支付订单，成功退款单列；改投影口径同步改 reconcile，退款申请不减少成交。
+- **游标与 Feed**：时间排序使用 `(published_at,id)`，HMAC 游标表示上一页末项并带 rank_version。
+  关注流是完整时间线，生产仅 TimeRanker；实验 HotRanker 未闭合游标，禁止配置/Service 上线。
+  热榜独立 v2 分钟桶/冻结窗口，2000条上限、窗口TTL10分钟；游标含窗口/分数/ID，已有快照不重写。
+  旧窗口到期拒绝游标；首页降级时间流后，后续沿用时间游标，不能中途切换排序。
+- **缓存**：Cache-Aside + singleflight + double-check；共享结果不得被请求级个性化修改。
+  全局 L1/L2 写后失效应删L2、删本地L1、递增 `feed:version`；L1 TTL≤L2 TTL。
+  当前 DEL/Bump/版本读取失败会扩大远端陈旧窗口，不能把版本探测间隔写成所有故障下的硬上界。
+  关注缓存按用户失效和TTL收敛；发布/删除不会遍历粉丝key。商品卡/点赞数按请求批量装配，禁止N+1。
+- **穿透**：布隆过滤器仅“确定不存在”才短路，首次加载前放行，双缓冲轮换。
+  负缓存只记录真实 DB miss，不能把不可见的未发布视频缓存为不存在。
+- **上传与清理**：PUT只授权 `staging/`，签名绑定长度/类型；封存检查实际大小并按源ETag复制最终key。
+  票证锁行；视频/封面核销与创建同事务。MinIO副作用不能随PG回滚，final孤儿仍是已知边界。
+  删除状态与 `object_delete_jobs` 同事务，后台失败重试，staging等原PUT到期后清理。
+  媒体回写持视频行锁，不复活已删除对象；升级旧PUT需等原有效期过后再恢复服务。
+- **媒体**：PENDING/PASSED/REJECTED/SKIPPED 区分；坏文件 REJECTED，工具缺失/关闭探测 SKIPPED。
+  只有 PASSED/SKIPPED 可发布；下载/探测暂时失败延迟重试，取件排除DELETED。多worker可重复探测，但只接受一次结果。
+- **安全配置**：JWT_SECRET / FEED_CURSOR_SECRET所有环境必填；生产显式凭证、不同强密钥和TLS。
+  TRUSTED_PROXIES默认空，禁止0.0.0.0/0。Refresh用Redis原子Claim阻止并发双签发。
+- **日志与观测**：用`slog.*Context`，ContextHandler注入request/trace/route/user并脱敏。
+  指标标签用路由模板，禁止user_id/order_no高基数字段。GORM参数化日志、忽略正常not-found、慢SQL阈值200ms。
+  改Prometheus规则后跑`go test ./internal/observability/`，记录规则遵循`level:metric:operations`。
+  对象不存在/无效大小不计熔断故障，open对外503；存储不可用不阻塞启动。
+- **门禁**：提交前 `make lint`；errorlint/nilerr/forcetypeassert是护栏，必要nolint须写理由。
+  CI包括后端/契约/前端/E2E与独立Security，但不把未开启的MinIO集成或完整迁移回滚描述为已覆盖。
 
-| 里程碑 | 状态 | 要点 |
-|---|---|---|
-| M0 工程骨架 | ✅ | Hertz + PG + 配置 + 中间件 + 日志 |
-| M1 视频发布 | ✅ | MinIO 预签名 + upload_ticket + 状态机 |
-| M2 Feed 分页 | ✅ | 游标 (published_at,id) + HMAC + 部分索引 |
-| M3 互动幂等 | ✅ | 唯一约束 + ON CONFLICT + 并发验证 |
-| L2 观测性 | ✅ | /metrics(9091) + db_pool + 基线压测 |
-| M4 缓存 | ✅ | Redis(6380) + singleflight + 首页缓存：1M 数据 6.6k→11.3k QPS |
-| M4+ Auth 闭环 | ✅ | /refresh 旋转 + /logout 黑名单（ADR-011，Redis 引入的附带收益） |
-| M4+ 内容域扩展 | ✅ | 预签名 GET 播放 URL（route A）、作者视频列表 + 硬删 MinIO、公共主页 + 社交列表 + 点赞数 |
-| M4+ 契约与前端 | ✅ | OpenAPI 契约 + route-sync 测试 + React 前端（TanStack Router）+ Playwright e2e |
-| M5 播放事件（同步版） | ✅ | play_events 表 + POST /videos/{id}/play：event_id 幂等（UUID v7）、仅 PUBLISHED、未来时间拒绝；Kafka 异步化待做 |
-| M6 关注 Feed | ✅ | 当前为拉模式完整时间线：先查关注数，少量关注作者用有界归并，多关注作者用全局时间索引；原每作者 TOP 5 为历史实现；HotRanker 仅保留为包内排序实验 |
-| M8 排序演进 | ✅（边界已收口） | Ranker 接口 + TimeRanker 生产游标分页；HotRanker 仅单元实验（排序键未与游标闭合，配置 fail-fast 禁止启用）；HybridRanker 待做 |
-| M7 限流 | ✅ | Redis 固定窗口（lua INCR+EXPIRE）+ 三档规则（auth 10/min/IP、read 200/10s/IP、write 100/10s/user）+ fail-open 降级 + RATE_LIMITED 429 |
-| Commerce 阶段 1～3 | ✅ | 商品/SKU/库存、下单/支付/关单、视频挂商品与卡片、作者成交统计；`ab9d062` |
-| Commerce v1 订单收尾 | ✅ | 买家/商家订单查询、模拟发货与确认完成、前端订单页；`b5349ea` |
-| 安全与正确性收口 | ✅ | 审计 P0/P1 共 10 项：限流绕过(XFF)、超时订单可支付(lazy expiry)、并发 refresh 双签发(Claim)、singleflight 故障放大、输入校验与错误语义；`ab8c92a` |
-| 售后（退款）闭环 | ✅ | 全额退款申请/裁决、未发货回补/已发货不回补、部分唯一索引、履约与退款状态图分离；`6e1dd1e` |
-| Transactional Outbox | ✅ | 事件同事务、至少一次投递、幂等消费、DLQ 重放、作者日销投影、`outboxctl`；`ff288ac` |
-| 对账与可证明性 | ✅ | 六项检查、对账驱动重放、读模型重建、契约 schema 校验、CI 四 job、压测与故障演练；`1436fd5` `68192ea` |
-| M5-Kafka | 搁置 | play 事件异步化（Kafka + Worker）：已压测证明当前同步写不是读路径瓶颈；若未来写吞吐成为瓶颈再引入 |
-| Outbox + Kafka | 部分 | Outbox 与可靠投递已完成（默认 Redis Streams，见 ADR-014）；Kafka 仅保留为可替换的 Publisher 实现，未接入（与已搁置的播放事件异步化是不同决策） |
-| 缓存穿透防护 | ✅ | 自研布隆过滤器（双缓冲轮换 + warmup 保护）+ Redis 负缓存（TTL 抖动）+ 重建任务；实测不存在的 ID 从 2,996→5,086 req/s 且数据库零查询；ADR-022 |
-| 超时关单双触发 | ✅ | Outbox `available_at` 实现延迟事件（加速器）+ 轮询 Worker（安全网），数据库为唯一事实源；ADR-021 |
-| 优惠券域（v1 满减券） | ✅ | 发行量+每人限领+领取截止+券状态机+退款退券+三项对账；100 并发抢 10 张恰好发 10 张；ADR-024 |
-| 依赖级熔断 | ✅ | 自研三态熔断器（装饰器注入对象存储）：MinIO 停机时 3~5s 超时 → 熔断后 0.7ms 快速失败 + 503；失败分类排除"对象不存在"；ADR-023 |
-| 请求级可观测性 | ✅ | ContextHandler 自动注入 request_id/trace_id/route + 脱敏；自研 W3C traceparent；路由模板化耗时直方图；访问日志 |
-| 热榜（Hot Feed） | ✅ | 分钟桶 ZSET + 冻结窗口 + `(window_end,score,video_id)` 分数游标；后台物化 + singleflight + 降级；幂等计分（重复点赞不重复计分）；ADR-027 |
-| 上传媒体校验 | ✅ | 异步 ffprobe 校验（时长/分辨率/编码白名单）+ faststart remux；工具缺失与文件损坏可区分；实测 moov 从尾部移到头部；ADR-028 |
-| 两级缓存 | ✅ | L1 分片 LRU + 版本号跨实例失效（ADR-025）+ Redis 慢命令 Hook（排除阻塞命令，ADR-026）；feed 响应 ~9ms → ~2.5ms |
-| 观测栈与告警 | ✅ | 8 条记录规则（`level:metric:operations`）+ 6 条告警 + 11 面板看板（JSON 入库）；测试保证规则引用的指标真实存在（变异验证过） |
-| 工程门禁增强 | ✅ | CI 加 fmt/tidy 漂移检查、最小权限、并发取消、路径过滤；新增 CodeQL + govulncheck + golangci-lint（精选 14 个 linter，存量 74 问题清零）；`make verify/coverage/vulncheck/lint/help`；`scripts/preflight.sh` |
+## 开发环境要点
 
-> 注：M4+ 三行不在原里程碑规划内（按"出现可测量问题再引入技术"的原则，这些是 M4 的
-> 自然延伸：Redis 引入后顺手补 auth 可撤销性，内容域扩展是前端联调需求驱动）。
-> M5/M6/M8/M7 为方向 1 + 治理交付。本轮（2026-10）新增的四行来自一次完整审计 +
-> 售后/Outbox/对账演进，面试讲解入口是 `docs/interview-walkthrough.md`。
-> Commerce v1 的当前范围与实现见
-> `docs/commerce-business.md`、`docs/commerce-v1-technical-design.md`；后续工程化方向见
-> `docs/interview-production-readiness-plan.md`。文档入口和历史设计说明见 `docs/README.md`。
+- 标准端口PG5432、Redis6380、MinIO9000/9001；6379是本机其他项目，禁止额外创建5433实例。
+- Docker凭证助手异常：用`DOCKER_CONFIG=$PWD/.docker-anon`，配置中的cliPluginsExtraDirs需指向本机Docker插件目录。
+  `.docker-anon`已忽略；Redis使用compose固定的redis:7.4-alpine。
+- `make dev`启动；`make stop`只匹配bin/api与Vite但会强制终止；优雅停机需给明确PID发SIGTERM。
+  不要`lsof -ti :8080 | xargs kill -9`，可能误杀其他应用。macOS无setsid，后台用nohup；压测用编译的`./bin/api`。
+- 沙箱Go缓存：`GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache GOSUMDB=off`。
+- `/metrics`默认监听127.0.0.1:9091；启动会主动探测，出现`metrics endpoint is not reachable`要查监听与日志。
+- docs/和AGENTS.md由Git跟踪。旧计划和面试笔记已合并，历史全文从Git查看；不要再创建重复状态表。
+- 真实PG/Redis/MinIO测试需显式环境开关，见开发运维。默认Go测试跳过它们；历史QPS也不是当前容量承诺。
 
-## 关键设计约定（改代码前必读）
+## 工作方式（Mentor模式）
 
-- **错误三层链**：repo 翻译 ORM 错误为领域哨兵 → service 判定分类+日志分级（业务失败不打 Error）→ handler 映射 BizError，未知一律 500。接口定义在消费侧。
-- **状态机**：video 模块表驱动 `statusTransitions` + DB 条件更新（`WHERE status=from`）防并发。
-- **可见性**：DELETED 对所有人 404，未发布仅作者可见，不可见一律 ErrNotFound（不泄露存在性）。
-- **幂等**：关系表唯一约束 + `ON CONFLICT DO NOTHING`，结果语义固定（like→true）。
-- **游标**：表示上一页最后一条（非当前时间），防翻页重复；rank_version 失效旧游标。只有排序键与游标一致的排序器才能上线；当前生产关注 Feed 仅支持 time-v1，HotRanker 不能通过配置或 Service 启用。
-- **分层数据流**：handler(HTTP DTO) → service(领域 Params) → repo(model)，model 永不出 service（PasswordHash json:"-" 级别防护）。
-- **列名/状态类型化**：`column`/`Status` 自定义类型防拼错；到 GORM 边界必须显式转 string。
-- **连接池**：max_open=25, max_idle=5, lifetime=1h（M3 基线接近饱和；M4 缓存命中后 db_pool_wait_count 归零，瓶颈已移到 Redis 读，见 performance-baseline.md）
-- **售后状态**：订单主状态含 REFUND_REQUESTED/REFUNDED，`refund_from_status` 记录申请前状态；
-  履约命令走独立的 `fulfillmentTransitions`（**不得**复用完整状态图，否则能绕过退款裁决发货）
-- **退款库存策略**：未发货退款回补（`ORDER_REFUNDED` 流水，(sku_id,reason,order_no) 唯一）；已发货退款不回补
-- **事件**：业务事实与 outbox_events 必须同一事务写入（`outbox.Enqueue*` 只接受 tx 句柄）；
-  投递至少一次；消费侧"回执 + 投影"同事务，**没有回执 ⟺ 投影没生效**（对账重放依据）
-- **对账口径**：毛额（order_count/units/gmv）记曾支付过的全部订单，退款按发生日单独归集；
-  改投影口径必须同步改 reconcile 检查，否则对账本身成为噪音源
-- **签名密钥**：JWT_SECRET / FEED_CURSOR_SECRET 在所有环境必填（无内置默认值）；
-  TRUSTED_PROXIES 默认空 = 不信任任何转发头（不要配 0.0.0.0/0）
-- **超时关单双触发**：下单事务写 `commerce.order.timeout.v1`（available_at = expires_at）
-  作为加速器，轮询 Worker 是安全网；**数据库是唯一事实源**，消息只负责"更早发生"（ADR-021）
-- **缓存穿透防护**：布隆过滤器说"不存在"才直接 404；只对"记录确实不存在"写负缓存，
-  可见性拒绝（未发布视频对非作者）**不能写**（否则作者在 TTL 内看不到自己的视频）（ADR-022）
-- **日志关联**：一律用 `slog.*Context(ctx, ...)`；ContextHandler 自动附加
-  request_id/trace_id/span_id/route/user_id，并按字段名黑名单脱敏。
-  指标标签只用路由模板（`/api/v1/videos/:id`），禁止 user_id/order_no 等高基数字段
-- **GORM 日志**：ParameterizedQueries + IgnoreRecordNotFoundError + SlowThreshold=200ms
-- **热榜**：分钟桶（`feed:hot:minute:*`，TTL 2h）→ 冻结窗口（`feed:hot:window:*`，TTL 10m，
-  硬上限 2000 条）；游标必须同时带 `window_end` 与 `(hot_score, video_id)`——
-  只带窗口+offset 会在窗口重建后重复/漏数；读路径只读（后台每分钟物化），
-  窗口缺失才 singleflight 回源；窗口为空/Redis 故障 → 降级时间流并打点
-- **媒体校验**：上传后异步 ffprobe 校验（PENDING → PASSED/REJECTED/SKIPPED）；
-  **工具缺失（SKIPPED）与文件损坏（REJECTED）必须区分**——把没装 ffmpeg 当成
-  "视频全坏"是最危险的误判；下载失败不写结果（下轮重试）；REJECTED 不允许处于 PUBLISHED
-- **静态检查**：提交前跑 `make lint`（golangci-lint）。`errorlint`/`nilerr`/`forcetypeassert`
-  是本项目错误链的护栏；确需例外时用 `//nolint:<linter> // 理由`（`nolintlint` 强制写理由），
-  能用代码表达清楚的不要用 nolint
-- **券**：规则只有一份实现（`coupon.DiscountFor`，门槛按整单金额）；领取走
-  "锁券行 → 条件更新发行量 → 计数校验限领"三层；订单金额恒满足
-  `total = original - discount`（DB CHECK 兜底）；退款成功退券（过期则标 EXPIRED）；
-  对账覆盖发行量守恒、券-订单一致、金额拆分
-- **两级缓存**：写路径必须同时做三件事——删 L2、删本地 L1、递增 `feed:version`；
-  少任何一步都会脏读（有测试锁死）。L1 是最终一致层：TTL 必须 ≤ L2 TTL，
-  版本探测间隔就是失效延迟的上界（ADR-025）
-- **告警规则**：改 `observability/prometheus/rules/*.yml` 后必须跑
-  `go test ./internal/observability/`——规则里引用的指标名会被校验，写错即失败；
-  记录规则命名遵循 `level:metric:operations`；只对"已到期"的 Outbox 事件告警
-- **熔断**：依赖级熔断器用装饰器注入（业务代码零改动）；`Config.IsFailure` 必须排除
-  "业务正常答复"（如对象不存在、redis.Nil），否则正常 404 会打开熔断器；
-  熔断打开对外返回 **503**（可重试）而不是 500；对象存储不可用不阻塞服务启动
-
-## 常用命令
-
-```bash
-make dev                                    # 一键：依赖容器 + 后端 + 前端（全部后台，日志 logs/）
-make stop                                   # 停前后端（幂等）
-make dev-backend / make dev-web             # 只起后端 / 只起前端（JWT_SECRET 等已内置，可 make dev JWT_SECRET=xxx 覆盖）
-tail -f logs/api.log logs/web.log           # 看日志
-go test ./...                               # 后端全量测试
-cd web && pnpm test:e2e                     # Playwright e2e（需后端 + 依赖容器在跑）
-curl localhost:9091/metrics                 # 指标
-make drill                                  # 端到端业务闭环演练（curl+psql 全程可见）
-make drill-failure                          # 故障演练（Redis 停机 / 事件丢失 / 对账重放 / 熔断降级）
-scripts/drill_coupon.sh                     # 优惠券闭环演练（发券→领券→用券→退款退券→对账）
-make reconcile [REPLAY=1] [REBUILD=1]       # 对账 / 重放 / 重建读模型
-make outbox-status                          # Outbox 积压与死信
-make loadgen CONCURRENCY=50 DURATION=20s    # 下单链路压测（限流需关闭）
-./bin/loadgen -scenario penetration -concurrency 30 -duration 10s   # 缓存穿透压测
-make lint                                   # golangci-lint（配置 .golangci.yml；未安装会提示安装命令）
-make verify                                 # 本地一次跑完 CI 门禁（fmt/vet/lint/test/tidy-check）
-make monitoring                             # 观测栈：Prometheus(:9090) + Grafana(:3000)，规则与看板已 provision
-# 热榜：curl "localhost:8080/api/v1/feed/hot?limit=10"（窗口为空时自动降级为时间流）
-# 媒体校验：上传后由 worker 异步处理，结果见 videos.media_probe_status（需本机装 ffmpeg/ffprobe）
-make coverage / make vulncheck / make help   # 覆盖率 / 漏洞扫描 / 目标说明
-scripts/preflight.sh                        # 提交前自检（含前端 tsc）
-wrk -t4 -c50 -d10s http://localhost:8080/api/v1/feed   # Feed 压测（基线见 docs/performance-baseline.md）
-```
-
-## 环境陷阱
-
-- **docker compose 报 `error getting credentials`**：本机 Docker 凭证助手异常。
-  用匿名配置绕过：`DOCKER_CONFIG=$PWD/.docker-anon docker compose up -d`，
-  且 `.docker-anon/config.json` 需要 `{"cliPluginsExtraDirs": ["/Users/<you>/.docker/cli-plugins"]}`
-  才能找到 compose 插件（该目录已 gitignore）。Redis 镜像固定为 `redis:7.4-alpine`
-  （本地已有该 tag，避免触发拉取）。
-
-- PostgreSQL 标准端口 5432（docker-compose 已映射）；本机 6379 被 go-oj 占用，Redis 走 6380（compose 已映射）。
-  **不要额外创建 5433 之类的 PG 实例**：早前文档里的 5433 e2e 实例是 5432 被临时占用时手动 `docker run` 的权宜之物，非标准配置，已清理。
-- 重启服务：`make stop && make dev`（后端即 bin/api 进程；**不要用 `lsof -ti :8080 | xargs kill -9`**——本机
-  Shadowrocket/微信也监听 8080，会一起误杀；`make stop` 只匹配 bin/api 和 vite 进程）。
-  go run 子进程名会变，压测一律用 `make build` 的 `./bin/api` 起服务。
-- macOS 无 `setsid`，后台起服务用 `nohup ... & disown`，且 E2E 尽量在同一命令内完成。
-- `docs/`、`AGENTS.md` 由 git 跟踪（早前误写为 gitignore，已修正）：AGENTS.md 是项目记忆、
-  docs/ 收录当前实现、演进计划、ADR 和压测基线；入口见 `docs/README.md`。
-- **受限沙箱（如 AI 代理）里跑 Go**：默认 GOCACHE/GOMODCACHE 在 workspace 外不可写，
-  需要 `GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache GOSUMDB=off`
-  （`.gopath/`、`.gocache/` 已 gitignore）。
-- 重启后端后如果 `/metrics` 无响应：端口可能仍在 TIME_WAIT。服务启动后会主动探测
-  `/metrics` 并在不可达时打 ERROR（`metrics endpoint is not reachable`），
-  看到这条日志说明观测性已降级，重启即可。
-
-## 工作方式（Mentor 模式）
-
-本项目由一个资深后端导师（AI）指导开发。指导原则：
-
-- 少写具体代码，多教思路：分层、错误处理、并发、性能、安全等生产级知识。
-- 先给计划 → 用户审核 → 按步骤执行，每步完成都要解释"为什么这样写"。
-- 用户写代码后负责 review，按 P0（崩溃/安全）→ P1（正确性）→ P2（质量）排序指出问题。
-- 若用户设计中存在"学生思维/玩具项目思维"的严重缺陷（分布式事务、网络安全、性能瓶颈、
-  认证绕过等盲区），**主动中断并发红色警告**，给出工业级解法。
-- 用户确实写不出来时才直接给代码，且要给可抄的完整实现。
-- 避免"顺从性陷阱"：不为了附和用户而同意错误设计，每个里程碑的简化决策要显式记录（ADR）。
+少写具体代码，多教分层、错误、并发、性能与安全思路。先计划、用户审核、按步骤执行并解释原因；已有明确授权时在范围内推进。用户写代码后按P0→P1→P2 review，严重生产级盲区主动警告并给出工业级解法。用户写不出来时提供完整实现。避免顺从性陷阱，简化决策写ADR，不为技术名词拆服务。任何子代理分工由当前用户授权或明确项目指令决定。
