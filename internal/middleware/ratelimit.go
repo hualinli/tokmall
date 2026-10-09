@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -40,9 +41,8 @@ type KeyExtractor func(c *app.RequestContext) (dimension, id string, ok bool)
 // register: email/username），作为限流 key。refresh/logout 无标识 → 回退 IP。
 // 注意：hertz 的 Body() 是 lazy 缓存，中间件读取后 handler 的 BindAndValidate 仍可读。
 //
-// 账号必须与业务层用同一套规范化（TrimSpace + 小写）：否则攻击者给登录名加一个
-// 前导空格就能拿到新的限流桶（业务查询会 TrimSpace 后照常命中同一账号），
-// 10/min/账号的防爆破形同虚设。
+// 账号必须与业务层用同一套规范化，否则攻击者能拿到新的限流桶。
+// 细节与实例见 NormalizeAccountKey。
 func AccountKeyExtractor(c *app.RequestContext) (string, string, bool) {
 	var payload struct {
 		Identifier string `json:"identifier"`
@@ -61,10 +61,36 @@ func AccountKeyExtractor(c *app.RequestContext) (string, string, bool) {
 	return "", "", false
 }
 
-// NormalizeAccountKey 是账号维度的唯一规范化实现：登录名/邮箱大小写不敏感、
-// 前后空白忽略。限流 key 与后续业务查询必须使用同一规则。
+// NormalizeAccountKey 是账号维度的**唯一**规范化实现。
+//
+// 它必须与 user 模块查询账号用的规则完全一致，否则“业务层认作同一个账号”的若干
+// 输入会散落在不同限流桶里，10/min/账号的防爆破形同虚设。
+//
+// 这不只是 TrimSpace + ToLower：user.Login 先尝试 NormalizeEmail，而后者是
+// mail.ParseAddress —— 它会**丢弃显示名与尖括号**。于是：
+//
+//	"victim@example.com"      -> "victim@example.com"
+//	"a <victim@example.com>"  -> "victim@example.com"   ← 少了这步就是漏洞
+//	"\"x\" <victim@example.com>" -> "victim@example.com"
+//
+// 攻击者只要轮换显示名就能每次拿到新桶，而业务层每次都查同一个受害者账号。
+// 详见 internal/user/ratelimit_invariant_test.go（用真实路由端到端锁住这条不变量）。
+//
+// 非邮箱形式（登录名）走 ToLower：业务层按大小写敏感查用户名，所以多个大小写变体
+// 会共用一个桶。这比“每个变体一个桶”更严格，方向是安全的（宁可误伤不可漏放）。
 func NormalizeAccountKey(account string) string {
-	return strings.ToLower(strings.TrimSpace(account))
+	trimmed := strings.TrimSpace(account)
+	if trimmed == "" {
+		return ""
+	}
+	// 与 user.NormalizeEmail 同源：先剥掉 RFC 5322 显示名，再统一小写。
+	// 失败（不是合法地址形式）说明它是登录名，退回大小写不敏感处理。
+	if addr, err := mail.ParseAddress(trimmed); err == nil {
+		if address := strings.ToLower(strings.TrimSpace(addr.Address)); address != "" {
+			return address
+		}
+	}
+	return strings.ToLower(trimmed)
 }
 
 // RateLimit 限流中间件。维度选择：
