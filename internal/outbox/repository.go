@@ -16,6 +16,7 @@ type Repository interface {
 	// FetchPending 取一批到期事件并加租约（FOR UPDATE SKIP LOCKED，支持多实例）。
 	FetchPending(ctx context.Context, batch int, lease time.Duration, now time.Time) ([]Event, error)
 	MarkPublished(ctx context.Context, ids []int64, at time.Time) error
+	DeferPending(ctx context.Context, events []Event, until time.Time) error
 	MarkRetry(ctx context.Context, id int64, attempts int32, nextAttempt time.Time, reason string) error
 	MarkDead(ctx context.Context, id int64, attempts int32, reason string) error
 	Stats(ctx context.Context) (*Stats, error)
@@ -57,6 +58,7 @@ func (r *GormRepository) FetchPending(ctx context.Context, batch int, lease time
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 			Where("status = ? AND available_at <= ?", string(StatusPending), now.UTC()).
+			Where("leased_until IS NULL OR leased_until <= ?", now.UTC()).
 			Order("id ASC").Limit(batch).Find(&events).Error
 		if err != nil {
 			return err
@@ -80,6 +82,22 @@ func (r *GormRepository) FetchPending(ctx context.Context, batch int, lease time
 		events[i].Attempts++
 	}
 	return events, nil
+}
+
+// DeferPending 释放未投递租约；背压不消耗失败重试次数。
+// attempts 防止旧持有者释放后来被另一中继认领的事件。
+func (r *GormRepository) DeferPending(ctx context.Context, events []Event, until time.Time) error {
+	if len(events) == 0 {
+		return nil
+	}
+	pairs := make([][]any, 0, len(events))
+	for _, event := range events {
+		pairs = append(pairs, []any{event.ID, event.Attempts})
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("status = ? AND (id, attempts) IN ?", string(StatusPending), pairs).
+		Updates(map[string]any{"leased_until": nil, "available_at": until.UTC(),
+			"attempts": gorm.Expr("GREATEST(attempts - 1, 0)")}).Error
 }
 
 func (r *GormRepository) MarkPublished(ctx context.Context, ids []int64, at time.Time) error {

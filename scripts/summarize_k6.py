@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import statistics
+import re
 
 from benchmark_backend import values
 
@@ -69,7 +70,7 @@ def main():
     confirm = [r for r in rows if r['case'].startswith('feed-confirm')]
     report = dict(cases=rows, raw_directory=str(args.raw),
                   feed_confirmation=dict(rounds=len(confirm),
-                    zero_errors=all(r['k6_exit_code']==0 for r in confirm)))
+                    zero_errors=bool(confirm) and all(r['k6_exit_code']==0 for r in confirm)))
     for key in ['request_rate','p95_ms','p99_ms']:
         vals = [r[key] for r in confirm]
         if vals:
@@ -82,6 +83,18 @@ def main():
         vals = [r[key] for r in commerce_confirm]
         if vals:
             report['commerce_confirmation'][key] = dict(median=statistics.median(vals),min=min(vals),max=max(vals))
+    groups = {}
+    for row in rows:
+        name = re.sub(r'-r\d+$','',row['case'])
+        groups.setdefault(name,[]).append(row)
+    report['stage_groups'] = {}
+    for name, members in groups.items():
+        group = dict(rounds=len(members), all_passed=all(r.get('closed_loop_passed',r['k6_exit_code']==0) for r in members))
+        rate_key = 'transaction_rate' if 'transaction_rate' in members[0] else 'request_rate'
+        for key in [rate_key,'p95_ms','p99_ms']:
+            vals=[r[key] for r in members]
+            group[key]=dict(median=statistics.median(vals),min=min(vals),max=max(vals))
+        report['stage_groups'][name]=group
     (args.archive/'aggregate.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
 

@@ -10,7 +10,7 @@ TokMall 是 Hertz 短视频 Feed + 商城学习项目，当前为共享 PostgreS
 |---|---|
 | 当前架构与数据边界 | [backend-architecture](docs/backend-architecture.md)、[main](cmd/api/main.go) |
 | 业务规则与交易实现 | [业务](docs/commerce-business.md)、[技术设计](docs/commerce-v1-technical-design.md) |
-| 设计取舍 | [ADR-001～032](docs/architecture-decisions.md) |
+| 设计取舍 | [ADR-001～033](docs/architecture-decisions.md) |
 | 运行／测试／迁移／排障 | [开发运维](docs/development-and-operations.md) |
 | 历史数字与未来工作 | [性能证据](docs/performance-baseline.md)、[roadmap](docs/roadmap.md) |
 | API / schema / 配置 | [OpenAPI](internal/api/openapi.yaml)、[migrations](migrations/)、[config](internal/config/config.go) |

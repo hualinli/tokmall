@@ -1,0 +1,166 @@
+{
+  "cases": [
+    {
+      "case": "commerce-skus1-c50-r1",
+      "vus": 50,
+      "duration_seconds": 60,
+      "requests": 45788,
+      "request_rate": 761.9310315632276,
+      "http_error_rate": 0,
+      "check_failures": 0,
+      "p95_ms": 272,
+      "p99_ms": 373,
+      "k6_exit_code": 0,
+      "transaction_rate": 380.9655157816138,
+      "transactions": 22894,
+      "facts": {
+        "orders": 22894,
+        "paid": 22894,
+        "payments": 22894,
+        "inventory": 977106,
+        "ledger": 977106,
+        "negative": 0,
+        "due": 0,
+        "dead": 0,
+        "missing_receipts": 0,
+        "projected_orders": 22894
+      },
+      "reconcile_exit_code": 0,
+      "measurement_matches_facts": true,
+      "closed_loop_passed": true,
+      "create_order_duration": {
+        "avg": 91.30876203372026,
+        "med": 75.5305,
+        "p(95)": 217.08024999999984,
+        "p(99)": 312.12594999999993,
+        "max": 641.599
+      },
+      "pay_order_duration": {
+        "p(95)": 107.70235,
+        "p(99)": 164.52430999999987,
+        "max": 538.545,
+        "avg": 39.64809216388553,
+        "med": 29.225
+      },
+      "pool_wait_count": 47889.0,
+      "pool_wait_seconds": 1630.129622193,
+      "processes": {
+        "api": {
+          "cpu_percent_sampled": 70.25602627544806,
+          "peak_rss_mib": 58.0625
+        },
+        "k6": {
+          "cpu_percent_sampled": 25.24644754628221,
+          "peak_rss_mib": 72.7265625
+        }
+      },
+      "sampled_seconds": 60.364928459981456
+    },
+    {
+      "case": "commerce-skus100-c50-r1",
+      "vus": 50,
+      "duration_seconds": 60,
+      "requests": 113286,
+      "request_rate": 1886.724766317831,
+      "http_error_rate": 0,
+      "check_failures": 0,
+      "p95_ms": 94,
+      "p99_ms": 123,
+      "k6_exit_code": 0,
+      "transaction_rate": 943.3623831589155,
+      "transactions": 56643,
+      "facts": {
+        "orders": 56643,
+        "paid": 56643,
+        "payments": 56643,
+        "inventory": 943357,
+        "ledger": 943357,
+        "negative": 0,
+        "due": 0,
+        "dead": 0,
+        "missing_receipts": 0,
+        "projected_orders": 56643
+      },
+      "reconcile_exit_code": 0,
+      "measurement_matches_facts": true,
+      "closed_loop_passed": true,
+      "create_order_duration": {
+        "avg": 28.166943117419702,
+        "med": 23.619,
+        "p(95)": 57.934699999999985,
+        "p(99)": 83.65950000000014,
+        "max": 182.112
+      },
+      "pay_order_duration": {
+        "p(95)": 54.401,
+        "p(99)": 80.3137000000002,
+        "max": 166.449,
+        "avg": 24.60758723937645,
+        "med": 20.04
+      },
+      "pool_wait_count": 116664.0,
+      "pool_wait_seconds": 1593.001126007,
+      "processes": {
+        "api": {
+          "cpu_percent_sampled": 184.1026363409795,
+          "peak_rss_mib": 61.796875
+        },
+        "k6": {
+          "cpu_percent_sampled": 67.17660921503379,
+          "peak_rss_mib": 97.16796875
+        }
+      },
+      "sampled_seconds": 60.42281751683913
+    }
+  ],
+  "raw_directory": ".gocache/benchmarks/2026-10-12-step1-retention",
+  "feed_confirmation": {
+    "rounds": 0,
+    "zero_errors": false
+  },
+  "commerce_confirmation": {
+    "rounds": 0,
+    "all_passed": false,
+    "total_orders": 0
+  },
+  "stage_groups": {
+    "commerce-skus1-c50": {
+      "rounds": 1,
+      "all_passed": true,
+      "transaction_rate": {
+        "median": 380.9655157816138,
+        "min": 380.9655157816138,
+        "max": 380.9655157816138
+      },
+      "p95_ms": {
+        "median": 272,
+        "min": 272,
+        "max": 272
+      },
+      "p99_ms": {
+        "median": 373,
+        "min": 373,
+        "max": 373
+      }
+    },
+    "commerce-skus100-c50": {
+      "rounds": 1,
+      "all_passed": true,
+      "transaction_rate": {
+        "median": 943.3623831589155,
+        "min": 943.3623831589155,
+        "max": 943.3623831589155
+      },
+      "p95_ms": {
+        "median": 94,
+        "min": 94,
+        "max": 94
+      },
+      "p99_ms": {
+        "median": 123,
+        "min": 123,
+        "max": 123
+      }
+    }
+  }
+}

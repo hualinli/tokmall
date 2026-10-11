@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 )
@@ -103,13 +104,22 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	published := make([]int64, 0, len(events))
-	for _, event := range events {
+	backpressured := false
+	for index, event := range events {
 		msg := Message{
 			EventID: event.EventID.String(), EventType: event.EventType,
 			AggregateType: event.AggregateType, AggregateID: event.AggregateID,
 			PartitionKey: event.PartitionKey, Payload: event.Payload, OccurredAt: event.CreatedAt,
 		}
 		if err := r.publisher.Publish(ctx, msg); err != nil {
+			if errors.Is(err, ErrStreamBackpressure) {
+				backpressured = true
+				if deferErr := r.repo.DeferPending(ctx, events[index:], time.Now().Add(r.interval)); deferErr != nil {
+					return len(events), deferErr
+				}
+				slog.WarnContext(ctx, "outbox stream backpressure", "deferred", len(events)-index)
+				break
+			}
 			r.handleFailure(ctx, event, err)
 			continue
 		}
@@ -122,6 +132,10 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		slog.Error("mark outbox published failed; events will be redelivered",
 			"count", len(published), "err", err)
 		return len(events), err
+	}
+	// 背压返回未满批，让Run等下个tick，避免空转。
+	if backpressured {
+		return len(published), nil
 	}
 	return len(events), nil
 }

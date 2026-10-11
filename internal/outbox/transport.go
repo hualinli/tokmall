@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -55,34 +56,91 @@ func (LogPublisher) Publish(_ context.Context, msg Message) error {
 type RedisStreamPublisher struct {
 	client *redis.Client
 	stream string
-	// maxLen 近似裁剪：Stream 无限增长会吃满内存，保留上限与业务重放窗口匹配。
+	// maxLen 是缓冲预算；未消费消息占满容量时暂停投递。
 	maxLen int64
+	group  string
 }
 
-func NewRedisStreamPublisher(client *redis.Client, stream string, maxLen int64) *RedisStreamPublisher {
-	return &RedisStreamPublisher{client: client, stream: stream, maxLen: maxLen}
+type StreamPublisherOption func(*RedisStreamPublisher)
+
+func WithRequiredConsumerGroup(group string) StreamPublisherOption {
+	return func(p *RedisStreamPublisher) { p.group = group }
 }
+
+func NewRedisStreamPublisher(client *redis.Client, stream string, maxLen int64, opts ...StreamPublisherOption) *RedisStreamPublisher {
+	p := &RedisStreamPublisher{client: client, stream: stream, maxLen: maxLen}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+var ErrStreamBackpressure = errors.New("outbox stream is waiting for consumer capacity")
+
+// Lua 原子读取全部组水位、裁剪和追加；同时约束多个发布者。
+// 比较ID用十进制字符串，避免Lua浮点数把64位序号舍入。
+var safeStreamAppend = redis.NewScript(`
+local function less(a, b)
+  local am, as = string.match(a, '^(%d+)%-(%d+)$')
+  local bm, bs = string.match(b, '^(%d+)%-(%d+)$')
+  if #am ~= #bm then return #am < #bm end
+  if am ~= bm then return am < bm end
+  if #as ~= #bs then return #as < #bs end
+  return as < bs
+end
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+local groups = redis.call('XINFO', 'GROUPS', KEYS[1])
+if #groups == 0 then return 0 end
+local required = ARGV[1] == ''
+local length = redis.call('XLEN', KEYS[1])
+local maximum = tonumber(ARGV[2])
+local trim = redis.call('EXISTS', KEYS[2]) == 1 or length >= maximum
+local boundary = nil
+local inclusive = true
+for _, g in ipairs(groups) do
+  local info = {}
+  for i = 1, #g, 2 do info[g[i]] = g[i+1] end
+  if info['name'] == ARGV[1] then required = true end
+  if trim then
+    local pending = redis.call('XPENDING', KEYS[1], info['name'])
+    local water = info['last-delivered-id']
+    local acked = true
+    if pending[1] > 0 then water = pending[2]; acked = false end
+    if boundary == nil or less(water, boundary) then
+      boundary = water; inclusive = acked
+    elseif water == boundary then inclusive = inclusive and acked end
+  end
+end
+if not required then return 0 end
+if trim then
+  redis.call('XTRIM', KEYS[1], 'MINID', '=', boundary)
+  if inclusive then redis.call('XDEL', KEYS[1], boundary) end
+  length = redis.call('XLEN', KEYS[1])
+  if length >= math.max(1, math.floor(maximum / 2)) then
+    redis.call('SET', KEYS[2], '1', 'EX', 60)
+    return 0
+  end
+  redis.call('DEL', KEYS[2])
+end
+redis.call('XADD', KEYS[1], '*', unpack(ARGV, 3))
+return 1
+`)
 
 func (p *RedisStreamPublisher) Name() string { return "redis-stream" }
 
 func (p *RedisStreamPublisher) Publish(ctx context.Context, msg Message) error {
-	values := map[string]any{
-		"event_id":       msg.EventID,
-		"event_type":     msg.EventType,
-		"aggregate_type": msg.AggregateType,
-		"aggregate_id":   msg.AggregateID,
-		"partition_key":  msg.PartitionKey,
-		"payload":        string(msg.Payload),
-		"occurred_at":    msg.OccurredAt.UTC().Format(time.RFC3339Nano),
+	args := []any{p.group, p.maxLen,
+		"event_id", msg.EventID, "event_type", msg.EventType,
+		"aggregate_type", msg.AggregateType, "aggregate_id", msg.AggregateID,
+		"partition_key", msg.PartitionKey, "payload", string(msg.Payload),
+		"occurred_at", msg.OccurredAt.UTC().Format(time.RFC3339Nano),
 	}
-	err := p.client.XAdd(ctx, &redis.XAddArgs{
-		Stream: p.stream,
-		MaxLen: p.maxLen,
-		Approx: true,
-		Values: values,
-	}).Err()
+	added, err := safeStreamAppend.Run(ctx, p.client, []string{p.stream, p.stream + ":pressure"}, args...).Int()
 	if err != nil {
 		return fmt.Errorf("xadd %s: %w", p.stream, err)
+	}
+	if added == 0 {
+		return ErrStreamBackpressure
 	}
 	return nil
 }

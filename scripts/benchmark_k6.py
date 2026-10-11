@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tarfile
 import time
 import urllib.request
 
@@ -30,19 +31,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--redis-db', type=int, default=15)
+    parser.add_argument('--suite', choices=['all','feed','commerce'], default='all')
+    parser.add_argument('--clients', default='10,50,100')
+    parser.add_argument('--seconds', type=int, default=30)
+    parser.add_argument('--rounds', type=int, default=1)
+    parser.add_argument('--settle-seconds', type=int, default=60)
     parser.add_argument('--confirm-commerce', action='store_true',
                         help='Repeat the best consistent commerce stage for 60 seconds, up to three rounds')
     args = parser.parse_args()
+    if not 1 <= args.redis_db <= 15 or min(args.seconds,args.rounds,args.settle_seconds) <= 0:
+        parser.error('Require isolated Redis DB1..15 and positive durations/rounds')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=args.resume)
-    if not args.resume and b.call(['docker', 'exec', 'tokmall-redis', 'redis-cli', '-n', '15', 'DBSIZE']) != '0':
+    if not args.resume and b.call(['docker', 'exec', 'tokmall-redis', 'redis-cli', '-n', str(args.redis_db), 'DBSIZE']) != '0':
         raise RuntimeError('Redis DB15 must be empty before this experiment')
     stamp = str(int(time.time()))
     db, bucket = 'tokmall_bench_' + stamp, 'tokmall-bench-' + stamp
     env = b.environment(db, bucket, 'C')
     env.update(DB_HOST='127.0.0.1', DB_PORT='5432', DB_USER='tokmall',
-               DB_PASSWORD='tokmall', DB_SSL_MODE='disable', REDIS_ADDR='127.0.0.1:6379')
-    info = dict(database=db, bucket=bucket, redis_database=15, git_head=b.call(['git', 'rev-parse', 'HEAD']),
+               DB_PASSWORD='tokmall', DB_SSL_MODE='disable', REDIS_ADDR='127.0.0.1:6379', REDIS_DB=str(args.redis_db))
+    info = dict(database=db, bucket=bucket, redis_database=args.redis_db, git_head=b.call(['git', 'rev-parse', 'HEAD']),
                 created_at=b.utc(), go=b.call(['go', 'version']), k6=b.call([str(b.ROOT/'bin/k6'), 'version']),
                 hardware=b.call(['sysctl','-n','hw.model','hw.ncpu','hw.memsize']).splitlines(),
                 docker=b.call(['docker','info','--format','{{.ServerVersion}} {{.NCPU}} {{.MemTotal}}']),
@@ -54,13 +63,20 @@ def main():
             raise RuntimeError('Cannot resume with changed service/tool binaries or Git HEAD')
         info = previous
         db = info['database']
-        if not db.startswith('tokmall_bench_') or info['redis_database'] != 15:
+        if not db.startswith('tokmall_bench_') or info['redis_database'] != args.redis_db:
             raise RuntimeError('Invalid isolated experiment resources')
         stamp = db.removeprefix('tokmall_bench_')
         bucket = 'tokmall-bench-' + stamp
         env.update(DB_DATABASE=db, S3_BUCKET=bucket)
     else:
         (output/'environment.json').write_text(json.dumps(info, indent=2))
+        (output/'working-tree.patch').write_text(b.call(['git','diff','--binary']))
+        with tarfile.open(output/'source.tar.gz','w:gz') as archive:
+            for directory in ['cmd','internal','migrations','scripts']:
+                for path in (b.ROOT/directory).rglob('*'):
+                    if path.is_file() and '__pycache__' not in path.parts:
+                        archive.add(path,arcname=str(path.relative_to(b.ROOT)))
+            for name in ['go.mod','go.sum']:archive.add(b.ROOT/name,arcname=name)
         b.call(['docker','exec','tokmall-postgres','createdb','-U','tokmall',db])
         b.sql(db, 'ALTER DATABASE ' + db + ' SET track_io_timing=on')
     work = Path(tempfile.mkdtemp(prefix='tokmall-k6-'))
@@ -84,7 +100,7 @@ def main():
         if scenario == 'commerce':
             b.sql(db, "DELETE FROM videos WHERE title='k6 attribution' AND object_key='videos/seed/k6.mp4'")
             b.reset_commerce(db)
-        b.call(['docker','exec','tokmall-redis','redis-cli','-n','15','FLUSHDB'])
+        b.call(['docker','exec','tokmall-redis','redis-cli','-n',str(args.redis_db),'FLUSHDB'])
         api = b.start_api(env, work/name, folder/'api.log')
         generator = None
         try:
@@ -137,9 +153,10 @@ def main():
             (folder/'database-after.json').write_text(json.dumps(b.dbstats(db)))
             if scenario == 'commerce':
                 # Observe normal delivery/consumption, without manual event replay.
-                for _ in range(12):
+                settle_began = time.monotonic()
+                for _ in range(max(1,args.settle_seconds//5)):
                     missing = int(b.sql(db,"SELECT count(*) FROM outbox_events e WHERE e.status='PUBLISHED' AND NOT EXISTS (SELECT 1 FROM consumed_events c WHERE c.event_id=e.event_id)"))
-                    due = int(b.sql(db,"SELECT count(*) FROM outbox_events WHERE status='PENDING' AND available_at<=now()"))
+                    due = int(b.sql(db,"SELECT count(*) FROM outbox_events WHERE status='PENDING' AND (available_at<=now() OR event_type='commerce.order.paid.v1')"))
                     if missing == 0 and due == 0:
                         break
                     time.sleep(5)
@@ -156,6 +173,8 @@ def main():
                 (folder/'reconcile.log').write_text(reconcile.stderr)
                 summary['facts'] = facts
                 summary['reconcile_exit_code'] = reconcile.returncode
+                summary['settle_seconds'] = time.monotonic()-settle_began
+                summary['settle_budget_seconds'] = args.settle_seconds
             (folder/'summary.json').write_text(json.dumps(summary, indent=2))
             metrics = summary['metrics']
             throughput = metrics.get('successful_transactions',metrics['http_reqs'])['values']['rate']
@@ -169,6 +188,13 @@ def main():
             b.stop(api)
 
     try:
+        if args.suite != 'all':
+            for round_no in range(1,args.rounds+1):
+                for vus in [int(v) for v in args.clients.split(',')]:
+                    for skus in ([1,100] if args.suite=='commerce' else [1]):
+                        name=f'{args.suite}-skus{skus}-c{vus}-r{round_no}'
+                        case(name,args.suite,vus,args.seconds,skus)
+            return
         feed = []
         for vus in [10,50,100,200,400]:
             feed.append(case(f'feed-c{vus}','feed',vus,30))

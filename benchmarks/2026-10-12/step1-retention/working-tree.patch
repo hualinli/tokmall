@@ -1,0 +1,346 @@
+diff --git a/cmd/api/main.go b/cmd/api/main.go
+index 13286a7..9685ee6 100644
+--- a/cmd/api/main.go
++++ b/cmd/api/main.go
+@@ -459,7 +459,8 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
+ 	}
+ 	outboxRepo := outbox.NewRepository(db)
+ 	if cfg.OutboxRelayEnabled {
+-		publisher := outbox.Publisher(outbox.NewRedisStreamPublisher(redisClient, cfg.OutboxStream, cfg.OutboxStreamMaxLen))
++		publisher := outbox.Publisher(outbox.NewRedisStreamPublisher(redisClient, cfg.OutboxStream, cfg.OutboxStreamMaxLen,
++			outbox.WithRequiredConsumerGroup(cfg.OutboxConsumerGroup)))
+ 		relay := outbox.NewRelay(outboxRepo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
+ 			cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts),
+ 			outbox.WithRelayStats(observability.NewOutboxRelayMetrics(registry)))
+diff --git a/cmd/outboxctl/main.go b/cmd/outboxctl/main.go
+index e43ce30..e93dc39 100644
+--- a/cmd/outboxctl/main.go
++++ b/cmd/outboxctl/main.go
+@@ -155,7 +155,8 @@ func drain(ctx context.Context, cfg *config.Config, repo *outbox.GormRepository)
+ 		return err
+ 	}
+ 	defer func() { _ = client.Close() }()
+-	publisher := outbox.NewRedisStreamPublisher(client, cfg.OutboxStream, cfg.OutboxStreamMaxLen)
++	publisher := outbox.NewRedisStreamPublisher(client, cfg.OutboxStream, cfg.OutboxStreamMaxLen,
++		outbox.WithRequiredConsumerGroup(cfg.OutboxConsumerGroup))
+ 	relay := outbox.NewRelay(repo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
+ 		cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts))
+ 	processed, err := relay.RunOnce(ctx)
+diff --git a/internal/outbox/relay.go b/internal/outbox/relay.go
+index 0713d4f..159d70c 100644
+--- a/internal/outbox/relay.go
++++ b/internal/outbox/relay.go
+@@ -2,6 +2,7 @@ package outbox
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"log/slog"
+ 	"time"
+ )
+@@ -103,13 +104,22 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
+ 		return 0, nil
+ 	}
+ 	published := make([]int64, 0, len(events))
+-	for _, event := range events {
++	backpressured := false
++	for index, event := range events {
+ 		msg := Message{
+ 			EventID: event.EventID.String(), EventType: event.EventType,
+ 			AggregateType: event.AggregateType, AggregateID: event.AggregateID,
+ 			PartitionKey: event.PartitionKey, Payload: event.Payload, OccurredAt: event.CreatedAt,
+ 		}
+ 		if err := r.publisher.Publish(ctx, msg); err != nil {
++			if errors.Is(err, ErrStreamBackpressure) {
++				backpressured = true
++				if deferErr := r.repo.DeferPending(ctx, events[index:], time.Now().Add(r.interval)); deferErr != nil {
++					return len(events), deferErr
++				}
++				slog.WarnContext(ctx, "outbox stream backpressure", "deferred", len(events)-index)
++				break
++			}
+ 			r.handleFailure(ctx, event, err)
+ 			continue
+ 		}
+@@ -123,6 +133,10 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
+ 			"count", len(published), "err", err)
+ 		return len(events), err
+ 	}
++	// 背压返回未满批，让Run等下个tick，避免空转。
++	if backpressured {
++		return len(published), nil
++	}
+ 	return len(events), nil
+ }
+ 
+diff --git a/internal/outbox/repository.go b/internal/outbox/repository.go
+index 82ef737..d98b241 100644
+--- a/internal/outbox/repository.go
++++ b/internal/outbox/repository.go
+@@ -16,6 +16,7 @@ type Repository interface {
+ 	// FetchPending 取一批到期事件并加租约（FOR UPDATE SKIP LOCKED，支持多实例）。
+ 	FetchPending(ctx context.Context, batch int, lease time.Duration, now time.Time) ([]Event, error)
+ 	MarkPublished(ctx context.Context, ids []int64, at time.Time) error
++	DeferPending(ctx context.Context, events []Event, until time.Time) error
+ 	MarkRetry(ctx context.Context, id int64, attempts int32, nextAttempt time.Time, reason string) error
+ 	MarkDead(ctx context.Context, id int64, attempts int32, reason string) error
+ 	Stats(ctx context.Context) (*Stats, error)
+@@ -57,6 +58,7 @@ func (r *GormRepository) FetchPending(ctx context.Context, batch int, lease time
+ 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+ 		err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+ 			Where("status = ? AND available_at <= ?", string(StatusPending), now.UTC()).
++			Where("leased_until IS NULL OR leased_until <= ?", now.UTC()).
+ 			Order("id ASC").Limit(batch).Find(&events).Error
+ 		if err != nil {
+ 			return err
+@@ -82,6 +84,22 @@ func (r *GormRepository) FetchPending(ctx context.Context, batch int, lease time
+ 	return events, nil
+ }
+ 
++// DeferPending 释放未投递租约；背压不消耗失败重试次数。
++// attempts 防止旧持有者释放后来被另一中继认领的事件。
++func (r *GormRepository) DeferPending(ctx context.Context, events []Event, until time.Time) error {
++	if len(events) == 0 {
++		return nil
++	}
++	pairs := make([][]any, 0, len(events))
++	for _, event := range events {
++		pairs = append(pairs, []any{event.ID, event.Attempts})
++	}
++	return r.db.WithContext(ctx).Model(&Event{}).
++		Where("status = ? AND (id, attempts) IN ?", string(StatusPending), pairs).
++		Updates(map[string]any{"leased_until": nil, "available_at": until.UTC(),
++			"attempts": gorm.Expr("GREATEST(attempts - 1, 0)")}).Error
++}
++
+ func (r *GormRepository) MarkPublished(ctx context.Context, ids []int64, at time.Time) error {
+ 	if len(ids) == 0 {
+ 		return nil
+diff --git a/internal/outbox/transport.go b/internal/outbox/transport.go
+index b7233dc..0487824 100644
+--- a/internal/outbox/transport.go
++++ b/internal/outbox/transport.go
+@@ -3,6 +3,7 @@ package outbox
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"log/slog"
+ 	"time"
+@@ -55,34 +56,91 @@ func (LogPublisher) Publish(_ context.Context, msg Message) error {
+ type RedisStreamPublisher struct {
+ 	client *redis.Client
+ 	stream string
+-	// maxLen 近似裁剪：Stream 无限增长会吃满内存，保留上限与业务重放窗口匹配。
++	// maxLen 是缓冲预算；未消费消息占满容量时暂停投递。
+ 	maxLen int64
++	group  string
+ }
+ 
+-func NewRedisStreamPublisher(client *redis.Client, stream string, maxLen int64) *RedisStreamPublisher {
+-	return &RedisStreamPublisher{client: client, stream: stream, maxLen: maxLen}
++type StreamPublisherOption func(*RedisStreamPublisher)
++
++func WithRequiredConsumerGroup(group string) StreamPublisherOption {
++	return func(p *RedisStreamPublisher) { p.group = group }
++}
++
++func NewRedisStreamPublisher(client *redis.Client, stream string, maxLen int64, opts ...StreamPublisherOption) *RedisStreamPublisher {
++	p := &RedisStreamPublisher{client: client, stream: stream, maxLen: maxLen}
++	for _, opt := range opts {
++		opt(p)
++	}
++	return p
+ }
+ 
++var ErrStreamBackpressure = errors.New("outbox stream is waiting for consumer capacity")
++
++// Lua 原子读取全部组水位、裁剪和追加；同时约束多个发布者。
++// 比较ID用十进制字符串，避免Lua浮点数把64位序号舍入。
++var safeStreamAppend = redis.NewScript(`
++local function less(a, b)
++  local am, as = string.match(a, '^(%d+)%-(%d+)$')
++  local bm, bs = string.match(b, '^(%d+)%-(%d+)$')
++  if #am ~= #bm then return #am < #bm end
++  if am ~= bm then return am < bm end
++  if #as ~= #bs then return #as < #bs end
++  return as < bs
++end
++if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
++local groups = redis.call('XINFO', 'GROUPS', KEYS[1])
++if #groups == 0 then return 0 end
++local required = ARGV[1] == ''
++local length = redis.call('XLEN', KEYS[1])
++local maximum = tonumber(ARGV[2])
++local trim = redis.call('EXISTS', KEYS[2]) == 1 or length >= maximum
++local boundary = nil
++local inclusive = true
++for _, g in ipairs(groups) do
++  local info = {}
++  for i = 1, #g, 2 do info[g[i]] = g[i+1] end
++  if info['name'] == ARGV[1] then required = true end
++  if trim then
++    local pending = redis.call('XPENDING', KEYS[1], info['name'])
++    local water = info['last-delivered-id']
++    local acked = true
++    if pending[1] > 0 then water = pending[2]; acked = false end
++    if boundary == nil or less(water, boundary) then
++      boundary = water; inclusive = acked
++    elseif water == boundary then inclusive = inclusive and acked end
++  end
++end
++if not required then return 0 end
++if trim then
++  redis.call('XTRIM', KEYS[1], 'MINID', '=', boundary)
++  if inclusive then redis.call('XDEL', KEYS[1], boundary) end
++  length = redis.call('XLEN', KEYS[1])
++  if length >= math.max(1, math.floor(maximum / 2)) then
++    redis.call('SET', KEYS[2], '1', 'EX', 60)
++    return 0
++  end
++  redis.call('DEL', KEYS[2])
++end
++redis.call('XADD', KEYS[1], '*', unpack(ARGV, 3))
++return 1
++`)
++
+ func (p *RedisStreamPublisher) Name() string { return "redis-stream" }
+ 
+ func (p *RedisStreamPublisher) Publish(ctx context.Context, msg Message) error {
+-	values := map[string]any{
+-		"event_id":       msg.EventID,
+-		"event_type":     msg.EventType,
+-		"aggregate_type": msg.AggregateType,
+-		"aggregate_id":   msg.AggregateID,
+-		"partition_key":  msg.PartitionKey,
+-		"payload":        string(msg.Payload),
+-		"occurred_at":    msg.OccurredAt.UTC().Format(time.RFC3339Nano),
++	args := []any{p.group, p.maxLen,
++		"event_id", msg.EventID, "event_type", msg.EventType,
++		"aggregate_type", msg.AggregateType, "aggregate_id", msg.AggregateID,
++		"partition_key", msg.PartitionKey, "payload", string(msg.Payload),
++		"occurred_at", msg.OccurredAt.UTC().Format(time.RFC3339Nano),
+ 	}
+-	err := p.client.XAdd(ctx, &redis.XAddArgs{
+-		Stream: p.stream,
+-		MaxLen: p.maxLen,
+-		Approx: true,
+-		Values: values,
+-	}).Err()
++	added, err := safeStreamAppend.Run(ctx, p.client, []string{p.stream, p.stream + ":pressure"}, args...).Int()
+ 	if err != nil {
+ 		return fmt.Errorf("xadd %s: %w", p.stream, err)
+ 	}
++	if added == 0 {
++		return ErrStreamBackpressure
++	}
+ 	return nil
+ }
+diff --git a/scripts/benchmark_k6.py b/scripts/benchmark_k6.py
+index 61e4cbe..dd0250a 100644
+--- a/scripts/benchmark_k6.py
++++ b/scripts/benchmark_k6.py
+@@ -10,6 +10,7 @@ import os
+ from pathlib import Path
+ import subprocess
+ import tempfile
++import tarfile
+ import time
+ import urllib.request
+ 
+@@ -30,19 +31,27 @@ def main():
+     parser = argparse.ArgumentParser()
+     parser.add_argument('--output', type=Path, required=True)
+     parser.add_argument('--resume', action='store_true')
++    parser.add_argument('--redis-db', type=int, default=15)
++    parser.add_argument('--suite', choices=['all','feed','commerce'], default='all')
++    parser.add_argument('--clients', default='10,50,100')
++    parser.add_argument('--seconds', type=int, default=30)
++    parser.add_argument('--rounds', type=int, default=1)
++    parser.add_argument('--settle-seconds', type=int, default=60)
+     parser.add_argument('--confirm-commerce', action='store_true',
+                         help='Repeat the best consistent commerce stage for 60 seconds, up to three rounds')
+     args = parser.parse_args()
++    if not 1 <= args.redis_db <= 15 or min(args.seconds,args.rounds,args.settle_seconds) <= 0:
++        parser.error('Require isolated Redis DB1..15 and positive durations/rounds')
+     output = args.output.resolve()
+     output.mkdir(parents=True, exist_ok=args.resume)
+-    if not args.resume and b.call(['docker', 'exec', 'tokmall-redis', 'redis-cli', '-n', '15', 'DBSIZE']) != '0':
++    if not args.resume and b.call(['docker', 'exec', 'tokmall-redis', 'redis-cli', '-n', str(args.redis_db), 'DBSIZE']) != '0':
+         raise RuntimeError('Redis DB15 must be empty before this experiment')
+     stamp = str(int(time.time()))
+     db, bucket = 'tokmall_bench_' + stamp, 'tokmall-bench-' + stamp
+     env = b.environment(db, bucket, 'C')
+     env.update(DB_HOST='127.0.0.1', DB_PORT='5432', DB_USER='tokmall',
+-               DB_PASSWORD='tokmall', DB_SSL_MODE='disable', REDIS_ADDR='127.0.0.1:6379')
+-    info = dict(database=db, bucket=bucket, redis_database=15, git_head=b.call(['git', 'rev-parse', 'HEAD']),
++               DB_PASSWORD='tokmall', DB_SSL_MODE='disable', REDIS_ADDR='127.0.0.1:6379', REDIS_DB=str(args.redis_db))
++    info = dict(database=db, bucket=bucket, redis_database=args.redis_db, git_head=b.call(['git', 'rev-parse', 'HEAD']),
+                 created_at=b.utc(), go=b.call(['go', 'version']), k6=b.call([str(b.ROOT/'bin/k6'), 'version']),
+                 hardware=b.call(['sysctl','-n','hw.model','hw.ncpu','hw.memsize']).splitlines(),
+                 docker=b.call(['docker','info','--format','{{.ServerVersion}} {{.NCPU}} {{.MemTotal}}']),
+@@ -54,13 +63,20 @@ def main():
+             raise RuntimeError('Cannot resume with changed service/tool binaries or Git HEAD')
+         info = previous
+         db = info['database']
+-        if not db.startswith('tokmall_bench_') or info['redis_database'] != 15:
++        if not db.startswith('tokmall_bench_') or info['redis_database'] != args.redis_db:
+             raise RuntimeError('Invalid isolated experiment resources')
+         stamp = db.removeprefix('tokmall_bench_')
+         bucket = 'tokmall-bench-' + stamp
+         env.update(DB_DATABASE=db, S3_BUCKET=bucket)
+     else:
+         (output/'environment.json').write_text(json.dumps(info, indent=2))
++        (output/'working-tree.patch').write_text(b.call(['git','diff','--binary']))
++        with tarfile.open(output/'source.tar.gz','w:gz') as archive:
++            for directory in ['cmd','internal','migrations','scripts']:
++                for path in (b.ROOT/directory).rglob('*'):
++                    if path.is_file() and '__pycache__' not in path.parts:
++                        archive.add(path,arcname=str(path.relative_to(b.ROOT)))
++            for name in ['go.mod','go.sum']:archive.add(b.ROOT/name,arcname=name)
+         b.call(['docker','exec','tokmall-postgres','createdb','-U','tokmall',db])
+         b.sql(db, 'ALTER DATABASE ' + db + ' SET track_io_timing=on')
+     work = Path(tempfile.mkdtemp(prefix='tokmall-k6-'))
+@@ -84,7 +100,7 @@ def main():
+         if scenario == 'commerce':
+             b.sql(db, "DELETE FROM videos WHERE title='k6 attribution' AND object_key='videos/seed/k6.mp4'")
+             b.reset_commerce(db)
+-        b.call(['docker','exec','tokmall-redis','redis-cli','-n','15','FLUSHDB'])
++        b.call(['docker','exec','tokmall-redis','redis-cli','-n',str(args.redis_db),'FLUSHDB'])
+         api = b.start_api(env, work/name, folder/'api.log')
+         generator = None
+         try:
+@@ -137,7 +153,8 @@ def main():
+             (folder/'database-after.json').write_text(json.dumps(b.dbstats(db)))
+             if scenario == 'commerce':
+                 # Observe normal delivery/consumption, without manual event replay.
+-                for _ in range(12):
++                settle_began = time.monotonic()
++                for _ in range(max(1,args.settle_seconds//5)):
+                     missing = int(b.sql(db,"SELECT count(*) FROM outbox_events e WHERE e.status='PUBLISHED' AND NOT EXISTS (SELECT 1 FROM consumed_events c WHERE c.event_id=e.event_id)"))
+                     due = int(b.sql(db,"SELECT count(*) FROM outbox_events WHERE status='PENDING' AND available_at<=now()"))
+                     if missing == 0 and due == 0:
+@@ -156,6 +173,8 @@ def main():
+                 (folder/'reconcile.log').write_text(reconcile.stderr)
+                 summary['facts'] = facts
+                 summary['reconcile_exit_code'] = reconcile.returncode
++                summary['settle_seconds'] = time.monotonic()-settle_began
++                summary['settle_budget_seconds'] = args.settle_seconds
+             (folder/'summary.json').write_text(json.dumps(summary, indent=2))
+             metrics = summary['metrics']
+             throughput = metrics.get('successful_transactions',metrics['http_reqs'])['values']['rate']
+@@ -169,6 +188,13 @@ def main():
+             b.stop(api)
+ 
+     try:
++        if args.suite != 'all':
++            for round_no in range(1,args.rounds+1):
++                for vus in [int(v) for v in args.clients.split(',')]:
++                    for skus in ([1,100] if args.suite=='commerce' else [1]):
++                        name=f'{args.suite}-skus{skus}-c{vus}-r{round_no}'
++                        case(name,args.suite,vus,args.seconds,skus)
++            return
+         feed = []
+         for vus in [10,50,100,200,400]:
+             feed.append(case(f'feed-c{vus}','feed',vus,30))

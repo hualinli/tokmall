@@ -155,7 +155,8 @@ func drain(ctx context.Context, cfg *config.Config, repo *outbox.GormRepository)
 		return err
 	}
 	defer func() { _ = client.Close() }()
-	publisher := outbox.NewRedisStreamPublisher(client, cfg.OutboxStream, cfg.OutboxStreamMaxLen)
+	publisher := outbox.NewRedisStreamPublisher(client, cfg.OutboxStream, cfg.OutboxStreamMaxLen,
+		outbox.WithRequiredConsumerGroup(cfg.OutboxConsumerGroup))
 	relay := outbox.NewRelay(repo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
 		cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts))
 	processed, err := relay.RunOnce(ctx)

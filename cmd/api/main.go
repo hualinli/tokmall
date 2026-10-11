@@ -459,7 +459,8 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 	}
 	outboxRepo := outbox.NewRepository(db)
 	if cfg.OutboxRelayEnabled {
-		publisher := outbox.Publisher(outbox.NewRedisStreamPublisher(redisClient, cfg.OutboxStream, cfg.OutboxStreamMaxLen))
+		publisher := outbox.Publisher(outbox.NewRedisStreamPublisher(redisClient, cfg.OutboxStream, cfg.OutboxStreamMaxLen,
+			outbox.WithRequiredConsumerGroup(cfg.OutboxConsumerGroup)))
 		relay := outbox.NewRelay(outboxRepo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
 			cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts),
 			outbox.WithRelayStats(observability.NewOutboxRelayMetrics(registry)))
