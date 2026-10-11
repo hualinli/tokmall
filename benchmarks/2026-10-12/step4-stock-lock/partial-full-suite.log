@@ -1,0 +1,24 @@
+ok  	github.com/lihualin/tokmall/cmd/api	0.756s
+ok  	github.com/lihualin/tokmall/cmd/loadgen	0.291s
+?   	github.com/lihualin/tokmall/cmd/outboxctl	[no test files]
+?   	github.com/lihualin/tokmall/cmd/reconcile	[no test files]
+ok  	github.com/lihualin/tokmall/internal/api	0.347s
+ok  	github.com/lihualin/tokmall/internal/attribution	0.469s
+ok  	github.com/lihualin/tokmall/internal/breaker	0.993s
+ok  	github.com/lihualin/tokmall/internal/cache	0.310s
+ok  	github.com/lihualin/tokmall/internal/cache/l1	0.301s
+ok  	github.com/lihualin/tokmall/internal/config	0.269s
+ok  	github.com/lihualin/tokmall/internal/coupon	0.537s
+ok  	github.com/lihualin/tokmall/internal/database	0.366s
+ok  	github.com/lihualin/tokmall/internal/existence	0.273s
+ok  	github.com/lihualin/tokmall/internal/feed	0.705s
+?   	github.com/lihualin/tokmall/internal/health	[no test files]
+ok  	github.com/lihualin/tokmall/internal/interaction	0.313s
+ok  	github.com/lihualin/tokmall/internal/inventory	0.324s
+ok  	github.com/lihualin/tokmall/internal/mediaprobe	0.754s
+ok  	github.com/lihualin/tokmall/internal/middleware	0.321s
+ok  	github.com/lihualin/tokmall/internal/observability	0.305s
+ok  	github.com/lihualin/tokmall/internal/order	2.859s
+ok  	github.com/lihualin/tokmall/internal/outbox	1.644s
+ok  	github.com/lihualin/tokmall/internal/product	0.318s
+ok  	github.com/lihualin/tokmall/internal/promotion	0.528s

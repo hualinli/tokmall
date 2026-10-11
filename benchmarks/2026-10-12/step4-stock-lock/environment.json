@@ -1,0 +1,26 @@
+{
+  "database": "tokmall_bench_1791738182",
+  "bucket": "tokmall-bench-1791738182",
+  "redis_database": 13,
+  "git_head": "75fb99e9795e1dc41418b022d3b299c7ec1047f6",
+  "created_at": "2026-10-11T17:03:02.177367+00:00",
+  "go": "go version go1.27.1 darwin/amd64",
+  "k6": "k6 v2.3.0 (commit/e088784614, go1.26.8, darwin/amd64)",
+  "hardware": [
+    "MacPro7,1",
+    "20",
+    "34359738368"
+  ],
+  "docker": "25.0.5 20 29422637056",
+  "binaries": {
+    "api": "08ad329abbb6d5c9fe9fbe82e6d1ccd8ca9f56be79369aa8c864f71dc31c07c5",
+    "reconcile": "d1f532b37ac89953ab4d59b192f337850005d3d3706417914aa84861ca783253",
+    "k6": "7dec82f2720871a0a5382a78ae8e05f5943a0c6dc272abe0ba6027910c80e11f"
+  },
+  "method": "closed-loop k6; load generator and containers share host; caches L1+L2 on; rate limit off; default workers and logging on; pool 25; synthetic media; attributed simulated payments",
+  "dataset": {
+    "users": 30000,
+    "videos": 1000000,
+    "bytes": 354694847
+  }
+}

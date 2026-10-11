@@ -124,27 +124,6 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 			return nil
 		}
 
-		stock := db.Model(&inventoryRow{}).
-			Where("sku_id = ? AND quantity >= ?", cmd.SKUID, cmd.Quantity).
-			Updates(map[string]any{
-				"quantity":   gorm.Expr("quantity - ?", cmd.Quantity),
-				"version":    gorm.Expr("version + 1"),
-				"updated_at": time.Now(),
-			})
-		if stock.Error != nil {
-			return stock.Error
-		}
-		if stock.RowsAffected == 0 {
-			var count int64
-			if err := db.Model(&inventoryRow{}).Where("sku_id = ?", cmd.SKUID).Count(&count).Error; err != nil {
-				return err
-			}
-			if count == 0 {
-				return errors.New("inventory invariant violated: existing sku has no inventory row")
-			}
-			return ErrInsufficientStock
-		}
-
 		ledger := inventoryLedger{
 			SKUID: cmd.SKUID, OrderID: order.ID, Change: -int64(cmd.Quantity),
 			Reason: "ORDER_CREATED", BizID: order.OrderNo,
@@ -187,6 +166,30 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 			OrderID: order.ID, OrderNo: order.OrderNo, ExpiresAt: order.ExpiresAt,
 		}); err != nil {
 			return err
+		}
+
+		// 独立写入已准备好，再竞争热点库存行。扣减之后直接提交，
+		// 不再持有库存锁等待明细、流水、券核销和 Outbox 的数据库往返。
+		// 条件扣减失败会回滚整个事务，包括上面已插入的全部事实。
+		stock := db.Model(&inventoryRow{}).
+			Where("sku_id = ? AND quantity >= ?", cmd.SKUID, cmd.Quantity).
+			Updates(map[string]any{
+				"quantity":   gorm.Expr("quantity - ?", cmd.Quantity),
+				"version":    gorm.Expr("version + 1"),
+				"updated_at": time.Now(),
+			})
+		if stock.Error != nil {
+			return stock.Error
+		}
+		if stock.RowsAffected == 0 {
+			var count int64
+			if err := db.Model(&inventoryRow{}).Where("sku_id = ?", cmd.SKUID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return errors.New("inventory invariant violated: existing sku has no inventory row")
+			}
+			return ErrInsufficientStock
 		}
 
 		result = &createRecord{Order: order, Item: item}

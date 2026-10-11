@@ -99,7 +99,7 @@ L1 分片 LRU + Redis L2 用版本号跨实例失效：写入删除 L2、删除�
 [两级缓存](../internal/feed/tiered_cache.go)、[两级缓存测试](../internal/feed/tiered_cache_test.go)、
 [排序器边界测试](../internal/feed/ranker_test.go)、[热榜服务测试](../internal/feed/hot_service_test.go)
 和 [热榜缓存测试](../internal/feed/hot_cache_test.go)。性能数字只在
-[性能基线](performance-baseline.md) 中按本机、数据集和场景记录；区分历史记录与2026-10-09三轮Feed复测。交易复测发现Stream裁剪导致回执缺口，显式重放恢复，不声称交易容量已验证。
+[性能基线](performance-baseline.md) 中按本机、数据集和场景记录；区分历史缓存对照、10月11日完整基线与10月12日逐步优化。Stream缺口已用投递ID追踪定位，安全裁剪/背压和独立消费预算后有限时长交易闭环通过，没有人工重放；短测收敛不等于持续流量容量。
 
 设计取舍见架构决策记录中的 ADR-004、ADR-012、ADR-025 和 ADR-027。
 
@@ -195,7 +195,7 @@ RustFS 复制成功后，如果 PostgreSQL 后续插入或提交失败，数据�
 | 怎么防刷不存在的 ID？ | 进程内双缓冲 Bloom、warmup 保护和 Redis 负缓存；只对确认不存在的记录写负缓存，可见性拒绝不缓存为不存在。见 [存在性防护](../internal/existence) 和 ADR-022。 |
 | RustFS 停机时会怎样？ | 对象存储调用通过三态熔断装饰器，业务正常的对象不存在不会计为依赖故障；打开时返回可重试的 503。见 [熔断器](../internal/breaker) 和 ADR-023。 |
 | 有完整链路追踪吗？ | 有结构化日志、Prometheus 指标及自研 W3C traceparent 透传；没有 OpenTelemetry SDK/exporter，也没有端到端 span 链路。见 [观测模块](../internal/observability) 与 [traceparent 实现](../internal/tracing)。 |
-| 有真实容量结论吗？ | [性能基线](performance-baseline.md) 有百万视频、50并发、180秒×3轮的同版本Feed缓存对照和原始证据。它是同机固定场景吞吐，不是生产容量；交易异步链路出现回执缺口，已验证显式重放恢复，完整交易矩阵待重测。 |
+| 有真实容量结论吗？ | [性能基线](performance-baseline.md) 保存历史缓存对照及新的分步优化证据；100并发热缓存首页合并动态读取的同预算三轮中位吞吐提高43%，动态新鲜度由真实PG测试约束。交易按热点/分散SKU核对回执、库存、账本与九项对账；有限时长结果不宣称生产容量或长期自动收敛。 |
 | 怎么避免接口契约和错误语义漂移？ | 错误经过 repository → service → handler 翻译；OpenAPI 有路由同步与 schema/DTO 校验，CI 会运行契约检查。见 [错误响应](../internal/response) 和 [API 契约测试](../internal/api/spec_test.go)。 |
 
 还有一个短而具体的排查案例：一次演练注册返回 201、紧接着登录却返回 401。密码哈希正常，查库发现

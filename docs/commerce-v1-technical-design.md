@@ -24,11 +24,11 @@ PENDING_PAYMENT ──▶ PAID ──▶ FULFILLING ──▶ COMPLETED
 
 [订单仓储](../internal/order/repository.go)在一个 PostgreSQL 事务内完成订单创建：
 
-1. 先按 user_id 与 idempotency_key 查已存在订单。请求指纹包括 SKU、数量、来源和可选持券 ID；相同载荷重放原订单，不同载荷返回冲突。首次并发请求再由唯一约束和 INSERT ... ON CONFLICT 仲裁。
+1. 事务开头按 user_id 与 idempotency_key 获取 pg_advisory_xact_lock，再查已存在订单。请求指纹包括 SKU、数量、来源和可选持券 ID；相同载荷重放原订单，不同载荷返回冲突。唯一约束和 INSERT ... ON CONFLICT 继续兜底。
 2. 锁定可售商品和 SKU 以读取稳定价格与归属；若有视频来源，再验证该视频商品关系仍有效。订单项保存商品标题、规格、单价、商家和数量快照。
-3. 若使用优惠券，先锁持券行并检查用户归属、同商家、未使用、有效期和门槛，再计算折扣。与库存有关的下单锁顺序是商品/SKU 共享锁、可选的来源关系共享锁、可选的持券行更新锁、订单幂等 claim，之后才条件更新库存。
-4. 插入订单与单条订单项，按 quantity >= 请求数量条件扣减库存并写 ORDER_CREATED 流水；再将持券状态从 UNUSED 条件更新为 USED，关联订单。
-5. 在同一事务写入到期时间等于 expires_at 的延迟 Outbox 事件。任何库存不足、券状态竞争或写入失败都会回滚整张订单、库存和券变更。
+3. 若使用优惠券，先锁持券行并检查用户归属、同商家、未使用、有效期和门槛，再计算折扣。幂等事务锁之后依次是商品/SKU 共享锁、可选来源关系共享锁、可选持券行更新锁、订单唯一键 claim，最后才条件更新库存。
+4. 插入订单、ORDER_CREATED 流水和单条订单项，再将持券状态从 UNUSED 条件更新为 USED，关联订单；同事务写入到期时间等于 expires_at 的延迟 Outbox 事件。这些准备写入在提交前不可被其他事务读取。
+5. 最后按 quantity >= 请求数量条件扣减库存，然后直接提交，缩短热点库存行锁持有时间。任何库存不足、券状态竞争或写入失败都会回滚订单、明细、流水、券和事件；不是把它们拆成独立提交。
 
 v1 的单 SKU 边界由数据库对每单唯一 order_item 约束，不能只靠 handler 约定。服务端以整数分计算 original_amount，优惠券规则由 [coupon.DiscountFor](../internal/coupon/service.go) 计算；支付金额满足 total_amount = original_amount - discount_amount 且必须大于零，数据库 CHECK 再兜底。买家不能提交价格、折扣额或商家 ID。
 
