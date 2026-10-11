@@ -4,9 +4,9 @@
 
 ## 环境与启动
 
-Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Compose 提供 PostgreSQL `localhost:5432`、Redis `localhost:6379`、RustFS `:9000`（控制台 `:9001`），服务名分别为 postgres/redis/rustfs。不要另建 5433 实例。
+Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Compose 提供 PostgreSQL `localhost:5432`、Redis `localhost:6379`、RustFS `:9000`（控制台 `:9001`），服务名分别为 postgres/redis/rustfs。不要另建 5433 实例。PostgreSQL 与 Redis 使用命名卷 `<项目名>_pg-data`、`<项目名>_redis-data`（默认项目名为 tokmall），重建容器不清空数据；清空全部本地数据需显式执行 `docker compose down -v`，它同时会删除 `tokmall_rustfs-data`。旧匿名卷不会自动迁移。首次切换前停止业务写入，备份 PG（如 `pg_dump`）与 Redis 的持久化数据，切换后恢复并检查业务记录、Outbox 和刷新令牌状态；仅备份而未恢复的新卷仍是空数据。不要在验证恢复前删除旧卷。
 
-对象存储默认使用固定版本 `rustfs/rustfs:1.0.1`，应用通过通用 `S3_*` 配置访问，客户端库仍是 `minio-go`（S3 SDK，不要求MinIO服务端）。原 `MINIO_*` 环境变量须改名为对应 `S3_*`，包括三个URL有效期；生产校验也使用新变量。RustFS开发端口仅映射到回环，浏览器CORS允许localhost/127.0.0.1的5173端口，部署到其他域名时显式更新 `RUSTFS_CORS_ALLOWED_ORIGINS`。新卷为 `rustfs-data`；不复用或转换旧 `minio-data`，本次迁移不包含历史对象数据。
+对象存储默认使用固定版本 `rustfs/rustfs:1.0.1`，应用通过通用 `S3_*` 配置访问，客户端库仍是 `minio-go`（S3 SDK，不要求MinIO服务端）。原 `MINIO_*` 环境变量须改名为对应 `S3_*`，包括三个URL有效期；生产校验也使用新变量。Compose中PG、Redis、RustFS API/控制台及观测栈端口均仅映射到127.0.0.1，浏览器CORS允许localhost/127.0.0.1的5173端口，部署到其他域名时显式更新 `RUSTFS_CORS_ALLOWED_ORIGINS`。新卷为 `rustfs-data`；不复用或转换旧 `minio-data`，本次迁移不包含历史对象数据。
 
 ```bash
 cd web && pnpm install --frozen-lockfile
