@@ -45,12 +45,22 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) RegisterRoutes(g *route.RouterGroup, authMW ...app.HandlerFunc) {
-	authGroup := g.Group("/auth", authMW...)
-	authGroup.POST("/register", h.register)
-	authGroup.POST("/login", h.login)
+// RegisterRoutes 注册认证路由。common 挂在全部 /auth 路由上（请求体上限、IP 配额）；
+// credentialMW 只挂在携带账号标识符的登录与注册上（账号配额）。refresh/logout 没有标识符，
+// 按设计只受 IP 配额约束，否则 NAT 出口下的用户会共用同一个账号配额并被误伤。
+func (h *Handler) RegisterRoutes(g *route.RouterGroup, common []app.HandlerFunc, credentialMW []app.HandlerFunc) {
+	authGroup := g.Group("/auth", common...)
+	authGroup.POST("/register", withHandler(credentialMW, h.register)...)
+	authGroup.POST("/login", withHandler(credentialMW, h.login)...)
 	authGroup.POST("/refresh", h.refresh)
 	authGroup.POST("/logout", h.logout)
+}
+
+// withHandler 返回新切片：多条路由不能共享同一底层数组，否则 append 会互相覆盖。
+func withHandler(mws []app.HandlerFunc, handler app.HandlerFunc) []app.HandlerFunc {
+	out := make([]app.HandlerFunc, 0, len(mws)+1)
+	out = append(out, mws...)
+	return append(out, handler)
 }
 
 func (h *Handler) RegisterProtectedRoutes(g *route.RouterGroup) {

@@ -123,6 +123,7 @@ func run() error {
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	h := server.New(
 		server.WithHostPorts(addr),
+		server.WithMaxRequestBodySize(64<<10), // API 只收 JSON；媒体本体直传对象存储。
 		server.WithTracer(hertzmonitor.NewServerTracer(
 			cfg.MetricsAddr, "/metrics",
 			hertzmonitor.WithRegistry(metricsRegistry),
@@ -586,7 +587,7 @@ type routes struct {
 }
 
 // rateRules 限流规则（挂载点见 registerRoutes）：
-//   - authAccount：按账号 10/min（防暴力破解——爆破的维度是账号不是 IP，NAT 下多人
+//   - authAccount：仅登录与注册，按账号标识符 10/min（防暴力破解——爆破的维度是账号不是 IP，NAT 下多人
 //     共享 IP 按 IP 限会误伤真实用户）；
 //   - authIP：按 IP 100/min（放宽版，防单一来源洪峰）；
 //   - read：按 IP 6000/min（只挡爬虫/洪峰，阈值远高于真实用户行为）；
@@ -598,15 +599,25 @@ type rateRules struct {
 	write       middleware.RateLimitRule
 }
 
-// authMW 构造 auth 子组的限流中间件（未启用限流时为空，行为与现状一致）。
-// 双规则叠加：按账号（精确打击）+ 按 IP（洪峰防护），两道独立计数。
-func authMW(r routes) []app.HandlerFunc {
+// authIPMW 是所有 /auth 路由共用的前置：请求体上限，再按 IP 配额。
+// 它先于账号配额执行，因此 IP 超限的请求不会制造账号 key。请求体限制始终启用；
+// 关闭限流只移除 Redis 计数。
+func authIPMW(r routes) []app.HandlerFunc {
+	mw := []app.HandlerFunc{middleware.AuthBodyLimit()}
+	if r.rateLimiter == nil {
+		return mw
+	}
+	return append(mw, middleware.RateLimit(r.rateLimiter, r.rateRules.authIP))
+}
+
+// authCredentialMW 只挂在携带账号标识符的登录与注册上（见 user.Handler.RegisterRoutes）。
+// refresh 与 logout 没有标识符，若也套用会回退为按 IP 计 10/min，共享出口的用户会互相挤占。
+func authCredentialMW(r routes) []app.HandlerFunc {
 	if r.rateLimiter == nil {
 		return nil
 	}
 	return []app.HandlerFunc{
 		middleware.RateLimit(r.rateLimiter, r.rateRules.authAccount, middleware.AccountKeyExtractor),
-		middleware.RateLimit(r.rateLimiter, r.rateRules.authIP),
 	}
 }
 
@@ -618,11 +629,11 @@ func registerRoutes(h *server.Hertz, r routes) {
 		c.Response.SetBody(api.Spec)
 	})
 	// 读接口限流（IP 级）：挂在 g 上，auth 子组与 optional/protected 组自动继承；
-	// auth 子组再叠加更严的 auth 规则（10/min 先于 read 200/10s 触发，两道都独立计数）。
+	// /auth 路由先过 IP 配额；仅登录与注册再叠加按标识符配额（见 authCredentialMW）。
 	if r.rateLimiter != nil {
 		g.Use(middleware.RateLimit(r.rateLimiter, r.rateRules.read))
 	}
-	r.user.RegisterRoutes(g, authMW(r)...)
+	r.user.RegisterRoutes(g, authIPMW(r), authCredentialMW(r))
 	optional := g.Group("/", middleware.AuthOptional(r.token))
 	r.user.RegisterOptionalRoutes(optional)
 	r.video.RegisterOptionalRoutes(optional)

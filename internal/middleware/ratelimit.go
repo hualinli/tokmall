@@ -2,9 +2,11 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/mail"
 	"strconv"
 	"strings"
@@ -37,8 +39,26 @@ type RateLimitRule struct {
 // 返回 (dimension, id, ok)；ok=false 时回退规则默认维度。
 type KeyExtractor func(c *app.RequestContext) (dimension, id string, ok bool)
 
+// AuthBodyLimit 在读取账号和访问 Redis 前拒绝过大的认证 JSON。
+// 上传本体走对象存储，认证接口只需要容纳账号、口令和 refresh token。
+func AuthBodyLimit() app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		body, err := c.Body()
+		if err != nil {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if len(body) > 16<<10 {
+			c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+			return
+		}
+		c.Next(ctx)
+	}
+}
+
 // AccountKeyExtractor 解析 auth 请求体中的账号标识（login: identifier；
-// register: email/username），作为限流 key。refresh/logout 无标识 → 回退 IP。
+// register: email/username），作为限流 key。refresh/logout 不挂载本提取器（见 user.Handler.RegisterRoutes）；
+// 提取失败时，规则回退为按 IP 计数。
 // 注意：hertz 的 Body() 是 lazy 缓存，中间件读取后 handler 的 BindAndValidate 仍可读。
 //
 // 账号必须与业务层用同一套规范化，否则攻击者能拿到新的限流桶。
@@ -55,7 +75,9 @@ func AccountKeyExtractor(c *app.RequestContext) (string, string, bool) {
 	}
 	for _, account := range []string{payload.Identifier, payload.Email, payload.Username} {
 		if normalized := NormalizeAccountKey(account); normalized != "" {
-			return "account", normalized, true
+			// 先规范化再哈希：别名仍共用桶，Redis key 长度固定且不含账号原文。
+			digest := sha256.Sum256([]byte(normalized))
+			return "account", fmt.Sprintf("%x", digest), true
 		}
 	}
 	return "", "", false

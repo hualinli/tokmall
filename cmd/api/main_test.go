@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -20,6 +25,7 @@ import (
 	"github.com/lihualin/tokmall/internal/feed"
 	"github.com/lihualin/tokmall/internal/interaction"
 	"github.com/lihualin/tokmall/internal/inventory"
+	"github.com/lihualin/tokmall/internal/middleware"
 	"github.com/lihualin/tokmall/internal/order"
 	"github.com/lihualin/tokmall/internal/product"
 	"github.com/lihualin/tokmall/internal/promotion"
@@ -182,4 +188,90 @@ func TestAssembleFollowingFeedCacheInjectsSameImplementation(t *testing.T) {
 	cache, invalidator = assembleFollowingFeedCache(cfg, nil)
 	require.Nil(t, cache)
 	require.Nil(t, invalidator)
+}
+
+// 使用实际装配，锁住 IP 超限时不再产生账号 key 的顺序。
+type authRejectingLimiter struct{ keys []string }
+
+func (l *authRejectingLimiter) Allow(_ context.Context, key string, _ int, _ time.Duration) (bool, error) {
+	l.keys = append(l.keys, key)
+	return false, nil
+}
+func TestAuthMiddlewareIPRejectsBeforeAccountKey(t *testing.T) {
+	limiter := &authRejectingLimiter{}
+	h := server.New()
+	rt := routes{rateLimiter: limiter, rateRules: rateRules{
+		authIP:      middleware.RateLimitRule{Scope: "auth-ip", Limit: 100, Window: time.Minute},
+		authAccount: middleware.RateLimitRule{Scope: "auth-account", Limit: 10, Window: time.Minute},
+	}}
+	// 与登录路由同构：IP 配额在前，账号配额在后。
+	mw := append(authIPMW(rt), authCredentialMW(rt)...)
+	h.POST("/login", append(mw, func(_ context.Context, c *app.RequestContext) { c.Status(http.StatusOK) })...)
+	body := `{"identifier":"alice"}`
+	w := ut.PerformRequest(h.Engine, http.MethodPost, "/login", &ut.Body{Body: strings.NewReader(body), Len: len(body)})
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	require.Len(t, limiter.keys, 1)
+	require.True(t, strings.HasPrefix(limiter.keys[0], "ratelimit:auth-ip:ip:"))
+}
+func TestAuthMiddlewareBodyLimitWithoutRateLimiter(t *testing.T) {
+	h := server.New()
+	h.POST("/login", append(authIPMW(routes{}), func(_ context.Context, c *app.RequestContext) { c.Status(http.StatusOK) })...)
+	body := strings.Repeat("a", (16<<10)+1)
+	w := ut.PerformRequest(h.Engine, http.MethodPost, "/login", &ut.Body{Body: strings.NewReader(body), Len: len(body)})
+	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+}
+
+func TestAuthMiddlewareRedisKeyBounds(t *testing.T) {
+	if os.Getenv("TOKMALL_RUN_REDIS_INTEGRATION") != "1" {
+		t.Skip("Redis integration is disabled")
+	}
+	addr := os.Getenv("TOKMALL_TEST_REDIS_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:6379"
+	}
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, client.Ping(ctx).Err())
+	scope := "test-auth-" + uuid.NewString()
+	t.Cleanup(func() {
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		// 只删除本测试命名空间的 key。
+		keys, err := client.Keys(cleanupCtx, "ratelimit:"+scope+"*:*").Result()
+		if err == nil && len(keys) > 0 {
+			require.NoError(t, client.Del(cleanupCtx, keys...).Err())
+		}
+	})
+	h := server.New()
+	rules := rateRules{
+		authIP:      middleware.RateLimitRule{Scope: scope + "-ip", Limit: 1, Window: time.Minute},
+		authAccount: middleware.RateLimitRule{Scope: scope + "-account", Limit: 10, Window: time.Minute},
+	}
+	rt := routes{rateLimiter: middleware.NewRedisLimiter(client), rateRules: rules}
+	h.POST("/login", append(append(authIPMW(rt), authCredentialMW(rt)...), func(_ context.Context, c *app.RequestContext) { c.Status(http.StatusOK) })...)
+	for i, size := range []int{1 << 20, 8000, 8001} {
+		body := `{"identifier":"` + strings.Repeat("a", size) + `"}`
+		w := ut.PerformRequest(h.Engine, http.MethodPost, "/login", &ut.Body{Body: strings.NewReader(body), Len: len(body)})
+		switch i {
+		case 0:
+			require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+			keys, err := client.Keys(ctx, "ratelimit:"+scope+"*:*").Result()
+			require.NoError(t, err)
+			require.Empty(t, keys)
+		case 1:
+			require.Equal(t, http.StatusOK, w.Code)
+		case 2:
+			require.Equal(t, http.StatusTooManyRequests, w.Code)
+		}
+	}
+	keys, err := client.Keys(ctx, "ratelimit:"+scope+"-account:*").Result()
+	require.NoError(t, err)
+	require.Len(t, keys, 1, "IP 超限请求不得制造第二个账号桶")
+	require.Len(t, keys[0], len("ratelimit:"+scope+"-account:account:")+64)
+	ttl, err := client.TTL(ctx, keys[0]).Result()
+	require.NoError(t, err)
+	require.Positive(t, ttl)
+	require.LessOrEqual(t, ttl, time.Minute)
 }

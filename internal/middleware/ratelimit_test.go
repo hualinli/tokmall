@@ -3,7 +3,10 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,7 +109,7 @@ func TestAccountKeyExtractor_LoginIdentifier(t *testing.T) {
 		dim, id, ok := AccountKeyExtractor(c)
 		require.True(t, ok)
 		require.Equal(t, "account", dim)
-		require.Equal(t, "alice31", id)
+		require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte("alice31"))), id)
 		c.String(http.StatusOK, "ok")
 	})
 	ut.PerformRequest(r, http.MethodPost, "/login",
@@ -119,7 +122,7 @@ func TestAccountKeyExtractor_RegisterEmailFallback(t *testing.T) {
 	r.POST("/register", func(ctx context.Context, c *app.RequestContext) {
 		_, id, ok := AccountKeyExtractor(c)
 		require.True(t, ok)
-		require.Equal(t, "bob@test.dev", id)
+		require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte("bob@test.dev"))), id)
 		c.String(http.StatusOK, "ok")
 	})
 	ut.PerformRequest(r, http.MethodPost, "/register",
@@ -157,7 +160,7 @@ func TestAccountKeyExtractor_NormalizesIdentifier(t *testing.T) {
 			r.POST("/login", func(ctx context.Context, c *app.RequestContext) {
 				_, id, ok := AccountKeyExtractor(c)
 				require.True(t, ok)
-				require.Equal(t, tc.want, id)
+				require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(tc.want))), id)
 				c.String(http.StatusOK, "ok")
 			})
 			ut.PerformRequest(r, http.MethodPost, "/login",
@@ -170,4 +173,35 @@ func TestAccountKeyExtractor_NormalizesIdentifier(t *testing.T) {
 func TestNormalizeAccountKey(t *testing.T) {
 	require.Equal(t, "alice", NormalizeAccountKey("  ALICE "))
 	require.Empty(t, NormalizeAccountKey("   "))
+}
+
+func TestAccountKeyExtractorBoundsOversizedIdentifier(t *testing.T) {
+	c := app.NewContext(0)
+	c.Request.SetBodyString(`{"identifier":"` + strings.Repeat("a", 1<<20) + `"}`)
+	dim, id, ok := AccountKeyExtractor(c)
+	require.True(t, ok)
+	require.Equal(t, "account", dim)
+	require.Len(t, id, 64)
+	require.NotContains(t, id, strings.Repeat("a", 100))
+}
+
+func TestAuthBodyLimitRejectsBeforeRedis(t *testing.T) {
+	for _, size := range []int{16 << 10, (16 << 10) + 1, 1 << 20} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			limiter := &fakeLimiter{allowed: true}
+			r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
+			r.Use(AuthBodyLimit(), RateLimit(limiter, RateLimitRule{Scope: "auth", Limit: 10, Window: time.Minute}, AccountKeyExtractor))
+			r.POST("/login", func(ctx context.Context, c *app.RequestContext) { c.String(http.StatusOK, "ok") })
+			prefix, suffix := `{"identifier":"`, `"}`
+			body := prefix + strings.Repeat("a", size-len(prefix)-len(suffix)) + suffix
+			w := ut.PerformRequest(r, http.MethodPost, "/login", &ut.Body{Body: strings.NewReader(body), Len: len(body)})
+			if size > 16<<10 {
+				require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+				require.Empty(t, limiter.lastKey)
+			} else {
+				require.Equal(t, http.StatusOK, w.Code)
+				require.Len(t, limiter.lastKey, len("ratelimit:auth:account:")+64)
+			}
+		})
+	}
 }

@@ -17,12 +17,15 @@ package user
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	hzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/route"
@@ -100,18 +103,19 @@ func (r *lookupRecorder) lookups() []string {
 	return append([]string(nil), r.looked...)
 }
 
-// newLoginEngine 与 cmd/api/main.go 的 auth 组同构：账号维度 + IP 维度两道限流。
+// newLoginEngine 与 cmd/api/main.go 的认证路由同构：IP 配额挂在 /auth 组上（先执行），
+// 账号配额只挂在登录与注册上（后执行）。
 func newLoginEngine(t *testing.T, repo Repository, limiter middleware.Limiter) *route.Engine {
 	t.Helper()
 	h := NewHandler(NewService(repo, nil, nil, nil, nil))
 	r := route.NewEngine(hzconfig.NewOptions([]hzconfig.Option{}))
 	h.RegisterRoutes(r.Group("/api/v1"),
-		middleware.RateLimit(limiter, middleware.RateLimitRule{
-			Scope: "auth", Limit: authAccountLimit, Window: time.Minute,
-		}, middleware.AccountKeyExtractor),
-		middleware.RateLimit(limiter, middleware.RateLimitRule{
+		[]app.HandlerFunc{middleware.RateLimit(limiter, middleware.RateLimitRule{
 			Scope: "auth", Limit: authIPLimit, Window: time.Minute,
-		}),
+		})},
+		[]app.HandlerFunc{middleware.RateLimit(limiter, middleware.RateLimitRule{
+			Scope: "auth", Limit: authAccountLimit, Window: time.Minute,
+		}, middleware.AccountKeyExtractor)},
 	)
 	return r
 }
@@ -167,8 +171,8 @@ func TestAccountRateLimit_DisplayNameMustNotCreateNewBucket(t *testing.T) {
 	keys := limiter.accountKeys()
 	require.Len(t, keys, 1,
 		"同一账号的显示名变体必须共用一个限流桶，实际得到 %d 个：%v", len(keys), keys)
-	require.Equal(t, accountKeyPrefix+victimEmail, keys[0],
-		"账号桶必须由业务层归一后的邮箱构成")
+	require.Equal(t, accountKeyPrefix+fmt.Sprintf("%x", sha256.Sum256([]byte(victimEmail))), keys[0],
+		"账号桶必须由业务层归一后的邮箱哈希构成")
 	t.Logf("账号桶 = %s，计数 = %d", keys[0], limiter.count(keys[0]))
 
 	// 断言 2：共用一个桶之后，10/min 的配额真的生效。
@@ -203,7 +207,7 @@ func TestAccountRateLimit_ExceedingLimitIsRejected(t *testing.T) {
 	require.Equal(t, authAccountLimit, accepted)
 	require.Equal(t, 5, rejected)
 	require.Len(t, limiter.accountKeys(), 1)
-	require.Equal(t, accountKeyPrefix+victimEmail, limiter.accountKeys()[0])
+	require.Equal(t, accountKeyPrefix+fmt.Sprintf("%x", sha256.Sum256([]byte(victimEmail))), limiter.accountKeys()[0])
 }
 
 // TestAccountRateLimit_KeyMatchesBusinessLookup 是最小判据：
