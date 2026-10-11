@@ -1,0 +1,16 @@
+File: api-diagnostic
+Type: delay
+Time: 2026-10-11 19:25:34 CST
+Duration: 15s, Total samples = 1218059.86ms (8118.84%)
+Showing nodes accounting for 1218059.86ms, 100% of 1218059.86ms total
+----------------------------------------------------------+-------------
+      flat  flat%   sum%        cum   cum%   calls calls% + context 	 	 
+----------------------------------------------------------+-------------
+                                       538491.22ms   100% |   github.com/lihualin/tokmall/internal/feed.(*Service).List
+         0     0%     0% 538491.22ms 44.21%                | github.com/lihualin/tokmall/internal/feed.(*Service).fillLikeCounts
+                                       538491.22ms   100% |   github.com/lihualin/tokmall/internal/feed.(*GormRepository).LikeCounts
+----------------------------------------------------------+-------------
+                                       533011.80ms   100% |   github.com/lihualin/tokmall/internal/feed.(*Service).List
+         0     0%     0% 533011.80ms 43.76%                | github.com/lihualin/tokmall/internal/feed.(*Service).fillProductCards
+                                       533011.80ms   100% |   github.com/lihualin/tokmall/internal/feed.(*GormProductCardReader).ListProductCards
+----------------------------------------------------------+-------------

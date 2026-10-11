@@ -1,0 +1,41 @@
+{
+  "database": "tokmall_bench_1791708878",
+  "redis_database": 15,
+  "git_head": "33c29eabfcd7d7b0bf62e3c2f9c5d87648607281",
+  "created_at": "2026-10-11T08:54:38.257226+00:00",
+  "go": "go version go1.27.1 darwin/amd64",
+  "k6": "k6 v2.3.0 (commit/e088784614, go1.26.8, darwin/amd64)",
+  "hardware": [
+    "MacPro7,1",
+    "20",
+    "34359738368"
+  ],
+  "docker": "25.0.5 20 29422637056",
+  "binaries": {
+    "api": "cdc66747a91c6545468e77a14881b05ee74e48ad2b021df2f2d2f4145145da94",
+    "reconcile": "56470184c660a16a09273da30c85c41151bc3037d471fb6f478f16cad8aff214",
+    "k6": "7dec82f2720871a0a5382a78ae8e05f5943a0c6dc272abe0ba6027910c80e11f"
+  },
+  "method": "closed-loop k6; load generator and containers share host; caches L1+L2 on; rate limit off; default workers and logging on; pool 25; synthetic media; attributed simulated payments",
+  "dataset": {
+    "users": 30000,
+    "videos": 1000000,
+    "bytes": 354694847
+  },
+  "bucket": "tokmall-bench-1791708878",
+  "cpu_model": "13th Gen Intel(R) Core(TM) i5-13600KF",
+  "postgres": "PostgreSQL 18.6 on x86_64-pc-linux-gnu",
+  "configuration": {
+    "APP_ENV": "development",
+    "SERVER_PORT": "18080",
+    "METRICS_ADDR": "127.0.0.1:19091",
+    "REDIS_DB": 15,
+    "RATE_LIMIT_ENABLED": false,
+    "FEED_CACHE_ENABLED": true,
+    "FEED_L1_ENABLED": true,
+    "OUTBOX_STREAM": "tokmall:benchmark:events",
+    "OUTBOX_STREAM_MAX_LEN": 10000,
+    "RECONCILE_ENABLED": true
+  },
+  "database_pool_max_open": 25
+}

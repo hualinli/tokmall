@@ -1,0 +1,38 @@
+File: api-diagnostic-pool50
+Type: cpu
+Time: 2026-10-11 19:26:12 CST
+Duration: 15.11s, Total samples = 57.72s (381.90%)
+Showing nodes accounting for 24.05s, 41.67% of 57.72s total
+Dropped 529 nodes (cum <= 0.29s)
+Showing top 30 nodes out of 167
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%     27.92s 48.37%  github.com/bytedance/gopkg/util/gopool.(*worker).run.func1
+         0     0%     0%     27.92s 48.37%  github.com/bytedance/gopkg/util/gopool.(*worker).run.func1.1
+         0     0%     0%     27.92s 48.37%  github.com/cloudwego/hertz/pkg/network/netpoll.(*transporter).ListenAndServe.func4
+         0     0%     0%     27.92s 48.37%  github.com/cloudwego/hertz/pkg/protocol/http1.Server.Serve
+         0     0%     0%     27.92s 48.37%  github.com/cloudwego/hertz/pkg/route.(*Engine).Serve
+         0     0%     0%     27.92s 48.37%  github.com/cloudwego/hertz/pkg/route.(*Engine).onData
+         0     0%     0%     27.92s 48.37%  github.com/cloudwego/netpoll.(*connection).onProcess.func1
+         0     0%     0%     25.10s 43.49%  github.com/cloudwego/hertz/pkg/route.(*Engine).ServeHTTP
+         0     0%     0%     25.08s 43.45%  github.com/cloudwego/hertz/pkg/app.(*RequestContext).Next
+     0.01s 0.017% 0.017%     25.08s 43.45%  github.com/cloudwego/hertz/pkg/app/middlewares/server/recovery.Recovery.func1
+         0     0% 0.017%     25.07s 43.43%  github.com/hertz-contrib/requestid.New.func2
+         0     0% 0.017%     24.64s 42.69%  github.com/lihualin/tokmall/internal/middleware.Trace.func1
+         0     0% 0.017%     24.45s 42.36%  github.com/lihualin/tokmall/internal/middleware.AccessLog.func1
+         0     0% 0.017%     24.45s 42.36%  github.com/lihualin/tokmall/internal/middleware.HTTPMetrics.func1
+    23.99s 41.56% 41.58%     23.99s 41.56%  syscall.rawsyscalln
+         0     0% 41.58%     23.98s 41.55%  syscall.syscalln
+         0     0% 41.58%     23.33s 40.42%  syscall.syscall
+     0.01s 0.017% 41.60%     22.74s 39.40%  internal/poll.ignoringEINTRIO (inline)
+         0     0% 41.60%     21.30s 36.90%  runtime.schedule
+         0     0% 41.60%     21.10s 36.56%  runtime.mcall
+         0     0% 41.60%     21.07s 36.50%  runtime.park_m
+     0.03s 0.052% 41.65%     20.60s 35.69%  runtime.findRunnable
+         0     0% 41.65%     20.24s 35.07%  internal/poll.(*FD).Write
+         0     0% 41.65%     20.24s 35.07%  syscall.Write (inline)
+         0     0% 41.65%     20.24s 35.07%  syscall.write
+         0     0% 41.65%     13.31s 23.06%  github.com/lihualin/tokmall/internal/feed.(*Handler).list
+         0     0% 41.65%     13.04s 22.59%  github.com/lihualin/tokmall/internal/feed.(*Service).List
+     0.01s 0.017% 41.67%     12.33s 21.36%  gorm.io/gorm.(*DB).Scan
+         0     0% 41.67%     12.19s 21.12%  gorm.io/gorm.(*DB).Rows
+         0     0% 41.67%     12.19s 21.12%  gorm.io/gorm.(*processor).Execute

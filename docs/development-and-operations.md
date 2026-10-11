@@ -145,3 +145,5 @@ python3 scripts/summarize_benchmark.py benchmarks/2026-10-09/formal
 ```
 
 复跑新实验使用新的输出目录；同目录用于失败后继续，须保持原构建、配置和实验专用资源。汇总脚本只读取已完成轮次，轮次不足三次不能当作最终结论。中位数P99是各轮P99的中位数，不是合并样本的P99。
+
+当前完整优化版本的k6阶梯探测见 [benchmark_k6.py](../scripts/benchmark_k6.py)，使用L1+L2、关闭隔离实例限流并保留正常worker；交易包含视频归因投影。先确认Redis DB15专用且为空，准备bin/api、bin/reconcile和bin/k6，再运行 `python3 scripts/benchmark_k6.py --output .gocache/benchmarks/new-run --confirm-commerce`。`--resume`只用于保持相同构建和资源的中断续跑；结果归档用 [summarize_k6.py](../scripts/summarize_k6.py)。协议、结果与原始数据位置见 [本轮证据](../benchmarks/2026-10-11/full-baseline/README.md)。缓存目录中的原始数据应在清理缓存前备份。

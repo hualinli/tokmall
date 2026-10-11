@@ -1,0 +1,33 @@
+File: api-diagnostic
+Type: delay
+Time: 2026-10-11 19:18:03 CST
+Duration: 15s, Total samples = 836.69s (5576.81%)
+Showing nodes accounting for 495.93s, 59.27% of 836.69s total
+Dropped 53 nodes (cum <= 4.18s)
+Showing top 25 nodes out of 60
+      flat  flat%   sum%        cum   cum%
+   495.93s 59.27% 59.27%    495.93s 59.27%  runtime.selectgo
+         0     0% 59.27%    410.12s 49.02%  database/sql.(*DB).conn
+         0     0% 59.27%    410.12s 49.02%  database/sql.(*DB).retry
+         0     0% 59.27%    409.66s 48.96%  database/sql.(*DB).BeginTx
+         0     0% 59.27%    409.66s 48.96%  database/sql.(*DB).BeginTx.func1
+         0     0% 59.27%    409.66s 48.96%  database/sql.(*DB).begin
+         0     0% 59.27%    409.66s 48.96%  gorm.io/gorm.(*DB).Begin
+         0     0% 59.27%    405.69s 48.49%  gorm.io/gorm.(*DB).Transaction
+         0     0% 59.27%    390.09s 46.62%  github.com/bytedance/gopkg/util/gopool.(*worker).run.func1
+         0     0% 59.27%    390.09s 46.62%  github.com/bytedance/gopkg/util/gopool.(*worker).run.func1.1
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/hertz/pkg/network/netpoll.(*transporter).ListenAndServe.func4
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/hertz/pkg/protocol/http1.(*Server).Serve
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/hertz/pkg/protocol/http1.Server.Serve
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/hertz/pkg/route.(*Engine).Serve
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/hertz/pkg/route.(*Engine).onData
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/hertz/pkg/route.(*Engine).onData-fm
+         0     0% 59.27%    390.09s 46.62%  github.com/cloudwego/netpoll.(*connection).onProcess.func1
+         0     0% 59.27%    388.16s 46.39%  github.com/cloudwego/hertz/pkg/app.(*RequestContext).Next
+         0     0% 59.27%    388.16s 46.39%  github.com/cloudwego/hertz/pkg/app/middlewares/server/recovery.Recovery.func1
+         0     0% 59.27%    388.16s 46.39%  github.com/cloudwego/hertz/pkg/route.(*Engine).ServeHTTP
+         0     0% 59.27%    388.16s 46.39%  github.com/hertz-contrib/requestid.New.func2
+         0     0% 59.27%    388.16s 46.39%  github.com/lihualin/tokmall/internal/middleware.AccessLog.func1
+         0     0% 59.27%    388.16s 46.39%  github.com/lihualin/tokmall/internal/middleware.HTTPMetrics.func1
+         0     0% 59.27%    388.16s 46.39%  github.com/lihualin/tokmall/internal/middleware.Trace.func1
+         0     0% 59.27%    388.15s 46.39%  github.com/lihualin/tokmall/internal/middleware.AuthMiddleware.func1

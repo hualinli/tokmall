@@ -1,0 +1,38 @@
+File: api-diagnostic
+Type: delay
+Time: 2026-10-11 19:25:34 CST
+Duration: 15s, Total samples = 1218.06s (8118.84%)
+Showing nodes accounting for 1191.80s, 97.84% of 1218.06s total
+Dropped 106 nodes (cum <= 6.09s)
+Showing top 30 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+  1191.80s 97.84% 97.84%   1191.80s 97.84%  runtime.selectgo
+         0     0% 97.84%   1110.28s 91.15%  github.com/bytedance/gopkg/util/gopool.(*worker).run.func1
+         0     0% 97.84%   1110.28s 91.15%  github.com/bytedance/gopkg/util/gopool.(*worker).run.func1.1
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/hertz/pkg/network/netpoll.(*transporter).ListenAndServe.func4
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/hertz/pkg/protocol/http1.(*Server).Serve
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/hertz/pkg/protocol/http1.Server.Serve
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/hertz/pkg/route.(*Engine).Serve
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/hertz/pkg/route.(*Engine).onData
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/hertz/pkg/route.(*Engine).onData-fm
+         0     0% 97.84%   1110.28s 91.15%  github.com/cloudwego/netpoll.(*connection).onProcess.func1
+         0     0% 97.84%   1073.91s 88.17%  github.com/cloudwego/hertz/pkg/app.(*RequestContext).Next
+         0     0% 97.84%   1073.91s 88.17%  github.com/cloudwego/hertz/pkg/app/middlewares/server/recovery.Recovery.func1
+         0     0% 97.84%   1073.91s 88.17%  github.com/cloudwego/hertz/pkg/route.(*Engine).ServeHTTP
+         0     0% 97.84%   1073.91s 88.17%  github.com/hertz-contrib/requestid.New.func2
+         0     0% 97.84%   1073.91s 88.17%  github.com/lihualin/tokmall/internal/middleware.AccessLog.func1
+         0     0% 97.84%   1073.91s 88.17%  github.com/lihualin/tokmall/internal/middleware.HTTPMetrics.func1
+         0     0% 97.84%   1073.91s 88.17%  github.com/lihualin/tokmall/internal/middleware.Trace.func1
+         0     0% 97.84%   1071.77s 87.99%  github.com/lihualin/tokmall/internal/feed.(*Handler).list
+         0     0% 97.84%   1071.77s 87.99%  github.com/lihualin/tokmall/internal/feed.(*Handler).list-fm
+         0     0% 97.84%   1071.77s 87.99%  github.com/lihualin/tokmall/internal/feed.(*Service).List
+         0     0% 97.84%   1071.56s 87.97%  database/sql.(*DB).conn
+         0     0% 97.84%   1071.56s 87.97%  database/sql.(*DB).retry
+         0     0% 97.84%   1071.51s 87.97%  gorm.io/gorm.(*DB).Scan
+         0     0% 97.84%   1071.45s 87.96%  gorm.io/gorm.(*processor).Execute
+         0     0% 97.84%   1071.45s 87.96%  database/sql.(*DB).QueryContext
+         0     0% 97.84%   1071.45s 87.96%  database/sql.(*DB).QueryContext.func1
+         0     0% 97.84%   1071.45s 87.96%  database/sql.(*DB).query
+         0     0% 97.84%   1071.45s 87.96%  gorm.io/gorm/callbacks.RowQuery
+         0     0% 97.84%   1071.40s 87.96%  gorm.io/gorm.(*DB).Rows
+         0     0% 97.84%    538.49s 44.21%  github.com/lihualin/tokmall/internal/feed.(*GormRepository).LikeCounts

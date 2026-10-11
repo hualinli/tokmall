@@ -1,0 +1,3 @@
+2026/10/11 17:06:59 ERROR reconcile drift detected check=author_sales_projection differences=1 sample="map[author_id:30063 live_gmv:1754100 live_orders:17541 live_refunded_amount:0 live_refunded_orders:0 live_units:17541 projected_gmv:1670000 projected_orders:16700 projected_refunded_amount:0 projected_refunded_orders:0 projected_units:16700 stat_date:2026-10-11 00:00:00 +0000 UTC]"
+2026/10/11 17:06:59 ERROR reconcile drift detected check=outbox_delivery differences=50 sample="map[aggregate_id:7002 event_id:01a12a35-d8db-7870-9b6e-b6117886bdca event_type:commerce.order.paid.v1 published_at:2026-10-11 17:05:34.612218 +0800 CST]"
+2026/10/11 17:06:59 ERROR reconcile found differences checks=9 differences=51

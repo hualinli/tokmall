@@ -1,0 +1,34 @@
+{
+  "database": "tokmall_bench_1791717447",
+  "bucket": "tokmall-bench-1791717447",
+  "redis_database": 14,
+  "git_head": "33c29eabfcd7d7b0bf62e3c2f9c5d87648607281",
+  "created_at": "2026-10-11T11:17:27.249116+00:00",
+  "go": "go version go1.27.1 darwin/amd64",
+  "k6": "k6 v2.3.0 (commit/e088784614, go1.26.8, darwin/amd64)",
+  "hardware": [
+    "MacPro7,1",
+    "20",
+    "34359738368"
+  ],
+  "docker": "25.0.5 20 29422637056",
+  "method": "Diagnosis only: build overlays enable loopback pprof and publish-ID tracing. Redis DB14; 200ms pg_stat_activity sampling; one-second counters; same-host k6; not replacement capacity baseline.",
+  "dataset": {
+    "users": 30000,
+    "videos": 1000000,
+    "bytes": 354694847
+  },
+  "diagnostic_binaries": {
+    "api-diagnostic": "c40a3808f01e75331c0a3a96c815e45b7c4657619f6dd3d30ee4678c1f2c0ba3",
+    "api-diagnostic-pool50": "b842b0416dfc3a3eefe82fd48190ae54be2db77ec0bc39b2d821e681d69940e5",
+    "api-diagnostic-warn": "c7f506ed4f73561910f8e60316dfbb4f0e16cd37dbc745db0de08d69fa706d77",
+    "api-diagnostic-frozen": "696d521b966df6170c05590b057ae4ba8cef72b17247d5c0b1fc5ad010113139",
+    "diagnostic-observer": "6098e455f82795101bda5d09384dc041842fa34562d3b12f89860e30e68a932d"
+  },
+  "baseline_binaries": {
+    "api": "cdc66747a91c6545468e77a14881b05ee74e48ad2b021df2f2d2f4145145da94",
+    "reconcile": "56470184c660a16a09273da30c85c41151bc3037d471fb6f478f16cad8aff214",
+    "k6": "7dec82f2720871a0a5382a78ae8e05f5943a0c6dc272abe0ba6027910c80e11f"
+  },
+  "note": "baseline_binaries is provenance for the unchanged production build; experiments use diagnostic_binaries selected by each overlay."
+}

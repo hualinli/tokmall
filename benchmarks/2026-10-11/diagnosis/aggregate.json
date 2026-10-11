@@ -1,0 +1,163 @@
+{
+  "cases": [
+    {
+      "case": "commerce-c50-trim10k",
+      "rate": 373.489717178206,
+      "p95_ms": 277,
+      "p99_ms": 373.52999999999884,
+      "errors": 0,
+      "facts": {
+        "orders": 22448,
+        "paid": 22448,
+        "payments": 22448,
+        "inventory": 977552,
+        "ledger": 977552,
+        "negative": 0,
+        "due": 0,
+        "dead": 0,
+        "missing_receipts": 10668,
+        "projected_orders": 11780
+      },
+      "pool_wait_count": 47354.0,
+      "pool_wait_seconds": 1645.822848319,
+      "stream": {
+        "length": 10002,
+        "dlq_length": 0,
+        "first_id": "1791717497105-1",
+        "groups": [
+          {
+            "Name": "attribution-projection",
+            "Consumers": 1,
+            "Pending": 0,
+            "LastDeliveredID": "1791717523732-1",
+            "EntriesRead": 22448,
+            "Lag": 0
+          }
+        ]
+      }
+    },
+    {
+      "case": "commerce-c50-trim10k-r2",
+      "rate": 389.1199557854838,
+      "p95_ms": 266,
+      "p99_ms": 357,
+      "errors": 0,
+      "facts": {
+        "orders": 23386,
+        "paid": 23386,
+        "payments": 23386,
+        "inventory": 976614,
+        "ledger": 976614,
+        "negative": 0,
+        "due": 0,
+        "dead": 0,
+        "missing_receipts": 11653,
+        "projected_orders": 11733
+      },
+      "pool_wait_count": 49399.0,
+      "pool_wait_seconds": 1647.923523177,
+      "stream": {
+        "length": 10004,
+        "dlq_length": 0,
+        "first_id": "1791717712573-1",
+        "groups": [
+          {
+            "Name": "attribution-projection",
+            "Consumers": 1,
+            "Pending": 0,
+            "LastDeliveredID": "1791717737769-1",
+            "EntriesRead": 23386,
+            "Lag": 0
+          }
+        ]
+      }
+    },
+    {
+      "case": "commerce-c50-trim1m",
+      "rate": 392.37261970913244,
+      "p95_ms": 264,
+      "p99_ms": 358.2000000000007,
+      "errors": 0,
+      "facts": {
+        "orders": 23581,
+        "paid": 23581,
+        "payments": 23581,
+        "inventory": 976419,
+        "ledger": 976419,
+        "negative": 0,
+        "due": 0,
+        "dead": 0,
+        "missing_receipts": 0,
+        "projected_orders": 23581
+      },
+      "pool_wait_count": 49778.0,
+      "pool_wait_seconds": 1648.523379321,
+      "stream": {
+        "length": 23581,
+        "dlq_length": 0,
+        "first_id": "1791717809942-0",
+        "groups": [
+          {
+            "Name": "attribution-projection",
+            "Consumers": 1,
+            "Pending": 0,
+            "LastDeliveredID": "1791717869657-0",
+            "EntriesRead": 23581,
+            "Lag": 0
+          }
+        ]
+      }
+    },
+    {
+      "case": "feed-c100-frozen-fields-profile",
+      "rate": 25251.69479963892,
+      "p95_ms": 8.977,
+      "p99_ms": 16.62687999999989,
+      "errors": 0,
+      "facts": null,
+      "pool_wait_count": 0.0,
+      "pool_wait_seconds": 0.0
+    },
+    {
+      "case": "feed-c100-pool25-warn-profile",
+      "rate": 7513.682094043569,
+      "p95_ms": 26.382,
+      "p99_ms": 35.82685000000001,
+      "errors": 0,
+      "facts": null,
+      "pool_wait_count": 451077.0,
+      "pool_wait_seconds": 2165.325448856
+    },
+    {
+      "case": "feed-c100-pool50-profile",
+      "rate": 7335.399354958643,
+      "p95_ms": 22.683,
+      "p99_ms": 29.463119999999993,
+      "errors": 0,
+      "facts": null,
+      "pool_wait_count": 440318.0,
+      "pool_wait_seconds": 1384.949616512
+    },
+    {
+      "case": "feed-c100-procs8-profile",
+      "rate": 7708.201027702384,
+      "p95_ms": 25.661,
+      "p99_ms": 34.72005999999991,
+      "errors": 0,
+      "facts": null,
+      "pool_wait_count": 462732.0,
+      "pool_wait_seconds": 2155.408491298
+    },
+    {
+      "case": "feed-c100-profile",
+      "rate": 7389.797377351059,
+      "p95_ms": 26.74569999999998,
+      "p99_ms": 36.12470000000001,
+      "errors": 0,
+      "facts": null,
+      "pool_wait_count": 443635.0,
+      "pool_wait_seconds": 2155.642117392
+    }
+  ],
+  "note": "Single diagnostic windows, with profiling/tracing overhead; field-freeze test is not a valid production optimization."
+}
