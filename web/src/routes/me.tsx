@@ -5,6 +5,7 @@ import { Play, Send, Trash2 } from 'lucide-react'
 import { client } from '../api/client'
 import { apiRequestError } from '../lib/api-error'
 import { StatusBadge } from '../features/video/status-badge'
+import { MediaValidation } from '../features/video/media-validation'
 import { formatRelativeTime } from '../features/feed/format'
 import { Button } from '../components/ui/button'
 import { Card } from '../components/ui/card'
@@ -56,6 +57,7 @@ function MePage() {
       return res.data
     },
     getNextPageParam: (last) => last.next_cursor || undefined,
+    refetchInterval: (query) => query.state.data?.pages.some((page) => page.items.some((v) => v.media_validation?.status === 'PENDING')) ? 5000 : false,
   })
 
   const publish = useMutation({
@@ -71,7 +73,10 @@ function MePage() {
       queryClient.invalidateQueries({ queryKey: ['my-videos'] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => {
+      toast.error(e.message)
+      queryClient.invalidateQueries({ queryKey: ['my-videos'] })
+    },
   })
 
   const remove = useMutation({
@@ -172,10 +177,11 @@ function MePage() {
                   {v.status && <StatusBadge status={v.status} />}
                   <span className="text-xs text-zinc-600">{formatRelativeTime(v.created_at)}</span>
                 </div>
+                <MediaValidation validation={v.media_validation} />
               </div>
               <div className="flex shrink-0 gap-2">
                 {v.status === 'PENDING_REVIEW' && (
-                  <Button size="sm" onClick={() => publish.mutate(v.video_id!)} disabled={publish.isPending}>
+                  <Button size="sm" onClick={() => publish.mutate(v.video_id!)} disabled={publish.isPending || v.media_validation?.can_publish !== true}>
                     <Send className="h-3.5 w-3.5" /> 发布
                   </Button>
                 )}

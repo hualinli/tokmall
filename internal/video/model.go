@@ -31,6 +31,7 @@ func (s MediaProbeStatus) AllowsPublish() bool { return s == ProbePassed || s ==
 // Username/AvatarKey 来自 LEFT JOIN users（详情页作者信息）。
 type Video struct {
 	MediaProbeStatus MediaProbeStatus `gorm:"column:media_probe_status"`
+	MediaProbeError  *string          `gorm:"column:media_probe_error"`
 	ID               int64            `gorm:"column:id;primaryKey"`
 	AuthorID         int64            `gorm:"column:author_id"`
 	Title            string           `gorm:"column:title"`

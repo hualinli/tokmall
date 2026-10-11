@@ -27,7 +27,7 @@ Docker 凭证助手异常时，按 [项目记忆](../AGENTS.md) 的 `.docker-ano
 
 ## 媒体与旧版本升级
 
-默认 `MEDIA_PROBE_ENABLED=true`。ffprobe/ffmpeg 缺失与坏文件不同：缺 ffprobe 记 SKIPPED；坏文件记 REJECTED；探测超时/下载暂时失败延迟重试。只有 PASSED/SKIPPED 能发布，因此正常上传后要等 worker，前端目前没有完整校验状态展示。
+默认 `MEDIA_PROBE_ENABLED=true`。ffprobe/ffmpeg 缺失与坏文件不同：缺 ffprobe 记 SKIPPED；坏文件记 REJECTED；探测超时/下载暂时失败延迟重试。只有 PASSED/SKIPPED 能发布，因此正常上传后要等 worker，作者个人页和视频详情显示校验状态与安全的拒绝原因，PENDING 时每 5 秒刷新（页面在后台时不持续轮询），PASSED/SKIPPED 且待发布才启用发布按钮；原始探测诊断不对外返回。
 
 纯业务模拟／现有 E2E 的合成媒体可以显式关闭探测；此模式不证明媒体准入能力：
 

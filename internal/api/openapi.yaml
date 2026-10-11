@@ -1956,11 +1956,27 @@ components:
         has_more:
           type: boolean
 
+    MediaValidation:
+      type: object
+      description: 仅作者可见的媒体校验结果；reason 为安全的用户提示，不含原始工具诊断。
+      required: [status, reason, can_publish]
+      properties:
+        status:
+          type: string
+          enum: [PENDING, PASSED, REJECTED, SKIPPED]
+        reason:
+          type: string
+          nullable: true
+        can_publish:
+          type: boolean
+          description: 视频处于待发布状态且校验通过或被明确跳过；发布时仍由服务端校验。
     VideoDetail:
       type: object
       required: [video_id, author_id, title, video_url, duration_seconds, status,
         created_at, author, like_count, is_liked, product_cards]
       properties:
+        media_validation:
+          $ref: "#/components/schemas/MediaValidation"
         video_id:
           type: integer
           format: int64
@@ -1998,6 +2014,8 @@ components:
     VideoListItem:
       type: object
       properties:
+        media_validation:
+          $ref: "#/components/schemas/MediaValidation"
         video_id:
           type: integer
           format: int64

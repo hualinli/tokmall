@@ -2770,7 +2770,16 @@ export interface components {
             next_cursor: string | null;
             has_more: boolean;
         };
+        /** @description 仅作者可见的媒体校验结果；reason 为安全的用户提示，不含原始工具诊断。 */
+        MediaValidation: {
+            /** @enum {string} */
+            status: "PENDING" | "PASSED" | "REJECTED" | "SKIPPED";
+            reason: string | null;
+            /** @description 视频处于待发布状态且校验通过或被明确跳过；发布时仍由服务端校验。 */
+            can_publish: boolean;
+        };
         VideoDetail: {
+            media_validation?: components["schemas"]["MediaValidation"];
             /** Format: int64 */
             video_id: number;
             /** Format: int64 */
@@ -2791,6 +2800,7 @@ export interface components {
             product_cards: components["schemas"]["VideoProductCard"][];
         };
         VideoListItem: {
+            media_validation?: components["schemas"]["MediaValidation"];
             /** Format: int64 */
             video_id?: number;
             title?: string;

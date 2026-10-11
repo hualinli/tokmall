@@ -47,6 +47,27 @@ func TestPostgresProbeQueueAndPublishGate(t *testing.T) {
 	require.True(t, saved)
 	err = repo.UpdateVideoStatus(ctx, first, authorID, StatusPendingReview, StatusPublished, &now)
 	require.ErrorIs(t, err, ErrStatusConflict)
+	// 从真实 SQL 读取校验结果，再验证作者视图的原因映射。
+	rejected, err := repo.FindVideoByID(ctx, first)
+	require.NoError(t, err)
+	require.NotNil(t, rejected.MediaProbeError)
+	require.Equal(t, "invalid media", *rejected.MediaProbeError)
+	svc := NewService(repo, newFakeStorage(), time.Minute, "test-secret", nil)
+	detail, err := svc.Get(ctx, authorID, first)
+	require.NoError(t, err)
+	require.Equal(t, ProbeRejected, detail.MediaValidation.Status)
+	require.False(t, detail.MediaValidation.CanPublish)
+	require.Equal(t, "视频未通过校验，请重新上传符合要求的视频。", *detail.MediaValidation.Reason)
+	list, err := svc.ListMine(ctx, authorID, 20, "")
+	require.NoError(t, err)
+	var found bool
+	for _, item := range list.Items {
+		if item.VideoID == first {
+			require.Equal(t, detail.MediaValidation, item.MediaValidation)
+			found = true
+		}
+	}
+	require.True(t, found)
 }
 
 func TestPostgresProbeMigrationQuarantinesLegacyPendingPublication(t *testing.T) {

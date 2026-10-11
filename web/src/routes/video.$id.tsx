@@ -7,6 +7,7 @@ import { apiRequestError } from '../lib/api-error'
 import { useAuthStore } from '../lib/auth-store'
 import { VideoPlayer } from '../features/video/video-player'
 import { StatusBadge } from '../features/video/status-badge'
+import { MediaValidation } from '../features/video/media-validation'
 import { LikeButton } from '../features/interaction/like-button'
 import { formatRelativeTime } from '../features/feed/format'
 import { Button } from '../components/ui/button'
@@ -26,6 +27,7 @@ function VideoPage() {
 
   const { data, isPending, error } = useQuery({
     queryKey: ['video', id],
+    refetchInterval: (query) => query.state.data?.media_validation?.status === 'PENDING' ? 5000 : false,
     queryFn: async () => {
       const res = await client.GET('/api/v1/videos/{id}', { params: { path: { id: videoId } } })
       if (res.error) throw apiRequestError(res)
@@ -47,7 +49,10 @@ function VideoPage() {
       queryClient.invalidateQueries({ queryKey: ['my-videos'] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => {
+      toast.error(e.message)
+      queryClient.invalidateQueries({ queryKey: ['video', id] })
+    },
   })
 
   const remove = useMutation({
@@ -135,11 +140,13 @@ function VideoPage() {
         {data.published_at && <span>{formatRelativeTime(data.published_at)}发布</span>}
         <span>创建于 {formatRelativeTime(data.created_at)}</span>
         {isMine && data.status === 'PENDING_REVIEW' && (
-          <Button size="sm" onClick={() => publish.mutate()} disabled={publish.isPending}>
+          <Button size="sm" onClick={() => publish.mutate()} disabled={publish.isPending || data.media_validation?.can_publish !== true}>
             发布
           </Button>
         )}
       </div>
+
+      {isMine && <MediaValidation validation={data.media_validation} />}
 
       <ProductCards cards={data.product_cards} videoId={data.video_id} authorId={data.author_id} />
       {isMine && data.status === 'PUBLISHED' && <VideoPromotionManager videoId={data.video_id} cards={data.product_cards} />}

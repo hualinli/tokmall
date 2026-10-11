@@ -194,19 +194,27 @@ type PublishResult struct {
 	Status  Status `json:"status"`
 }
 
+// MediaValidationView 仅向作者返回安全的校验结果，不暴露探测工具原始输出。
+type MediaValidationView struct {
+	Status     MediaProbeStatus `json:"status"`
+	Reason     *string          `json:"reason"`
+	CanPublish bool             `json:"can_publish"`
+}
+
 type VideoDetail struct {
-	VideoID         int64         `json:"video_id"`
-	AuthorID        int64         `json:"author_id"`
-	Title           string        `json:"title"`
-	VideoURL        string        `json:"video_url"`
-	DurationSeconds int           `json:"duration_seconds"`
-	Status          Status        `json:"status"`
-	PublishedAt     *time.Time    `json:"published_at"`
-	CreatedAt       time.Time     `json:"created_at"`
-	Author          AuthorRef     `json:"author"`
-	LikeCount       int64         `json:"like_count"`
-	IsLiked         bool          `json:"is_liked"`
-	ProductCards    []ProductCard `json:"product_cards"`
+	MediaValidation *MediaValidationView `json:"media_validation,omitempty"`
+	VideoID         int64                `json:"video_id"`
+	AuthorID        int64                `json:"author_id"`
+	Title           string               `json:"title"`
+	VideoURL        string               `json:"video_url"`
+	DurationSeconds int                  `json:"duration_seconds"`
+	Status          Status               `json:"status"`
+	PublishedAt     *time.Time           `json:"published_at"`
+	CreatedAt       time.Time            `json:"created_at"`
+	Author          AuthorRef            `json:"author"`
+	LikeCount       int64                `json:"like_count"`
+	IsLiked         bool                 `json:"is_liked"`
+	ProductCards    []ProductCard        `json:"product_cards"`
 }
 
 // AuthorRef 详情页作者信息（与 feed 同形状，模块各自定义类型）。
@@ -217,14 +225,15 @@ type AuthorRef struct {
 }
 
 type VideoListItem struct {
-	VideoID         int64      `json:"video_id"`
-	Title           string     `json:"title"`
-	VideoURL        string     `json:"video_url"`
-	CoverURL        *string    `json:"cover_url"`
-	DurationSeconds int        `json:"duration_seconds"`
-	Status          Status     `json:"status"`
-	PublishedAt     *time.Time `json:"published_at"`
-	CreatedAt       time.Time  `json:"created_at"`
+	MediaValidation *MediaValidationView `json:"media_validation,omitempty"`
+	VideoID         int64                `json:"video_id"`
+	Title           string               `json:"title"`
+	VideoURL        string               `json:"video_url"`
+	CoverURL        *string              `json:"cover_url"`
+	DurationSeconds int                  `json:"duration_seconds"`
+	Status          Status               `json:"status"`
+	PublishedAt     *time.Time           `json:"published_at"`
+	CreatedAt       time.Time            `json:"created_at"`
 }
 
 type VideoListResult struct {
@@ -452,6 +461,7 @@ func (s *Service) ListMine(ctx context.Context, userID int64, limit int, cursorR
 	}
 	for _, v := range videos {
 		item := VideoListItem{
+			MediaValidation: mediaValidationView(&v),
 			VideoID:         v.ID,
 			Title:           v.Title,
 			DurationSeconds: v.DurationSeconds,
@@ -608,7 +618,7 @@ func normalizePlayEventSessionID(sessionID *string) *string {
 		return nil
 	}
 	trimmed := strings.TrimSpace(*sessionID)
-	if trimmed == "" || len(trimmed) > maxSessionIDLength {
+	if trimmed == "" || utf8.RuneCountInString(trimmed) > maxSessionIDLength {
 		return nil
 	}
 	return &trimmed
@@ -622,7 +632,7 @@ func normalizeTraceID(traceID *string) *string {
 		return nil
 	}
 	trimmed := strings.TrimSpace(*traceID)
-	if trimmed == "" || len(trimmed) > maxTraceIDLength {
+	if trimmed == "" || utf8.RuneCountInString(trimmed) > maxTraceIDLength {
 		return nil
 	}
 	if _, err := uuid.Parse(trimmed); err != nil {
@@ -734,6 +744,9 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 			Username: v.Username,
 		},
 	}
+	if v.AuthorID == viewerID {
+		detail.MediaValidation = mediaValidationView(v)
+	}
 	if v.AvatarKey != nil {
 		// 头像签名失败降级为 null（装饰性字段）
 		avatar, err := s.storage.PresignAvatarURL(ctx, *v.AvatarKey)
@@ -776,4 +789,35 @@ func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetai
 		}
 	}
 	return detail, nil
+}
+
+func mediaValidationView(v *Video) *MediaValidationView {
+	view := &MediaValidationView{Status: v.MediaProbeStatus, CanPublish: v.Status == StatusPendingReview && v.MediaProbeStatus.AllowsPublish()}
+	if v.MediaProbeStatus != ProbeRejected {
+		return view
+	}
+	// 数据库存工具诊断用于排障；对外只映射固定文案，不能透传路径、URL或 stderr。
+	reason := "视频未通过校验，请重新上传符合要求的视频。"
+	raw := ""
+	if v.MediaProbeError != nil {
+		raw = *v.MediaProbeError
+	}
+	switch {
+	case raw == "video exceeds the object size limit":
+		reason = "视频文件过大，请压缩后重新上传。"
+	case strings.HasPrefix(raw, "not a playable video:"):
+		reason = "无法读取视频，请检查文件是否损坏并重新导出。"
+	case strings.HasPrefix(raw, "duration ") && strings.Contains(raw, "shorter than the minimum"):
+		reason = "视频时长过短，请重新上传。"
+	case strings.HasPrefix(raw, "duration ") && strings.Contains(raw, "exceeds the maximum"):
+		reason = "视频时长超过上限，请缩短后重新上传。"
+	case strings.HasPrefix(raw, "width ") || strings.HasPrefix(raw, "height "):
+		reason = "视频分辨率超过上限，请降低分辨率后重新上传。"
+	case strings.HasPrefix(raw, "video codec "):
+		reason = "视频编码不受支持，请转换编码后重新上传。"
+	case raw == "audio stream is required":
+		reason = "视频缺少音轨，请补充音轨后重新上传。"
+	}
+	view.Reason = &reason
+	return view
 }
