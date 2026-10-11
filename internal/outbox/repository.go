@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -215,9 +216,15 @@ func EnqueueOrderRefunded(tx *gorm.DB, payload OrderRefundedPayload) error {
 // 反复失败的巨大错误文本把行撑大。
 const maxErrorLength = 500
 
+// truncateError 按字节上限（行大小）截断，但只在 rune 边界落刀：切在多字节字符中间会得到
+// 非法 UTF-8，PostgreSQL 拒绝整条 UPDATE，失败记录与 attempts 都写不进去。
 func truncateError(reason string) string {
 	if len(reason) <= maxErrorLength {
 		return reason
 	}
-	return reason[:maxErrorLength]
+	cut := maxErrorLength
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut]
 }

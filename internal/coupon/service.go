@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Service 是优惠券域的领域服务。规则（能不能领、能不能用、减多少）
@@ -24,7 +25,7 @@ func (s *Service) CreateCoupon(ctx context.Context, p CreateCouponParams) (*Coup
 	switch {
 	case p.MerchantID <= 0:
 		return nil, ErrInvalidParam
-	case title == "" || len(title) > maxTitleLength:
+	case title == "" || utf8.RuneCountInString(title) > maxTitleLength:
 		return nil, ErrInvalidParam
 	case p.ThresholdAmount <= 0 || p.DiscountAmount <= 0:
 		return nil, ErrInvalidParam

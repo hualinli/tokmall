@@ -1,4 +1,4 @@
-# 架构决策记录（ADR-001～030）
+# 架构决策记录（ADR-001～031）
 
 > 更新于 2026-10-09。保留稳定编号供源码与其他文档引用。本文记录仍有解释价值的决策及其当前实现；历史实验、当时的故障故事和旧性能数字不作为现状依据。实现以代码和 [migrations](../migrations/) 为准，系统边界见 [后端架构](backend-architecture.md)。
 
@@ -131,3 +131,7 @@ Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access toke
 MinIO服务端归档后，开发环境与CI统一使用固定版本RustFS 1.0.1；应用保留minio-go作为S3客户端，不引入RustFS专有管理API。配置改为 `S3_*` / `S3Config`，熔断指标标识为 `s3`，服务端部署参数使用 `RUSTFS_*`。业务模块继续通过消费侧接口调用上传签名、对象检查、ETag封存、读写和删除，不修改订单、库存或视频表结构。
 
 新部署使用独立的 `rustfs-data` 卷，不把旧MinIO卷直接交给RustFS，不包含历史对象搬迁；已有 `MINIO_*` 环境变量须显式改名。浏览器直传和Range播放仍走预签名S3 URL。签名长度/类型、源ETag条件复制、CORS、URL到期、删除幂等性由真实存储契约测试约束；CI backend与E2E都运行RustFS。历史压测源码包、环境和数据保留原样，旧MinIO上的吞吐不自动成为RustFS容量结论。参见 [storage](../internal/storage/storage.go)、[契约测试](../internal/storage/upload_integration_test.go)、[Compose](../docker-compose.yml) 和 [运维](development-and-operations.md)。
+
+### ADR-031：业务文本长度按字符计，口令与邮箱例外
+
+标题、描述、规格、关键词、券名、退款理由与备注、订单幂等键和支付单号的长度上限按 Unicode 字符计数，与 OpenAPI `maxLength` 及 PostgreSQL `VARCHAR(n)` 的语义一致。按字节计会让中文用户在合同允许 200 字时约 66 字就被拒绝。两个例外：口令上限按 UTF-8 字节计 72，因为 Go 的 bcrypt 对超过 72 字节的口令拒绝生成哈希，不能改成按字符放行；邮箱上限按 RFC 5321 的八位字节计 254。写入 `last_error` 的错误文本仍按字节限制行大小，但只在字符边界截断，否则会写入非法 UTF-8，PostgreSQL 会拒绝整条更新。

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -19,7 +20,7 @@ var (
 const (
 	defaultListLimit = 20
 	maxListLimit     = 50
-	// 文本字段上限：这些列是 TEXT，没有数据库级长度约束。不设上限时
+	// 文本字段上限按字符（rune）计，与 OpenAPI maxLength 同口径。这些列是 TEXT，没有数据库级长度约束。不设上限时
 	// 单行可达数 MB，列表响应、Feed 商品卡与 Redis 缓存都会被放大，
 	// 属于"用合法请求做资源放大"的滥用面。
 	maxProductTitleLength       = 200
@@ -137,11 +138,11 @@ func (s *Service) CreateProduct(ctx context.Context, p CreateProductParams) (*Pr
 		return nil, ErrInvalidParam
 	}
 	title := strings.TrimSpace(p.Title)
-	if title == "" || len(title) > maxProductTitleLength {
+	if title == "" || utf8.RuneCountInString(title) > maxProductTitleLength {
 		return nil, ErrInvalidParam
 	}
 	description := strings.TrimSpace(p.Description)
-	if len(description) > maxProductDescriptionLength {
+	if utf8.RuneCountInString(description) > maxProductDescriptionLength {
 		return nil, ErrInvalidParam
 	}
 	coverKey := strings.TrimSpace(p.CoverKey)
@@ -238,7 +239,7 @@ func (s *Service) AddSKU(ctx context.Context, p AddSKUParams) (*SKUItem, error) 
 		return nil, ErrNotFound
 	}
 	spec := strings.TrimSpace(p.Spec)
-	if len(spec) > maxSKUSpecLength {
+	if utf8.RuneCountInString(spec) > maxSKUSpecLength {
 		return nil, ErrInvalidParam
 	}
 	sku := &SKU{
@@ -356,7 +357,7 @@ func (s *Service) ListProducts(ctx context.Context, p ProductListParams) (*Produ
 // 关键字长度设上限：LIKE '%kw%' 无法走索引，超长关键字只会放大扫描成本。
 func (s *Service) SearchProducts(ctx context.Context, keyword string, beforeID int64, limit int) (*ProductListResult, error) {
 	keyword = strings.TrimSpace(keyword)
-	if len(keyword) > maxKeywordLength {
+	if utf8.RuneCountInString(keyword) > maxKeywordLength {
 		return nil, ErrInvalidParam
 	}
 	filter := ProductFilter{

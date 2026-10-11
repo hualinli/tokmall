@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -87,7 +88,7 @@ type RefundRepository interface {
 
 func (s *Service) RequestRefund(ctx context.Context, params RequestRefundParams) (*RefundView, error) {
 	params.Reason = strings.TrimSpace(params.Reason)
-	if params.UserID <= 0 || params.OrderID <= 0 || params.Reason == "" || len(params.Reason) > maxRefundReasonLength {
+	if params.UserID <= 0 || params.OrderID <= 0 || params.Reason == "" || utf8.RuneCountInString(params.Reason) > maxRefundReasonLength {
 		return nil, ErrInvalidParam
 	}
 	if s.refunds == nil {
@@ -110,7 +111,7 @@ func (s *Service) RequestRefund(ctx context.Context, params RequestRefundParams)
 
 func (s *Service) DecideRefund(ctx context.Context, params DecideRefundParams) (*RefundView, error) {
 	params.Remark = strings.TrimSpace(params.Remark)
-	if params.MerchantID <= 0 || params.OrderID <= 0 || len(params.Remark) > maxRefundReasonLength {
+	if params.MerchantID <= 0 || params.OrderID <= 0 || utf8.RuneCountInString(params.Remark) > maxRefundReasonLength {
 		return nil, ErrInvalidParam
 	}
 	if s.refunds == nil {

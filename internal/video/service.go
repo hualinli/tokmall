@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -284,7 +285,7 @@ func (s *Service) GetUploadURL(ctx context.Context, userID int64, filename strin
 // Create 校验 ticket 并确认文件真实上传后创建视频记录（PENDING_REVIEW）。
 func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*CreateResult, error) {
 	title := p.Title
-	if title == "" || len(title) > 200 {
+	if title == "" || utf8.RuneCountInString(title) > 200 {
 		return nil, ErrInvalidParam
 	}
 	if p.DurationSeconds < 1 || p.DurationSeconds > 3600 {

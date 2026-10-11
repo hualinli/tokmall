@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -200,7 +201,7 @@ func (s *Service) Pay(ctx context.Context, params PayParams) (*PaymentResult, er
 	params.PaymentNo = strings.TrimSpace(params.PaymentNo)
 	params.ProviderTradeNo = strings.TrimSpace(params.ProviderTradeNo)
 	if params.UserID <= 0 || params.OrderID <= 0 || params.PaymentNo == "" || params.ProviderTradeNo == "" || params.Amount <= 0 ||
-		len(params.PaymentNo) > 64 || len(params.ProviderTradeNo) > 128 {
+		utf8.RuneCountInString(params.PaymentNo) > 64 || utf8.RuneCountInString(params.ProviderTradeNo) > 128 {
 		return nil, ErrInvalidParam
 	}
 	record, err := s.repo.Pay(ctx, PayCommand{PayParams: params, PaidAt: s.now()})
@@ -309,7 +310,7 @@ func mapCreateResult(record *createRecord) *CreateResult {
 
 func validateCreateParams(p CreateParams) error {
 	if p.UserID <= 0 || p.SKUID <= 0 || p.Quantity <= 0 || p.Quantity > maxOrderQuantity ||
-		p.IdempotencyKey == "" || len(p.IdempotencyKey) > maxIdempotencyKeyLength {
+		p.IdempotencyKey == "" || utf8.RuneCountInString(p.IdempotencyKey) > maxIdempotencyKeyLength {
 		return ErrInvalidParam
 	}
 	if p.Source != nil && (p.Source.VideoID <= 0 || p.Source.AuthorID <= 0 || p.Source.ProductID <= 0) {
