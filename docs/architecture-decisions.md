@@ -78,6 +78,8 @@ Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access toke
 
 下单在数据库事务内按库存条件扣减并写库存流水，数据库约束/幂等流水保护不变量。当前没有 Redis 预扣、秒杀队列或异步下单；只有测量到库存行锁是实际瓶颈时才重新评估。扣减和流水见 [order/repository.go](../internal/order/repository.go)。
 
+下单事务在首次查询订单前，对带命名空间的 `(user_id, idempotency_key)` 取 64 位哈希的 `pg_advisory_xact_lock`，在默认 READ COMMITTED 下先等待前次提交，再判断重放/指纹冲突，最后读取商品、锁券和扣库存。这样券已占用或商品已下架不会遮住同键重放。锁随事务结束释放，哈希碰撞仅造成额外串行化；订单唯一约束继续兜底。不能仅锁不存在的订单行，也不使用跨进程无效的内存锁。
+
 ### ADR-020：对非作者的资源操作也统一隐藏存在性
 
 非作者对视频执行删除等操作，与资源不存在使用同一 404 语义，避免自增 ID 暴露资源是否存在。权限必须由服务端身份和资源所有权判断，不接受请求体提供的 user ID 替代认证身份。服务层权限策略见 [video/service.go](../internal/video/service.go)，HTTP 身份来自 [auth middleware](../internal/middleware/auth.go)。

@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -21,9 +22,15 @@ func NewRepository(db *gorm.DB) *GormRepository { return &GormRepository{db: db}
 func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*createRecord, error) {
 	var result *createRecord
 	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		// 同键请求先串行化，再查原订单；否则等待券锁的重试会先读到 USED。
+		// 事务锁随提交/回滚释放。64 位哈希碰撞只会多串行化，不影响唯一约束。
+		lockKey := fmt.Sprintf("tokmall:order:create:%d:%s", cmd.UserID, cmd.IdempotencyKey)
+		if err := db.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", lockKey).Error; err != nil {
+			return fmt.Errorf("lock order idempotency key: %w", err)
+		}
 		// 已完成订单的重放不应重新依赖商品当前状态：商品在首单后下架，
-		// 客户端仍必须能用原 key 拿到原结果。并发首次请求都未读到时，
-		// 后面的唯一约束 claim 仍会完成最终仲裁。
+		// 客户端仍必须能用原 key 拿到原结果。默认 READ COMMITTED 下，
+		// 等待锁后这次查询可见前一事务已提交的订单；唯一约束仍作为兜底。
 		existing, err := findExistingOrder(db, cmd.UserID, cmd.IdempotencyKey)
 		if err != nil {
 			return err

@@ -2,8 +2,11 @@ package order
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -262,4 +265,79 @@ func seedUserCoupon(t *testing.T, db *gorm.DB, userID, merchantID, threshold, di
 	require.NoError(t, db.Raw(`INSERT INTO user_coupons (coupon_id, user_id, status)
 		VALUES (?, ?, 'UNUSED') RETURNING id`, couponID, userID).Scan(&userCouponID).Error)
 	return userCouponID
+}
+
+// 同键重试必须返回原订单；不同载荷冲突不能被已用券错误遮住。
+func TestPostgresConcurrentCouponIdempotency(t *testing.T) {
+	if os.Getenv(postgresIntegrationSwitch) != "1" {
+		t.Skip("PostgreSQL integration is disabled")
+	}
+	db := newIsolatedPostgres(t, strings.TrimSpace(os.Getenv("TOKMALL_TEST_DATABASE_DSN")))
+	for _, mode := range []string{"replay", "payload-conflict", "different-keys"} {
+		t.Run(mode, func(t *testing.T) {
+			buyers, merchant, sku := seedRefundFixture(t, db, "race-"+mode[:3], 1, 100)
+			uc := seedUserCoupon(t, db, buyers[0], merchant, 1000, 500)
+			svc := refundService(NewRepository(db))
+			const workers = 20
+			results := make(chan *CreateResult, workers)
+			var sequence, conflicts atomic.Int64
+			runConcurrent(t, workers, func() error {
+				i := sequence.Add(1)
+				key, quantity := "coupon-race-"+mode+"-same", int32(1)
+				if mode == "payload-conflict" {
+					quantity = 1 + int32(i%2)
+				}
+				if mode == "different-keys" {
+					key = fmt.Sprintf("coupon-race-%s-%d", mode, i)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				result, err := svc.Create(ctx, CreateParams{UserID: buyers[0], SKUID: sku, Quantity: quantity, IdempotencyKey: key, UserCouponID: &uc})
+				if mode == "payload-conflict" && errors.Is(err, ErrIdempotencyConflict) || mode == "different-keys" && errors.Is(err, ErrCouponConflict) {
+					conflicts.Add(1)
+					return nil
+				}
+				if err == nil {
+					results <- result
+				}
+				return err
+			})
+			close(results)
+			var first *CreateResult
+			var fresh, successes int64
+			for result := range results {
+				require.NotNil(t, result)
+				if first == nil {
+					first = result
+				}
+				require.Equal(t, first.OrderID, result.OrderID)
+				require.Equal(t, first.TotalAmount, result.TotalAmount)
+				if !result.Replayed {
+					fresh++
+				}
+				successes++
+			}
+			require.NotNil(t, first)
+			require.Equal(t, int64(1), fresh)
+			switch mode {
+			case "replay":
+				require.Equal(t, int64(workers), successes)
+				require.Zero(t, conflicts.Load())
+			case "payload-conflict":
+				require.Equal(t, int64(workers/2), successes)
+				require.Equal(t, int64(workers/2), conflicts.Load())
+			case "different-keys":
+				require.Equal(t, int64(1), successes)
+				require.Equal(t, int64(workers-1), conflicts.Load())
+			}
+			var quantity int64
+			require.NoError(t, db.Raw("SELECT quantity FROM order_items WHERE order_id = ?", first.OrderID).Scan(&quantity).Error)
+			assertOrderDatabaseFacts(t, db, sku, "coupon-race-"+mode+"-%", 100-quantity, 1, -quantity)
+			var status string
+			var couponOrder int64
+			require.NoError(t, db.Raw("SELECT status, order_id FROM user_coupons WHERE id = ?", uc).Row().Scan(&status, &couponOrder))
+			require.Equal(t, "USED", status)
+			require.Equal(t, first.OrderID, couponOrder)
+		})
+	}
 }
