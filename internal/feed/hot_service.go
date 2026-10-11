@@ -90,10 +90,7 @@ func (s *Service) ListHot(ctx context.Context, limit int, cursorRaw string) (*Fe
 		return nil, err
 	}
 	result := &FeedResult{Items: items}
-	if err := s.fillLikeCounts(ctx, result); err != nil {
-		return nil, err
-	}
-	if err := s.fillProductCards(ctx, result); err != nil {
+	if err := s.fillDynamic(ctx, result); err != nil {
 		return nil, err
 	}
 	if next := s.encodeHotCursor(windowEnd, entries); next != "" {

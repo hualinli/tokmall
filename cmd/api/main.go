@@ -248,7 +248,7 @@ func run() error {
 		feedCacheStats,
 		ranker,
 	)
-	feedService.SetProductCardReader(feed.NewProductCardReader(db))
+	feedService.SetDynamicReader(feed.NewDynamicReader(db))
 	if hotScoreRecorder != nil {
 		videoService.SetHotScoreRecorder(hotScoreRecorder)
 	}

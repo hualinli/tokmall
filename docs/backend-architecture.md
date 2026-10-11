@@ -40,7 +40,7 @@
 
 全局 Feed 使用 `(published_at, id)` 时间游标；游标带 HMAC 签名和排序版本，表示上一页末项。关注 Feed 采用拉模式，读取关注作者完整时间线：低关注量走有界归并，关注量较大时使用全局时间索引；生产排序只有 `TimeRanker`，配置或 service 注入 `HotRanker` 会被拒绝。见 [feed/service.go](../internal/feed/service.go)、[cursor.go](../internal/feed/cursor.go) 和 [ranker.go](../internal/feed/ranker.go)。每作者 TOP 5 是历史实现，不是当前语义；推模式和 `HybridRanker` 尚未实现。
 
-首页默认第一页使用 Cache-Aside、singleflight 和回源前二次检查。可选 L1 分片 LRU 位于 Redis L2 前；L1 TTL 不得长于 L2 TTL。写路径在数据库提交后尝试删除 L2、本地 L1 并递增 Redis `feed:version`，其他实例按版本探测间隔发现失效；当前若 L2 删除失败，版本递增会被跳过；若版本递增本身失败，远端实例也不会及时获知变化。失效调用方记录错误但不回滚业务写，这两种错误路径都依赖远端 L1 TTL 收敛。版本读取失败也会沿用上次值，因此缓存是最终一致而非强一致。商品卡在页响应时动态批量读取，不固定在 Feed 主体缓存内。
+首页默认第一页使用 Cache-Aside、singleflight 和回源前二次检查。可选 L1 分片 LRU 位于 Redis L2 前；L1 TTL 不得长于 L2 TTL。写路径在数据库提交后尝试删除 L2、本地 L1 并递增 Redis `feed:version`，其他实例按版本探测间隔发现失效；当前若 L2 删除失败，版本递增会被跳过；若版本递增本身失败，远端实例也不会及时获知变化。失效调用方记录错误但不回滚业务写，这两种错误路径都依赖远端 L1 TTL 收敛。版本读取失败也会沿用上次值，因此缓存是最终一致而非强一致。点赞数与商品卡在页响应时由feed只读投影合并为一次SQL批量读取，不固定在 Feed 主体缓存内；先分别聚合点赞和SKU价格，避免连接放大计数。
 
 `GET /api/v1/feed/hot` 是单独的物化热榜，不是关注 Feed 的 `HotRanker`。互动先更新 Redis 分钟桶，后台每分钟物化冻结窗口；窗口 key 为 v2，条目上限 2000、TTL 10 分钟。游标同时包含 `window_end`、`hot_score` 和 `video_id`，窗口不重写，过期窗口对应游标被拒绝。窗口缺失时才 singleflight 回源；空首页窗口或首页请求遇到 Redis 故障时降级时间流，返回时间游标并在后续请求中继续时间流。已有热榜游标遇到 Redis 故障返回错误，避免切换排序后重复或漏项。实现见 [hot_cache.go](../internal/feed/hot_cache.go) 和 [hot_service.go](../internal/feed/hot_service.go)。
 

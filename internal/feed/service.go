@@ -45,6 +45,7 @@ type PlayURLProvider interface {
 type Service struct {
 	repo           Repository
 	productCards   ProductCardReader
+	dynamicReader  DynamicReader
 	cursor         *codec
 	storage        PlayURLProvider
 	cache          FirstPageCache
@@ -58,6 +59,8 @@ type Service struct {
 }
 
 func (s *Service) SetProductCardReader(reader ProductCardReader) { s.productCards = reader }
+
+func (s *Service) SetDynamicReader(reader DynamicReader) { s.dynamicReader = reader }
 
 // SetHotFeed 注入热榜数据源（main 装配）。不注入时 /feed/hot 降级为时间流。
 func (s *Service) SetHotFeed(hot HotFeed, stats HotWindowStats) {
@@ -148,10 +151,7 @@ func (s *Service) List(ctx context.Context, limit int, cursorRaw string) (*FeedR
 	if shared {
 		result = cloneFeedResult(result)
 	}
-	if err := s.fillLikeCounts(ctx, result); err != nil {
-		return nil, err
-	}
-	if err := s.fillProductCards(ctx, result); err != nil {
+	if err := s.fillDynamic(ctx, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -174,10 +174,7 @@ func (s *Service) ListByAuthor(ctx context.Context, authorID int64, limit int, c
 	if err != nil {
 		return nil, err
 	}
-	if err := s.fillLikeCounts(ctx, result); err != nil {
-		return nil, err
-	}
-	if err := s.fillProductCards(ctx, result); err != nil {
+	if err := s.fillDynamic(ctx, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -221,13 +218,32 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 	if shared {
 		result = cloneFeedResult(result)
 	}
-	if err := s.fillLikeCounts(ctx, result); err != nil {
-		return nil, err
-	}
-	if err := s.fillProductCards(ctx, result); err != nil {
+	if err := s.fillDynamic(ctx, result); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+// fillDynamic 只修改请求持有的结果；未注入合并读模型时沿用独立读取。
+func (s *Service) fillDynamic(ctx context.Context, result *FeedResult) error {
+	if s.dynamicReader == nil {
+		if err := s.fillLikeCounts(ctx, result); err != nil {
+			return err
+		}
+		return s.fillProductCards(ctx, result)
+	}
+	ids := make([]int64, 0, len(result.Items))
+	for _, item := range result.Items {
+		ids = append(ids, item.VideoID)
+	}
+	counts, rows, err := s.dynamicReader.ReadDynamic(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("read feed dynamic data: %w", err)
+	}
+	for i := range result.Items {
+		result.Items[i].LikeCount = counts[result.Items[i].VideoID]
+	}
+	return s.applyProductCards(ctx, result, rows)
 }
 
 // Product relations and cover URLs are request-time data. They must not be
@@ -246,7 +262,11 @@ func (s *Service) fillProductCards(ctx context.Context, result *FeedResult) erro
 			return fmt.Errorf("list product cards: %w", err)
 		}
 	}
-	byVideo := make(map[int64][]ProductCard, len(ids))
+	return s.applyProductCards(ctx, result, rows)
+}
+
+func (s *Service) applyProductCards(ctx context.Context, result *FeedResult, rows []productCardRow) error {
+	byVideo := make(map[int64][]ProductCard, len(result.Items))
 	for _, row := range rows {
 		card := ProductCard{ProductID: row.ProductID, Title: row.Title, MinPrice: row.MinPrice, ProductStatus: row.ProductStatus, SortOrder: row.SortOrder}
 		if row.CoverKey != "" {

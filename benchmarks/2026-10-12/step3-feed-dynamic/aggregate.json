@@ -1,0 +1,110 @@
+{
+  "cases": [
+    {
+      "case": "feed-skus1-c100-r1",
+      "vus": 100,
+      "duration_seconds": 60,
+      "requests": 556258,
+      "request_rate": 9269.574994474162,
+      "http_error_rate": 0,
+      "check_failures": 0,
+      "p95_ms": 26.801,
+      "p99_ms": 39.823,
+      "k6_exit_code": 0,
+      "pool_wait_count": 556330.0,
+      "pool_wait_seconds": 4505.112293701,
+      "processes": {
+        "api": {
+          "cpu_percent_sampled": 473.3490260093367,
+          "peak_rss_mib": 71.91015625
+        },
+        "k6": {
+          "cpu_percent_sampled": 445.7962926221926,
+          "peak_rss_mib": 207.87890625
+        }
+      },
+      "sampled_seconds": 60.57475229585543
+    },
+    {
+      "case": "feed-skus1-c100-r2",
+      "vus": 100,
+      "duration_seconds": 60,
+      "requests": 559085,
+      "request_rate": 9316.126636202176,
+      "http_error_rate": 0,
+      "check_failures": 0,
+      "p95_ms": 26.709,
+      "p99_ms": 39.891160000000035,
+      "k6_exit_code": 0,
+      "pool_wait_count": 559120.0,
+      "pool_wait_seconds": 4505.293865224,
+      "processes": {
+        "api": {
+          "cpu_percent_sampled": 476.4413865542941,
+          "peak_rss_mib": 73.8203125
+        },
+        "k6": {
+          "cpu_percent_sampled": 445.5012743215712,
+          "peak_rss_mib": 207.17578125
+        }
+      },
+      "sampled_seconds": 60.536302709952
+    },
+    {
+      "case": "feed-skus1-c100-r3",
+      "vus": 100,
+      "duration_seconds": 60,
+      "requests": 548985,
+      "request_rate": 9148.056542266417,
+      "http_error_rate": 0,
+      "check_failures": 0,
+      "p95_ms": 27.166,
+      "p99_ms": 40.608,
+      "k6_exit_code": 0,
+      "pool_wait_count": 548537.0,
+      "pool_wait_seconds": 4474.118420539,
+      "processes": {
+        "api": {
+          "cpu_percent_sampled": 471.21294769346787,
+          "peak_rss_mib": 71.7265625
+        },
+        "k6": {
+          "cpu_percent_sampled": 440.0452751442363,
+          "peak_rss_mib": 205.25390625
+        }
+      },
+      "sampled_seconds": 60.5755850719288
+    }
+  ],
+  "raw_directory": ".gocache/benchmarks/2026-10-12-step3-feed-dynamic",
+  "feed_confirmation": {
+    "rounds": 0,
+    "zero_errors": false
+  },
+  "commerce_confirmation": {
+    "rounds": 0,
+    "all_passed": false,
+    "total_orders": 0
+  },
+  "stage_groups": {
+    "feed-skus1-c100": {
+      "rounds": 3,
+      "all_passed": true,
+      "request_rate": {
+        "median": 9269.574994474162,
+        "min": 9148.056542266417,
+        "max": 9316.126636202176
+      },
+      "p95_ms": {
+        "median": 26.801,
+        "min": 26.709,
+        "max": 27.166
+      },
+      "p99_ms": {
+        "median": 39.891160000000035,
+        "min": 39.823,
+        "max": 40.608
+      }
+    }
+  }
+}
