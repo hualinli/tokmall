@@ -88,7 +88,11 @@ func run() error {
 	))
 
 	metricsRegistry := prometheus.NewRegistry()
-	db, err := database.Connect(cfg.DBConfig)
+	foregroundConnections := 25
+	if cfg.OutboxConsumerEnabled {
+		foregroundConnections = 20
+	}
+	db, err := database.ConnectWithPool(cfg.DBConfig, foregroundConnections, 5)
 	if err != nil {
 		return fmt.Errorf("connect databse: %w", err)
 	}
@@ -115,6 +119,19 @@ func run() error {
 		return fmt.Errorf("connect redis: %w", err)
 	}
 	defer func() { _ = redisClient.Close() }()
+	consumerDB := db
+	if cfg.OutboxConsumerEnabled && redisClient != nil {
+		consumerDB, err = database.ConnectWithPool(cfg.DBConfig, 5, 5)
+		if err != nil {
+			return fmt.Errorf("connect consumer database: %w", err)
+		}
+		consumerSQL, err := consumerDB.DB()
+		if err != nil {
+			return fmt.Errorf("get consumer sql database: %w", err)
+		}
+		defer func() { _ = consumerSQL.Close() }()
+		metricsRegistry.MustRegister(observability.NewDBPoolCollector(consumerSQL, "tokmall_consumer"))
+	}
 	if cfg.HotFeedEnabled {
 		hotMetrics = observability.NewHotFeedMetrics(metricsRegistry)
 		hotFeed = feed.NewRedisHotFeed(redisClient, hotMetrics)
@@ -298,7 +315,7 @@ func run() error {
 			video.WithProbeBatch(cfg.MediaProbeBatch),
 		)
 	}
-	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker, storageClient)
+	workers := startWorkers(ctx, cfg, db, consumerDB, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker, storageClient)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -392,7 +409,7 @@ func stopWorker(name string, cancel context.CancelFunc, done <-chan struct{}, ti
 
 // startWorkers 装配并启动后台任务。顺序刻意是"中继先于消费者"：
 // 消费组可以先建立，事件随后到达，不会出现"事件已在流里但没有消费者"。
-func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisClient *redis.Client,
+func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.DB, redisClient *redis.Client,
 	orderRepo *order.GormRepository, registry *prometheus.Registry,
 	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
 	videoRepo *video.GormRepository, productRepo *product.GormRepository,
@@ -490,11 +507,11 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
 	}
 	if cfg.OutboxConsumerEnabled {
 		handlers := []outbox.Handler{
-			attribution.NewProjector(db),
+			attribution.NewProjector(consumerDB),
 			// 订单超时延迟事件：加速器（轮询 Worker 仍是安全网）。
-			order.NewTimeoutHandler(db, order.WithTimeoutStats(observability.NewOrderTimeoutMetrics(registry))),
+			order.NewTimeoutHandler(consumerDB, order.WithTimeoutStats(observability.NewOrderTimeoutMetrics(registry))),
 		}
-		consumer := outbox.NewConsumer(db, redisClient, cfg.OutboxStream, cfg.OutboxConsumerGroup,
+		consumer := outbox.NewConsumer(consumerDB, redisClient, cfg.OutboxStream, cfg.OutboxConsumerGroup,
 			cfg.OutboxDLQStream, consumerName(), handlers,
 			outbox.WithConsumerStats(observability.NewOutboxConsumerMetrics(registry)))
 		consumerCtx, cancel := context.WithCancel(ctx)

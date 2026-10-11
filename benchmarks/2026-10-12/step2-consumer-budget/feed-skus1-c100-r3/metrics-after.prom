@@ -1,0 +1,248 @@
+# HELP breaker_state Circuit breaker state (0=closed, 1=half_open, 2=open)
+# TYPE breaker_state gauge
+breaker_state{name="s3"} 0
+# HELP cache_l1_eviction_total In-process L1 cache LRU evictions
+# TYPE cache_l1_eviction_total counter
+cache_l1_eviction_total 0
+# HELP cache_l1_hit_total In-process L1 cache hits
+# TYPE cache_l1_hit_total counter
+cache_l1_hit_total 385709
+# HELP cache_l1_miss_total In-process L1 cache misses
+# TYPE cache_l1_miss_total counter
+cache_l1_miss_total 230
+# HELP cache_l1_stale_total L1 entries invalidated because the data version changed
+# TYPE cache_l1_stale_total counter
+cache_l1_stale_total 0
+# HELP db_pool_idle_connections number of idle connections
+# TYPE db_pool_idle_connections gauge
+db_pool_idle_connections{db="tokmall"} 5
+db_pool_idle_connections{db="tokmall_consumer"} 1
+# HELP db_pool_in_use_connections number of connections currently in use
+# TYPE db_pool_in_use_connections gauge
+db_pool_in_use_connections{db="tokmall"} 1
+db_pool_in_use_connections{db="tokmall_consumer"} 0
+# HELP db_pool_open_connections number of open connections (in use + idle)
+# TYPE db_pool_open_connections gauge
+db_pool_open_connections{db="tokmall"} 6
+db_pool_open_connections{db="tokmall_consumer"} 1
+# HELP db_pool_wait_count_total total number of times a caller waited for a connection
+# TYPE db_pool_wait_count_total counter
+db_pool_wait_count_total{db="tokmall"} 771747
+db_pool_wait_count_total{db="tokmall_consumer"} 0
+# HELP db_pool_wait_duration_seconds total time callers waited for a connection (sum)
+# TYPE db_pool_wait_duration_seconds gauge
+db_pool_wait_duration_seconds{db="tokmall"} 4642.826931823
+db_pool_wait_duration_seconds{db="tokmall_consumer"} 0
+# HELP existence_filter_bits Bit array size of the active bloom filter
+# TYPE existence_filter_bits gauge
+existence_filter_bits{namespace="product"} 9.585088e+06
+existence_filter_bits{namespace="video"} 9.585088e+06
+# HELP existence_filter_items Approximate number of items in the active bloom filter
+# TYPE existence_filter_items gauge
+existence_filter_items{namespace="product"} 0
+existence_filter_items{namespace="video"} 0
+# HELP existence_filter_ready 1 when the namespace filter finished its first full load
+# TYPE existence_filter_ready gauge
+existence_filter_ready{namespace="product"} 1
+existence_filter_ready{namespace="video"} 1
+# HELP feed_cache_hit_total Total feed first-page cache hits
+# TYPE feed_cache_hit_total counter
+feed_cache_hit_total 771702
+# HELP feed_cache_miss_total Total feed first-page cache misses
+# TYPE feed_cache_miss_total counter
+feed_cache_miss_total 174
+# HELP go_gc_duration_seconds A summary of the pause duration of garbage collection cycles.
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 7.1667e-05
+go_gc_duration_seconds{quantile="0.25"} 0.000136017
+go_gc_duration_seconds{quantile="0.5"} 0.000170334
+go_gc_duration_seconds{quantile="0.75"} 0.000218303
+go_gc_duration_seconds{quantile="1"} 0.000381538
+go_gc_duration_seconds_sum 0.457821082
+go_gc_duration_seconds_count 2534
+# HELP go_goroutines Number of goroutines that currently exist.
+# TYPE go_goroutines gauge
+go_goroutines 29
+# HELP go_info Information about the Go environment.
+# TYPE go_info gauge
+go_info{version="go1.27.1"} 1
+# HELP go_memstats_alloc_bytes Number of bytes allocated and still in use.
+# TYPE go_memstats_alloc_bytes gauge
+go_memstats_alloc_bytes 2.254644e+07
+# HELP go_memstats_alloc_bytes_total Total number of bytes allocated, even if freed.
+# TYPE go_memstats_alloc_bytes_total counter
+go_memstats_alloc_bytes_total 3.4755700976e+10
+# HELP go_memstats_buck_hash_sys_bytes Number of bytes used by the profiling bucket hash table.
+# TYPE go_memstats_buck_hash_sys_bytes gauge
+go_memstats_buck_hash_sys_bytes 1.445453e+06
+# HELP go_memstats_frees_total Total number of frees.
+# TYPE go_memstats_frees_total counter
+go_memstats_frees_total 2.97600396e+08
+# HELP go_memstats_gc_sys_bytes Number of bytes used for garbage collection system metadata.
+# TYPE go_memstats_gc_sys_bytes gauge
+go_memstats_gc_sys_bytes 4.23448e+06
+# HELP go_memstats_heap_alloc_bytes Number of heap bytes allocated and still in use.
+# TYPE go_memstats_heap_alloc_bytes gauge
+go_memstats_heap_alloc_bytes 2.254644e+07
+# HELP go_memstats_heap_idle_bytes Number of heap bytes waiting to be used.
+# TYPE go_memstats_heap_idle_bytes gauge
+go_memstats_heap_idle_bytes 1.9857408e+07
+# HELP go_memstats_heap_inuse_bytes Number of heap bytes that are in use.
+# TYPE go_memstats_heap_inuse_bytes gauge
+go_memstats_heap_inuse_bytes 3.5160064e+07
+# HELP go_memstats_heap_objects Number of allocated objects.
+# TYPE go_memstats_heap_objects gauge
+go_memstats_heap_objects 45177
+# HELP go_memstats_heap_released_bytes Number of heap bytes released to OS.
+# TYPE go_memstats_heap_released_bytes gauge
+go_memstats_heap_released_bytes 9.306112e+06
+# HELP go_memstats_heap_sys_bytes Number of heap bytes obtained from system.
+# TYPE go_memstats_heap_sys_bytes gauge
+go_memstats_heap_sys_bytes 5.5017472e+07
+# HELP go_memstats_last_gc_time_seconds Number of seconds since 1970 of last garbage collection.
+# TYPE go_memstats_last_gc_time_seconds gauge
+go_memstats_last_gc_time_seconds 1.7917375772186491e+09
+# HELP go_memstats_lookups_total Total number of pointer lookups.
+# TYPE go_memstats_lookups_total counter
+go_memstats_lookups_total 0
+# HELP go_memstats_mallocs_total Total number of mallocs.
+# TYPE go_memstats_mallocs_total counter
+go_memstats_mallocs_total 2.97645573e+08
+# HELP go_memstats_mcache_inuse_bytes Number of bytes in use by mcache structures.
+# TYPE go_memstats_mcache_inuse_bytes gauge
+go_memstats_mcache_inuse_bytes 45920
+# HELP go_memstats_mcache_sys_bytes Number of bytes used for mcache structures obtained from system.
+# TYPE go_memstats_mcache_sys_bytes gauge
+go_memstats_mcache_sys_bytes 48216
+# HELP go_memstats_mspan_inuse_bytes Number of bytes in use by mspan structures.
+# TYPE go_memstats_mspan_inuse_bytes gauge
+go_memstats_mspan_inuse_bytes 536000
+# HELP go_memstats_mspan_sys_bytes Number of bytes used for mspan structures obtained from system.
+# TYPE go_memstats_mspan_sys_bytes gauge
+go_memstats_mspan_sys_bytes 767040
+# HELP go_memstats_next_gc_bytes Number of heap bytes when next garbage collection will take place.
+# TYPE go_memstats_next_gc_bytes gauge
+go_memstats_next_gc_bytes 4.4036634e+07
+# HELP go_memstats_other_sys_bytes Number of bytes used for other system allocations.
+# TYPE go_memstats_other_sys_bytes gauge
+go_memstats_other_sys_bytes 4.046131e+06
+# HELP go_memstats_stack_inuse_bytes Number of bytes in use by the stack allocator.
+# TYPE go_memstats_stack_inuse_bytes gauge
+go_memstats_stack_inuse_bytes 3.702784e+06
+# HELP go_memstats_stack_sys_bytes Number of bytes obtained from system for stack allocator.
+# TYPE go_memstats_stack_sys_bytes gauge
+go_memstats_stack_sys_bytes 3.702784e+06
+# HELP go_memstats_sys_bytes Number of bytes obtained from system.
+# TYPE go_memstats_sys_bytes gauge
+go_memstats_sys_bytes 6.9261576e+07
+# HELP go_threads Number of OS threads created.
+# TYPE go_threads gauge
+go_threads 28
+# HELP hertz_server_latency_us Latency (microseconds) of HTTP that had been application-level handled by the server.
+# TYPE hertz_server_latency_us histogram
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="5000"} 18558
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="10000"} 122453
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="25000"} 337994
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="50000"} 384389
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="100000"} 385937
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="250000"} 385937
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="500000"} 385937
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="1e+06"} 385937
+hertz_server_latency_us_bucket{method="GET",path="/api/v1/feed",statusCode="200",le="+Inf"} 385937
+hertz_server_latency_us_sum{method="GET",path="/api/v1/feed",statusCode="200"} 5.861295571e+09
+hertz_server_latency_us_count{method="GET",path="/api/v1/feed",statusCode="200"} 385937
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="5000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="10000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="25000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="50000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="100000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="250000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="500000"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="1e+06"} 1
+hertz_server_latency_us_bucket{method="GET",path="/health/ready",statusCode="200",le="+Inf"} 1
+hertz_server_latency_us_sum{method="GET",path="/health/ready",statusCode="200"} 1013
+hertz_server_latency_us_count{method="GET",path="/health/ready",statusCode="200"} 1
+# HELP hertz_server_throughput Total number of HTTPs completed by the server, regardless of success or failure.
+# TYPE hertz_server_throughput counter
+hertz_server_throughput{method="GET",path="/api/v1/feed",statusCode="200"} 385937
+hertz_server_throughput{method="GET",path="/health/ready",statusCode="200"} 1
+# HELP hot_feed_window_entries Entries in the materialized hot window
+# TYPE hot_feed_window_entries gauge
+hot_feed_window_entries 0
+# HELP hot_feed_window_rebuild_total Hot window materializations by trigger
+# TYPE hot_feed_window_rebuild_total counter
+hot_feed_window_rebuild_total{source="scheduled"} 2
+# HELP http_server_duration_seconds HTTP server request duration in seconds, labelled by route template
+# TYPE http_server_duration_seconds histogram
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.005"} 19050
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.01"} 123223
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.025"} 338221
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.05"} 384397
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.1"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.25"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="0.5"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="1"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="2.5"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="5"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="10"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/api/v1/feed",status="200",le="+Inf"} 385937
+http_server_duration_seconds_sum{method="GET",route="/api/v1/feed",status="200"} 5847.368514585833
+http_server_duration_seconds_count{method="GET",route="/api/v1/feed",status="200"} 385937
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.005"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.01"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.025"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.05"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.1"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.25"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="0.5"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="1"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="2.5"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="5"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="10"} 1
+http_server_duration_seconds_bucket{method="GET",route="/health/ready",status="200",le="+Inf"} 1
+http_server_duration_seconds_sum{method="GET",route="/health/ready",status="200"} 0.000921888
+http_server_duration_seconds_count{method="GET",route="/health/ready",status="200"} 1
+# HELP http_server_in_flight_requests Number of HTTP requests currently being served
+# TYPE http_server_in_flight_requests gauge
+http_server_in_flight_requests 0
+# HELP media_faststart_applied_total Objects rewritten with moov at the front
+# TYPE media_faststart_applied_total counter
+media_faststart_applied_total 0
+# HELP media_probe_duration_seconds Probed media duration in seconds
+# TYPE media_probe_duration_seconds histogram
+media_probe_duration_seconds_bucket{le="1"} 0
+media_probe_duration_seconds_bucket{le="5"} 0
+media_probe_duration_seconds_bucket{le="15"} 0
+media_probe_duration_seconds_bucket{le="30"} 0
+media_probe_duration_seconds_bucket{le="60"} 0
+media_probe_duration_seconds_bucket{le="180"} 0
+media_probe_duration_seconds_bucket{le="600"} 0
+media_probe_duration_seconds_bucket{le="1800"} 0
+media_probe_duration_seconds_bucket{le="3600"} 0
+media_probe_duration_seconds_bucket{le="+Inf"} 0
+media_probe_duration_seconds_sum 0
+media_probe_duration_seconds_count 0
+# HELP outbox_consumer_pending_messages Messages delivered but not yet acknowledged
+# TYPE outbox_consumer_pending_messages gauge
+outbox_consumer_pending_messages 0
+# HELP outbox_dead_events Outbox events in DEAD state awaiting manual replay
+# TYPE outbox_dead_events gauge
+outbox_dead_events 0
+# HELP outbox_oldest_pending_seconds Age of the oldest pending outbox event
+# TYPE outbox_oldest_pending_seconds gauge
+outbox_oldest_pending_seconds 0
+# HELP outbox_pending_delayed_events Outbox events scheduled for the future (delayed events)
+# TYPE outbox_pending_delayed_events gauge
+outbox_pending_delayed_events 47707
+# HELP outbox_pending_events Outbox events that are due and waiting to be published
+# TYPE outbox_pending_events gauge
+outbox_pending_events 0
+# HELP reconcile_last_run_ok 1 when the last reconciliation run found no differences
+# TYPE reconcile_last_run_ok gauge
+reconcile_last_run_ok 0
+# HELP reconcile_last_run_timestamp_seconds Unix time of the last reconciliation run
+# TYPE reconcile_last_run_timestamp_seconds gauge
+reconcile_last_run_timestamp_seconds 0
+# HELP reconcile_replayed_events_total Events replayed because they had no consumer receipt
+# TYPE reconcile_replayed_events_total counter
+reconcile_replayed_events_total 0

@@ -13,31 +13,35 @@ func NewDBPoolCollector(db *sql.DB, dbName string) prometheus.Collector {
 		dbName: dbName,
 		db:     db,
 		openConnections: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: "db",
-			Subsystem: "pool",
-			Name:      "open_connections",
-			Help:      "number of open connections (in use + idle)",
-		}, []string{"db"}),
+			Namespace:   "db",
+			Subsystem:   "pool",
+			Name:        "open_connections",
+			ConstLabels: prometheus.Labels{"db": dbName},
+			Help:        "number of open connections (in use + idle)",
+		}, nil),
 		inUse: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: "db",
-			Subsystem: "pool",
-			Name:      "in_use_connections",
-			Help:      "number of connections currently in use",
-		}, []string{"db"}),
+			Namespace:   "db",
+			Subsystem:   "pool",
+			Name:        "in_use_connections",
+			ConstLabels: prometheus.Labels{"db": dbName},
+			Help:        "number of connections currently in use",
+		}, nil),
 		idle: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: "db",
-			Subsystem: "pool",
-			Name:      "idle_connections",
-			Help:      "number of idle connections",
-		}, []string{"db"}),
+			Namespace:   "db",
+			Subsystem:   "pool",
+			Name:        "idle_connections",
+			ConstLabels: prometheus.Labels{"db": dbName},
+			Help:        "number of idle connections",
+		}, nil),
 		waitCount: prometheus.NewDesc("db_pool_wait_count_total",
-			"total number of times a caller waited for a connection", []string{"db"}, nil),
+			"total number of times a caller waited for a connection", nil, prometheus.Labels{"db": dbName}),
 		waitDuration: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: "db",
-			Subsystem: "pool",
-			Name:      "wait_duration_seconds",
-			Help:      "total time callers waited for a connection (sum)",
-		}, []string{"db"}),
+			Namespace:   "db",
+			Subsystem:   "pool",
+			Name:        "wait_duration_seconds",
+			ConstLabels: prometheus.Labels{"db": dbName},
+			Help:        "total time callers waited for a connection (sum)",
+		}, nil),
 	}
 }
 
@@ -64,11 +68,11 @@ func (c *dbPoolCollector) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (c *dbPoolCollector) collectStats(stats sql.DBStats, ch chan<- prometheus.Metric) {
-	c.openConnections.WithLabelValues(c.dbName).Set(float64(stats.OpenConnections))
-	c.inUse.WithLabelValues(c.dbName).Set(float64(stats.InUse))
-	c.idle.WithLabelValues(c.dbName).Set(float64(stats.Idle))
-	ch <- prometheus.MustNewConstMetric(c.waitCount, prometheus.CounterValue, float64(stats.WaitCount), c.dbName)
-	c.waitDuration.WithLabelValues(c.dbName).Set(stats.WaitDuration.Seconds())
+	c.openConnections.WithLabelValues().Set(float64(stats.OpenConnections))
+	c.inUse.WithLabelValues().Set(float64(stats.InUse))
+	c.idle.WithLabelValues().Set(float64(stats.Idle))
+	ch <- prometheus.MustNewConstMetric(c.waitCount, prometheus.CounterValue, float64(stats.WaitCount))
+	c.waitDuration.WithLabelValues().Set(stats.WaitDuration.Seconds())
 	c.openConnections.Collect(ch)
 	c.inUse.Collect(ch)
 	c.idle.Collect(ch)

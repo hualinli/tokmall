@@ -62,7 +62,7 @@
 
 ## 事件与对账
 
-业务事件与交易事实在同一 PostgreSQL 事务写入 Outbox。Relay 领取到期事件、租约发送并退避重试，最终可进入 DLQ；默认传输为 Redis Streams 消费组，利用 XACK 和 XAUTOCLAIM 实现至少一次投递。消费者在一个数据库事务中写消费回执和投影，提交后确认 Streams 消息；相同 event ID 可幂等重放。见 [outbox/relay.go](../internal/outbox/relay.go)、[consumer.go](../internal/outbox/consumer.go) 和 [attribution/projector.go](../internal/attribution/projector.go)。Kafka 只是 Publisher 可替换方向，当前没有 Kafka broker 或 Kafka 消费者接入。
+业务事件与交易事实在同一 PostgreSQL 事务写入 Outbox。Relay 领取到期事件、租约发送并退避重试，最终可进入 DLQ；默认传输为 Redis Streams 消费组，利用 XACK 和 XAUTOCLAIM 实现至少一次投递。消费者在一个数据库事务中写消费回执和投影，提交后确认 Streams 消息；开启消费者时为其保留独立5连接预算，前台20，总上限25，避免前台行锁等待耗尽消费取连接机会；相同 event ID 可幂等重放。见 [outbox/relay.go](../internal/outbox/relay.go)、[consumer.go](../internal/outbox/consumer.go) 和 [attribution/projector.go](../internal/attribution/projector.go)。Kafka 只是 Publisher 可替换方向，当前没有 Kafka broker 或 Kafka 消费者接入。
 
 当前对账有九项可执行 SQL 检查：`inventory_balance`、`order_stock_ledger`、`refund_order_consistency`、`order_payment_consistency`、`author_sales_projection`、`coupon_issuance`、`coupon_usage`、`order_amount_split`、`outbox_delivery`。毛额统计覆盖曾支付过的全部订单（含后来退款订单），退款按发生日另计。实现见 [reconcile/repository.go](../internal/reconcile/repository.go) 和 [cmd/reconcile/main.go](../cmd/reconcile/main.go)。Redis Streams 丢失窗口由消费回执和数据库对账补偿，不能宣称 broker 本身零丢失。
 

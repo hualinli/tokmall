@@ -41,6 +41,14 @@ func (slogWriter) Printf(format string, args ...any) {
 }
 
 func Connect(cfg config.DBConfig) (*gorm.DB, error) {
+	return ConnectWithPool(cfg, poolMaxOpenConns, poolMaxIdleConns)
+}
+
+// ConnectWithPool 给独立工作负载分配连接预算；调用方负责约束所有池的总和。
+func ConnectWithPool(cfg config.DBConfig, maxOpen, maxIdle int) (*gorm.DB, error) {
+	if maxOpen <= 0 || maxIdle < 0 || maxIdle > maxOpen {
+		return nil, fmt.Errorf("invalid database pool budget: open=%d idle=%d", maxOpen, maxIdle)
+	}
 	dsn := fmt.Sprintf(
 		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
 		cfg.Host, cfg.User, cfg.Password, cfg.Database, cfg.Port, cfg.SSLMode,
@@ -62,8 +70,8 @@ func Connect(cfg config.DBConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(poolMaxOpenConns)
-	sqlDB.SetMaxIdleConns(poolMaxIdleConns)
+	sqlDB.SetMaxOpenConns(maxOpen)
+	sqlDB.SetMaxIdleConns(maxIdle)
 	sqlDB.SetConnMaxLifetime(poolConnMaxLifetime)
 	err = sqlDB.Ping()
 	if err != nil {

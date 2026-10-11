@@ -1,0 +1,207 @@
+diff --git a/cmd/api/main.go b/cmd/api/main.go
+index 9685ee6..4218fad 100644
+--- a/cmd/api/main.go
++++ b/cmd/api/main.go
+@@ -88,7 +88,11 @@ func run() error {
+ 	))
+ 
+ 	metricsRegistry := prometheus.NewRegistry()
+-	db, err := database.Connect(cfg.DBConfig)
++	foregroundConnections := 25
++	if cfg.OutboxConsumerEnabled {
++		foregroundConnections = 20
++	}
++	db, err := database.ConnectWithPool(cfg.DBConfig, foregroundConnections, 5)
+ 	if err != nil {
+ 		return fmt.Errorf("connect databse: %w", err)
+ 	}
+@@ -115,6 +119,19 @@ func run() error {
+ 		return fmt.Errorf("connect redis: %w", err)
+ 	}
+ 	defer func() { _ = redisClient.Close() }()
++	consumerDB := db
++	if cfg.OutboxConsumerEnabled && redisClient != nil {
++		consumerDB, err = database.ConnectWithPool(cfg.DBConfig, 5, 5)
++		if err != nil {
++			return fmt.Errorf("connect consumer database: %w", err)
++		}
++		consumerSQL, err := consumerDB.DB()
++		if err != nil {
++			return fmt.Errorf("get consumer sql database: %w", err)
++		}
++		defer func() { _ = consumerSQL.Close() }()
++		metricsRegistry.MustRegister(observability.NewDBPoolCollector(consumerSQL, "tokmall_consumer"))
++	}
+ 	if cfg.HotFeedEnabled {
+ 		hotMetrics = observability.NewHotFeedMetrics(metricsRegistry)
+ 		hotFeed = feed.NewRedisHotFeed(redisClient, hotMetrics)
+@@ -298,7 +315,7 @@ func run() error {
+ 			video.WithProbeBatch(cfg.MediaProbeBatch),
+ 		)
+ 	}
+-	workers := startWorkers(ctx, cfg, db, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker, storageClient)
++	workers := startWorkers(ctx, cfg, db, consumerDB, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker, storageClient)
+ 	registerRoutes(h, routes{
+ 		db:          db,
+ 		token:       tokenManager,
+@@ -392,7 +409,7 @@ func stopWorker(name string, cancel context.CancelFunc, done <-chan struct{}, ti
+ 
+ // startWorkers 装配并启动后台任务。顺序刻意是"中继先于消费者"：
+ // 消费组可以先建立，事件随后到达，不会出现"事件已在流里但没有消费者"。
+-func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisClient *redis.Client,
++func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.DB, redisClient *redis.Client,
+ 	orderRepo *order.GormRepository, registry *prometheus.Registry,
+ 	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
+ 	videoRepo *video.GormRepository, productRepo *product.GormRepository,
+@@ -490,11 +507,11 @@ func startWorkers(ctx context.Context, cfg *config.Config, db *gorm.DB, redisCli
+ 	}
+ 	if cfg.OutboxConsumerEnabled {
+ 		handlers := []outbox.Handler{
+-			attribution.NewProjector(db),
++			attribution.NewProjector(consumerDB),
+ 			// 订单超时延迟事件：加速器（轮询 Worker 仍是安全网）。
+-			order.NewTimeoutHandler(db, order.WithTimeoutStats(observability.NewOrderTimeoutMetrics(registry))),
++			order.NewTimeoutHandler(consumerDB, order.WithTimeoutStats(observability.NewOrderTimeoutMetrics(registry))),
+ 		}
+-		consumer := outbox.NewConsumer(db, redisClient, cfg.OutboxStream, cfg.OutboxConsumerGroup,
++		consumer := outbox.NewConsumer(consumerDB, redisClient, cfg.OutboxStream, cfg.OutboxConsumerGroup,
+ 			cfg.OutboxDLQStream, consumerName(), handlers,
+ 			outbox.WithConsumerStats(observability.NewOutboxConsumerMetrics(registry)))
+ 		consumerCtx, cancel := context.WithCancel(ctx)
+diff --git a/internal/database/connect.go b/internal/database/connect.go
+index e37e29f..4617a8f 100644
+--- a/internal/database/connect.go
++++ b/internal/database/connect.go
+@@ -41,6 +41,14 @@ func (slogWriter) Printf(format string, args ...any) {
+ }
+ 
+ func Connect(cfg config.DBConfig) (*gorm.DB, error) {
++	return ConnectWithPool(cfg, poolMaxOpenConns, poolMaxIdleConns)
++}
++
++// ConnectWithPool 给独立工作负载分配连接预算；调用方负责约束所有池的总和。
++func ConnectWithPool(cfg config.DBConfig, maxOpen, maxIdle int) (*gorm.DB, error) {
++	if maxOpen <= 0 || maxIdle < 0 || maxIdle > maxOpen {
++		return nil, fmt.Errorf("invalid database pool budget: open=%d idle=%d", maxOpen, maxIdle)
++	}
+ 	dsn := fmt.Sprintf(
+ 		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+ 		cfg.Host, cfg.User, cfg.Password, cfg.Database, cfg.Port, cfg.SSLMode,
+@@ -62,8 +70,8 @@ func Connect(cfg config.DBConfig) (*gorm.DB, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	sqlDB.SetMaxOpenConns(poolMaxOpenConns)
+-	sqlDB.SetMaxIdleConns(poolMaxIdleConns)
++	sqlDB.SetMaxOpenConns(maxOpen)
++	sqlDB.SetMaxIdleConns(maxIdle)
+ 	sqlDB.SetConnMaxLifetime(poolConnMaxLifetime)
+ 	err = sqlDB.Ping()
+ 	if err != nil {
+diff --git a/internal/observability/dbpool.go b/internal/observability/dbpool.go
+index dcf0511..3b71b7e 100644
+--- a/internal/observability/dbpool.go
++++ b/internal/observability/dbpool.go
+@@ -13,31 +13,35 @@ func NewDBPoolCollector(db *sql.DB, dbName string) prometheus.Collector {
+ 		dbName: dbName,
+ 		db:     db,
+ 		openConnections: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+-			Namespace: "db",
+-			Subsystem: "pool",
+-			Name:      "open_connections",
+-			Help:      "number of open connections (in use + idle)",
+-		}, []string{"db"}),
++			Namespace:   "db",
++			Subsystem:   "pool",
++			Name:        "open_connections",
++			ConstLabels: prometheus.Labels{"db": dbName},
++			Help:        "number of open connections (in use + idle)",
++		}, nil),
+ 		inUse: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+-			Namespace: "db",
+-			Subsystem: "pool",
+-			Name:      "in_use_connections",
+-			Help:      "number of connections currently in use",
+-		}, []string{"db"}),
++			Namespace:   "db",
++			Subsystem:   "pool",
++			Name:        "in_use_connections",
++			ConstLabels: prometheus.Labels{"db": dbName},
++			Help:        "number of connections currently in use",
++		}, nil),
+ 		idle: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+-			Namespace: "db",
+-			Subsystem: "pool",
+-			Name:      "idle_connections",
+-			Help:      "number of idle connections",
+-		}, []string{"db"}),
++			Namespace:   "db",
++			Subsystem:   "pool",
++			Name:        "idle_connections",
++			ConstLabels: prometheus.Labels{"db": dbName},
++			Help:        "number of idle connections",
++		}, nil),
+ 		waitCount: prometheus.NewDesc("db_pool_wait_count_total",
+-			"total number of times a caller waited for a connection", []string{"db"}, nil),
++			"total number of times a caller waited for a connection", nil, prometheus.Labels{"db": dbName}),
+ 		waitDuration: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+-			Namespace: "db",
+-			Subsystem: "pool",
+-			Name:      "wait_duration_seconds",
+-			Help:      "total time callers waited for a connection (sum)",
+-		}, []string{"db"}),
++			Namespace:   "db",
++			Subsystem:   "pool",
++			Name:        "wait_duration_seconds",
++			ConstLabels: prometheus.Labels{"db": dbName},
++			Help:        "total time callers waited for a connection (sum)",
++		}, nil),
+ 	}
+ }
+ 
+@@ -64,11 +68,11 @@ func (c *dbPoolCollector) Collect(ch chan<- prometheus.Metric) {
+ }
+ 
+ func (c *dbPoolCollector) collectStats(stats sql.DBStats, ch chan<- prometheus.Metric) {
+-	c.openConnections.WithLabelValues(c.dbName).Set(float64(stats.OpenConnections))
+-	c.inUse.WithLabelValues(c.dbName).Set(float64(stats.InUse))
+-	c.idle.WithLabelValues(c.dbName).Set(float64(stats.Idle))
+-	ch <- prometheus.MustNewConstMetric(c.waitCount, prometheus.CounterValue, float64(stats.WaitCount), c.dbName)
+-	c.waitDuration.WithLabelValues(c.dbName).Set(stats.WaitDuration.Seconds())
++	c.openConnections.WithLabelValues().Set(float64(stats.OpenConnections))
++	c.inUse.WithLabelValues().Set(float64(stats.InUse))
++	c.idle.WithLabelValues().Set(float64(stats.Idle))
++	ch <- prometheus.MustNewConstMetric(c.waitCount, prometheus.CounterValue, float64(stats.WaitCount))
++	c.waitDuration.WithLabelValues().Set(stats.WaitDuration.Seconds())
+ 	c.openConnections.Collect(ch)
+ 	c.inUse.Collect(ch)
+ 	c.idle.Collect(ch)
+diff --git a/internal/observability/dbpool_test.go b/internal/observability/dbpool_test.go
+index 692c9f2..f778097 100644
+--- a/internal/observability/dbpool_test.go
++++ b/internal/observability/dbpool_test.go
+@@ -30,3 +30,24 @@ func TestDBPoolRepeatedScrapesDoNotInflateCumulativeWaitCount(t *testing.T) {
+ 	require.Equal(t, 7.0, read(7))
+ 	require.Equal(t, 9.0, read(9))
+ }
++
++// 两个独立池必须能注册到同一出口，且保留各自的 db 标签。
++func TestIndependentDBPoolsCanShareRegistry(t *testing.T) {
++	registry := prometheus.NewRegistry()
++	for _, name := range []string{"tokmall", "tokmall_consumer"} {
++		require.NoError(t, registry.Register(NewDBPoolCollector(new(sql.DB), name)))
++	}
++	families, err := registry.Gather()
++	require.NoError(t, err)
++	require.Len(t, families, 5)
++	for _, family := range families {
++		require.Len(t, family.Metric, 2)
++		names := map[string]bool{}
++		for _, metric := range family.Metric {
++			require.Len(t, metric.Label, 1)
++			require.Equal(t, "db", metric.Label[0].GetName())
++			names[metric.Label[0].GetValue()] = true
++		}
++		require.Equal(t, map[string]bool{"tokmall": true, "tokmall_consumer": true}, names)
++	}
++}
