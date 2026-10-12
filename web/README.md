@@ -6,7 +6,7 @@ React/TypeScript/Vite/TanStack Router与Query/Tailwind，API类型来自 [OpenAP
 
 全局/关注Feed、登录注册/refresh/登出同步、上传与作者发布、点赞/关注/公开主页、商品/SKU/补库存/挂商品、单SKU购买、买卖双方订单/履约/全额退款、作者毛额/退款/净成交总计。
 
-后端已实现优惠券和热榜，但前端尚无发券/领券/结账选券界面，也没有调用`/api/v1/feed/hot`。媒体worker默认开启，前端尚未完整展示校验PENDING/PASSED/REJECTED/SKIPPED，待发布按钮可能先遇到状态冲突。真实支付与物流均未接入；后续事项见 [roadmap](../docs/roadmap.md)。
+后端已实现优惠券和热榜，但前端尚无发券/领券/结账选券界面，也没有调用`/api/v1/feed/hot`。媒体worker默认开启；个人页与视频详情已展示PENDING/PASSED/REJECTED/SKIPPED状态及安全拒绝原因，等待时刷新，通过或跳过且待发布时启用发布按钮，服务端执行最终门禁。真实支付与物流均未接入；后续事项见 [roadmap](../docs/roadmap.md)。
 
 ## 运行和验证
 

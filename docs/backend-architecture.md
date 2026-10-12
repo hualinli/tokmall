@@ -1,6 +1,6 @@
 # 后端架构与模块边界
 
-> 更新于 2026-10-09。本文描述当前工作区实现；运行时装配以 [cmd/api/main.go](../cmd/api/main.go)、配置以 [config.go](../internal/config/config.go)、接口以 [OpenAPI 契约](../internal/api/openapi.yaml)、数据库结构以 [版本化迁移](../migrations/) 为准。TokMall 是共享 PostgreSQL 的模块化单体，尚未拆分服务。
+> 整理于 2026-10-12。本文描述当前工作区实现；运行时装配以 [cmd/api/main.go](../cmd/api/main.go)、配置以 [config.go](../internal/config/config.go)、接口以 [OpenAPI 契约](../internal/api/openapi.yaml)、数据库结构以 [版本化迁移](../migrations/) 为准。TokMall 是共享 PostgreSQL 的模块化单体，尚未拆分服务。
 
 ## 运行时与依赖边界
 
@@ -54,7 +54,7 @@
 
 ### 订单、退款与优惠券
 
-下单限单 SKU。服务端读取仍在售的商品/SKU；如请求带来源，会验证客户端提供的来源与 `video_products` 活动关系，但不复查视频当前状态，也不证明用户真实点击来源。推广挂载时要求视频已发布。下单随后锁定并扣减库存，在同一事务写订单项快照、库存流水和 `available_at = expires_at` 的 Outbox 超时事件。支付接口是学习环境的模拟支付请求，不是支付渠道回调。过期订单由延迟事件加速关闭，轮询 worker 是安全网；支付时也做 lazy expiry，数据库状态是唯一事实源。履约转换使用独立状态转换规则，不能借退款状态图绕过退款裁决。
+下单限单 SKU。服务端读取仍在售的商品/SKU；如请求带来源，会验证客户端提供的来源与 `video_products` 活动关系，但不复查视频当前状态，也不证明用户真实点击来源。推广挂载时要求视频已发布。下单先在同一事务准备订单项快照、库存流水、券核销和 `available_at = expires_at` 的Outbox超时事件，最后条件扣库存并直接提交；库存不足时全部回滚。支付接口是学习环境的模拟支付请求，不是支付渠道回调。过期订单由延迟事件加速关闭，轮询 worker 是安全网；支付时也做 lazy expiry，数据库状态是唯一事实源。履约转换使用独立状态转换规则，不能借退款状态图绕过退款裁决。
 
 退款仅支持全额；完成态不允许申请。订单进入 `REFUND_REQUESTED` 后等待商家裁决，主订单状态与退款单状态分别约束。退款成功时，原状态为 `PAID`（未发货）则回补库存，原状态为 `FULFILLING`（已发货）不回补；被拒绝则恢复申请前状态。取消、三条超时关闭路径（延迟事件、轮询、支付 lazy expiry）和退款成功都会释放占用券；未过期券回到 `UNUSED`，过期券进入 `EXPIRED`，订单保留历史券引用。
 
@@ -62,9 +62,9 @@
 
 ## 事件与对账
 
-业务事件与交易事实在同一 PostgreSQL 事务写入 Outbox。Relay 领取到期事件、租约发送并退避重试，最终可进入 DLQ；默认传输为 Redis Streams 消费组，利用 XACK 和 XAUTOCLAIM 实现至少一次投递。消费者在一个数据库事务中写消费回执和投影，提交后确认 Streams 消息；开启消费者时为其保留独立5连接预算，前台20，总上限25，避免前台行锁等待耗尽消费取连接机会；相同 event ID 可幂等重放。见 [outbox/relay.go](../internal/outbox/relay.go)、[consumer.go](../internal/outbox/consumer.go) 和 [attribution/projector.go](../internal/attribution/projector.go)。Kafka 只是 Publisher 可替换方向，当前没有 Kafka broker 或 Kafka 消费者接入。
+业务事件与交易事实在同一 PostgreSQL 事务写入 Outbox。Relay 领取到期事件、租约发送并退避重试，投递失败超过上限进入PG内DEAD；消费侧失败进入独立DLQ Stream；默认传输为 Redis Streams 消费组，利用 XACK 和 XAUTOCLAIM 实现至少一次投递。消费者在一个数据库事务中写消费回执和投影，提交后确认 Streams 消息；开启消费者时为其保留独立5连接预算，前台20，总上限25，避免前台行锁等待耗尽消费取连接机会；相同 event ID 可幂等重放。见 [outbox/relay.go](../internal/outbox/relay.go)、[consumer.go](../internal/outbox/consumer.go) 和 [attribution/projector.go](../internal/attribution/projector.go)。Kafka 只是 Publisher 可替换方向，当前没有 Kafka broker 或 Kafka 消费者接入。
 
-当前对账有九项可执行 SQL 检查：`inventory_balance`、`order_stock_ledger`、`refund_order_consistency`、`order_payment_consistency`、`author_sales_projection`、`coupon_issuance`、`coupon_usage`、`order_amount_split`、`outbox_delivery`。毛额统计覆盖曾支付过的全部订单（含后来退款订单），退款按发生日另计。实现见 [reconcile/repository.go](../internal/reconcile/repository.go) 和 [cmd/reconcile/main.go](../cmd/reconcile/main.go)。Redis Streams 丢失窗口由消费回执和数据库对账补偿，不能宣称 broker 本身零丢失。
+当前对账有九项可执行 SQL 检查：`inventory_balance`、`order_stock_ledger`、`refund_order_consistency`、`order_payment_consistency`、`author_sales_projection`、`coupon_issuance`、`coupon_usage`、`order_amount_split`、`outbox_delivery`。毛额统计覆盖曾支付过的全部订单（含后来退款订单），退款按发生日另计。实现见 [reconcile/repository.go](../internal/reconcile/repository.go) 和 [cmd/reconcile/main.go](../cmd/reconcile/main.go)。发布按全部消费组确认水位安全回收，容量满时背压把未投递事件留在PG，取件排除有效租约；停止的消费组会影响回收。持久化故障或投递缺口仍依靠PG事实、回执和对账恢复，不能宣称broker零丢失或长期积压自动收敛。
 
 ## 配置与可观测性
 

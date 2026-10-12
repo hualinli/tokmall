@@ -1,6 +1,6 @@
 # Commerce 当前技术实现
 
-> 更新于 2026-10-07。以下以当前工作区源码、OpenAPI 契约和 migrations/000001–000024 为准；本文保留会影响正确性的事务与不变量，不重复列完整 DDL 或端点清单。路由契约见 [OpenAPI](../internal/api/openapi.yaml)。
+> 整理于 2026-10-12。以下以当前工作区源码、OpenAPI 契约和 migrations/000001–000024 为准；本文保留会影响正确性的事务与不变量，不重复列完整 DDL 或端点清单。路由契约见 [OpenAPI](../internal/api/openapi.yaml)。
 
 ## 模块边界
 
