@@ -12,8 +12,12 @@ package reconcile
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -254,7 +258,7 @@ type Repository interface {
 	// RequeueEvents 把指定事件重新放回待投递（重放，event_id 不变）。
 	RequeueEvents(ctx context.Context, eventIDs []string, now time.Time) (int, error)
 	// RebuildProjection 从事实（orders/order_items/refunds）重建作者日销投影。
-	RebuildProjection(ctx context.Context) (int64, error)
+	RebuildProjection(ctx context.Context, consumer string) (int64, error)
 }
 
 type GormRepository struct{ db *gorm.DB }
@@ -336,17 +340,42 @@ func (r *GormRepository) MissingReceipts(ctx context.Context, consumer string, g
 	return ids, nil
 }
 
-// RebuildProjection 从订单事实重建整个读模型。
-//
-// 这是 CQRS 读模型的关键能力：投影只是事实的一种物化形式，任何时候都可以
-// 丢弃并重建。因此"投影漂移"是可修复的运维问题，而不是数据损坏——
-// 前提是事实侧（orders/refunds/流水）始终是权威。
-//
-// 重建使用与投影完全相同的口径（毛额 + 按退款日归集退款），
-// 并且是幂等的：重复执行结果相同。
-func (r *GormRepository) RebuildProjection(ctx context.Context) (int64, error) {
+var (
+	ErrRebuildConsumerRequired = errors.New("projection rebuild requires the actual consumer group")
+	ErrRebuildPendingEvents    = errors.New("projection rebuild requires all paid/refunded events to have consumer receipts; drain or replay them first")
+	ErrRebuildBusy             = errors.New("projection rebuild requires a quiet maintenance window; concurrent database writes are active")
+)
+
+// RebuildProjection 仅在目标组已消费全部支付/退款事件时重建。
+// NOWAIT 表锁在检查至提交期间排除事实、回执和投影的并发写入；
+// 不等待线上事务，不伪造回执，也不允许把未消费事实预先计入投影。
+func (r *GormRepository) RebuildProjection(ctx context.Context, consumer string) (int64, error) {
+	if strings.TrimSpace(consumer) == "" {
+		return 0, ErrRebuildConsumerRequired
+	}
+
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`LOCK TABLE orders, order_items, refunds, outbox_events, consumed_events, author_sales_daily
+            IN SHARE ROW EXCLUSIVE MODE NOWAIT`).Error; err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+				return fmt.Errorf("%w: %w", ErrRebuildBusy, err)
+			}
+			return err
+		}
+		var pending bool
+		if err := tx.Raw(`SELECT EXISTS (
+            SELECT 1 FROM outbox_events e
+            WHERE e.event_type IN ('commerce.order.paid.v1', 'commerce.order.refunded.v1')
+            AND NOT EXISTS (SELECT 1 FROM consumed_events c WHERE c.event_id = e.event_id AND c.consumer = ?)
+        )`, consumer).Scan(&pending).Error; err != nil {
+			return err
+		}
+		if pending {
+			return ErrRebuildPendingEvents
+		}
+
 		if err := tx.Exec(`DELETE FROM author_sales_daily`).Error; err != nil {
 			return err
 		}

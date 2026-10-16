@@ -1,6 +1,6 @@
 # 开发、验证与运维
 
-> 整理日期：2026-10-12；命令与默认值对照 [Makefile](../Makefile)、[配置](../internal/config/config.go)、[CI](../.github/workflows/ci.yml)。这里说明怎么运行，业务规则与机制分别见业务文档和 ADR。
+> 核对日期：2026-10-13；命令与默认值对照 [Makefile](../Makefile)、[配置](../internal/config/config.go)、[CI](../.github/workflows/ci.yml)。这里说明怎么运行，业务规则与机制分别见 [商城业务](commerce-business.md)、[后端架构](backend-architecture.md) 和 [商城技术实现](commerce-v1-technical-design.md)。
 
 ## 环境与启动
 
@@ -57,6 +57,12 @@ Go 版本以 [go.mod](../go.mod) 为准；Node 22、pnpm 11 与 CI 对齐。Comp
 
 
 </details>
+
+## 输入长度与日志口径
+
+业务标题、描述、规格、关键词、券名、退款文本、订单幂等键和支付身份字段在 service 按 Unicode 字符计数，对齐 OpenAPI maxLength 与 VARCHAR(n)。口令上限按 UTF-8 字节计 72（bcrypt 限制），邮箱上限按字节计 254；不能把这些例外改成字符计数。错误字段 last_error 按字节限制大小但在 UTF-8 边界截断，见 [用户校验](../internal/user/service.go)、[商品校验](../internal/product/service.go)、[订单校验](../internal/order/service.go) 与 [Outbox 仓储](../internal/outbox/repository.go)。
+
+Redis 慢命令日志记录命令、耗时和业务 key 前缀，避免完整账号/订单标识；XREAD/XREADGROUP 等预期阻塞命令不计慢命令，防止把正常等消息误判为依赖延迟，见 [slowlog.go](../internal/cache/slowlog.go) 和 [测试](../internal/cache/slowlog_test.go)。
 
 ## 测试矩阵
 
@@ -119,9 +125,13 @@ make reconcile REBUILD=1
 
 Prometheus `:9090`、Grafana `:3000` 已配置规则与看板。当前 [规则文件](../observability/prometheus/rules/tokmall.yml) 有 9 条记录规则、7 条告警；本地 Compose 未提供 Alertmanager 通知服务。traceparent 与日志关联已实现，未配置完整 OTel 导出链路。
 
+消费者实际在 [NewConsumer](../internal/outbox/consumer.go) 默认每批 32 条、阻塞 2 秒、认领空闲阈值 30 秒、投递阈值 5；[main.go](../cmd/api/main.go) 当前只传入消费指标选项，未装配配置中的 OUTBOX_CLAIM_IDLE / OUTBOX_CONSUMER_MAX_DELIVERIES。修改这两个环境变量不能改变当前 API 消费者行为；排障以装配和构造参数为准。
+
 直接操作 [outboxctl](../cmd/outboxctl/main.go) 的命令有 `status`、`dlq list`、`dlq requeue <event_id>`、`drain`，需提供上述配置环境变量。中继库内 DEAD 事件与消费侧 DLQ Stream 是不同失败位置；命令能处理哪个位置以其实现为准，不要把库内 requeue 当作消费 DLQ 的通用重放接口。
 
-对账覆盖库存余额、订单库存流水、退款订单一致、订单支付一致、作者日销投影、券发行量、券使用、订单金额拆分、Outbox 投递。CLI 退出码 0=一致、1=差异、2=执行失败；`make` 可能将非零结果显示为自身失败。`--replay` 只补偿满足条件的缺失回执，不自动修复所有差异；`--rebuild` 会改写作者日销读模型，应在明确维护范围内运行。
+对账覆盖库存余额、订单库存流水、退款订单一致、订单支付一致、作者日销投影、券发行量、券使用、订单金额拆分、Outbox 投递。CLI 退出码 0=一致、1=差异、2=执行失败；`make` 可能将非零结果显示为自身失败。`--replay` 只补偿满足条件的缺失回执，不自动修复所有差异；`--rebuild` 会改写作者日销读模型，要求实际 `OUTBOX_CONSUMER_GROUP` 的所有支付/退款事件回执齐全。尚未消费的 PENDING/PUBLISHED/DEAD 都会阻止重建；未来 timeout 不阻止。事务用 NOWAIT 表锁排除并发写，争锁直接失败，退出码 2。
+
+重建顺序：暂停相关业务写入；保持中继/消费者运行，先处理 DEAD/DLQ 或重放缺失回执，等支付/退款事件排空；再暂停会写这些表的后台任务，于维护窗口执行 `make reconcile REBUILD=1`；检查投影对账后恢复。不能只停消费者就重建，旧事件恢复后会重复累加；不能删除回执或用伪造回执绕过门禁。锁持有期间新写入会等待，大表重建需预估维护时间。`--rebuild --replay` 不会先替你排空事件，存在缺口时重建仍拒绝，必须分阶段完成。
 
 删除恢复队列可查 `object_delete_jobs` 的 `available_at/attempts/last_error`。后台每 10 秒处理，失败延迟 1 分钟；物理删除前旧 GET URL 可能仍有效。此队列目前没有专用积压告警。
 

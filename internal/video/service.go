@@ -336,8 +336,7 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 		slog.Error("create video failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("create video: %w", err)
 	}
-	// 新视频立刻进布隆过滤器：否则"创建后马上看详情"会被判成一定不存在
-	// （过滤器是定期重建的，不加入就会有窗口期）。
+	// 新视频立即更新本地过滤器；其它实例尚未同步时也会放行到数据库。
 	if s.existence != nil {
 		s.existence.Add(existenceNamespace, v.ID)
 	}
@@ -703,7 +702,7 @@ func (s *Service) finalizeUpload(ctx context.Context, objectKey string, maxSize 
 // 不可见一律返回 ErrNotFound（不泄露存在性）。
 // viewerID=0（匿名）时 is_liked 恒 false。
 func (s *Service) Get(ctx context.Context, viewerID, videoID int64) (*VideoDetail, error) {
-	// 缓存穿透防护第一层：布隆过滤器说"一定不存在"就直接 404，不查库。
+	// 仅共享负缓存中的真实 DB miss 可以短路；本地 Bloom 阴性仍放行。
 	if s.existence != nil {
 		if ok, guardErr := s.existence.MayExist(ctx, existenceNamespace, videoID); guardErr == nil && !ok {
 			return nil, ErrNotFound

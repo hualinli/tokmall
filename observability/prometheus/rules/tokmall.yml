@@ -40,7 +40,7 @@ groups:
           clamp_min(sum(rate(feed_cache_hit_total[5m])) + sum(rate(feed_cache_miss_total[5m])), 0.001)
       - record: job:tokmall_existence_reject_ratio:rate5m
         expr: |
-          sum(rate(existence_lookup_total{result="bloom_rejected"}[5m]))
+          (sum(rate(existence_lookup_total{result="negative_cache_hit"}[5m])) or vector(0))
           /
           clamp_min(sum(rate(existence_lookup_total[5m])), 0.001)
 
@@ -55,7 +55,7 @@ groups:
 
   - name: tokmall.alerts
     rules:
-      # 事件积压：只看"已到期未投递"的事件（延迟事件不算积压，见 ADR-021）。
+      # 事件积压：只看"已到期未投递"的事件（延迟 timeout 不算积压）。
       - alert: TokMallOutboxBacklog
         expr: outbox_pending_events > 100
         for: 5m

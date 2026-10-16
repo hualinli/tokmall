@@ -137,7 +137,7 @@ type Config struct {
 	ExistenceEnabled bool
 	// ExistenceExpected 是每个命名空间的预期元素数，决定位数组大小与误判率。
 	ExistenceExpected uint64
-	// ExistenceFPRate 是目标误判率（假阳性；假阴性恒为 0）。
+	// ExistenceFPRate 是已装载集合的目标假阳性率；不代表跨实例数据同步完整。
 	ExistenceFPRate float64
 	// ExistenceNegativeTTL/Jitter 是负缓存有效期与其随机抖动（防集中过期）。
 	ExistenceNegativeTTL    time.Duration

@@ -116,7 +116,7 @@ func (r *Runner) ReplayMissingReceipts(ctx context.Context) (int, error) {
 // RebuildProjection 重建读模型。它只应在确认"事实侧可信、投影侧漂移"后使用：
 // 重建会把投影里任何"事实侧没有"的内容抹掉。
 func (r *Runner) RebuildProjection(ctx context.Context) (int64, error) {
-	affected, err := r.repo.RebuildProjection(ctx)
+	affected, err := r.repo.RebuildProjection(ctx, r.consumer)
 	if err != nil {
 		return 0, err
 	}

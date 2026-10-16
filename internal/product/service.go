@@ -165,9 +165,7 @@ func (s *Service) CreateProduct(ctx context.Context, p CreateProductParams) (*Pr
 	if err != nil {
 		return nil, err
 	}
-	// 新建商品必须立刻进布隆过滤器：过滤器是定期全量重建的，不在这里登记
-	// 就会出现"刚创建的商品在下次重建前被判成一定不存在"——实测过这个 bug
-	// （商品创建成功，紧接着查详情 404）。视频模块同理。
+	// 本地集合立即更新；其它实例未装载该 ID 时也会放行到数据库。
 	if s.existence != nil {
 		s.existence.Add(existenceNamespace, product.ID)
 	}

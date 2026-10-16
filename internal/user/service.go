@@ -360,9 +360,9 @@ func (s *Service) GetProfile(ctx context.Context, userID int64) (*PublicUser, er
 // 新 token 签发前先把旧 jti 拉黑——两步骤之间崩溃的后果是
 // 旧 token 作废、用户需要重新登录，而不会出现新旧两个 token 同时有效
 // （不产生 token 泛滥）。这是无状态 JWT 下无法用事务时对顺序的取舍。
-// 已知限制：两个并发请求同时用同一 refresh token 刷新时，可能都通过
-// 黑名单检查而各自签发新 token（短暂双活）。工业级解法是 per-user
-// 当前 jti 白名单（只认最新一个），列为 ADR 演进项。
+// Redis SETNX 原子 Claim 旧 jti，并发刷新只有一次可以成功签发。
+// Claim 成功后签发失败也需重新登录；access token 不逐请求检查撤销状态。
+// 当前权衡见 docs/architecture-decisions.md#auth。
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResult, error) {
 	claims, err := s.tokens.Verify(refreshToken)
 	if err != nil || !claims.IsRefresh() {

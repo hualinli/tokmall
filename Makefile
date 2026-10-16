@@ -127,8 +127,8 @@ drill: build ## 端到端业务闭环演练（curl + psql 全程可见）
 drill-failure: build ## 故障演练（Redis 停机 / 事件丢失 / 对账重放）
 	@bash scripts/drill_failure_modes.sh
 
-# 对账（有差异时退出码 1）；make reconcile REBUILD=1 可先从事实重建投影
-reconcile: build ## 六项对账检查（REPLAY=1 重放 / REBUILD=1 重建读模型）
+# 对账（有差异时退出码 1）；REBUILD=1 要求实际消费组回执齐全及维护窗口。
+reconcile: build ## 九项对账检查（REPLAY=1 重放 / REBUILD=1 重建读模型）
 	@env APP_ENV=development JWT_SECRET=$(JWT_SECRET) FEED_CURSOR_SECRET=$(FEED_CURSOR_SECRET) \
 		./bin/reconcile $(if $(REBUILD),--rebuild,) $(if $(REPLAY),--replay,)
 

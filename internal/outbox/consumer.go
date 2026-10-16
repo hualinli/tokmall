@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,7 +49,7 @@ func (NopConsumerStats) Lag(int64)           {}
 //  1. XREADGROUP 读取新消息（> 表示"我还没读过的"）；
 //  2. 在数据库事务里写消费回执 + 业务投影，提交后 XACK；
 //  3. 处理失败不 ACK：消息留在 PEL（待处理列表）；
-//  4. 定期 XAUTOCLAIM 认领超时未确认的消息（消费者崩溃后的兜底）；
+//  4. 分页 XPENDING + XCLAIM 认领超时未确认的消息（消费者崩溃后的兜底）；
 //  5. 投递次数超过上限 → 投到 DLQ Stream 并 ACK，等待人工重放。
 type Consumer struct {
 	db            *gorm.DB
@@ -63,6 +64,8 @@ type Consumer struct {
 	claimIdle     time.Duration
 	maxDeliveries int64
 	stats         ConsumerStats
+	claimMu       sync.Mutex
+	claimStart    string
 }
 
 type ConsumerOption func(*Consumer)
@@ -173,67 +176,59 @@ func (c *Consumer) ConsumeOnce(ctx context.Context) (int, error) {
 	return processed, nil
 }
 
-// claimStale 认领"投递出去但超过 claimIdle 没有 ACK"的消息。
-// 这是消费者崩溃（进程被杀、机器宕机）后事件不永久卡住的保证。
-// ClaimOnce 认领并处理"投递出去但超过 claimIdle 没有 ACK"的消息，
-// 返回处理条数。这是消费者崩溃（进程被杀、机器宕机）后事件不永久卡住的保证。
+// ClaimOnce 有界扫描 PEL，并保留下一页位置，即使这一页没有超时消息。
+// XPENDING 先读取同一页的次数；XCLAIM 再原子检查 MinIdle，避免抢走刚被
+// 其它消费者续领的消息。查询失败不认领、不推进游标，也不把未知次数当作零。
 func (c *Consumer) ClaimOnce(ctx context.Context) (int, error) {
-	// 先读投递次数，读不到就整轮放弃。
-	//
-	// 这里不能用"读不到就当 0"糊过去：判定式是 `deliveries[id] > maxDeliveries`，
-	// map 未命中得 0，毒丸消息于是永远达不到阈值 → DLQ 安全网被静默关闭，
-	// 一条稳定失败的消息会无限重投。也不能反过来把未知当作超限，否则 Redis
-	// 抖一下就会把健康消息批量误杀。
-	//
-	// 正确的做法是“不做判定、也不动消息”：消息本来就在 PEL 里，下一个 tick
-	// 会再试；Redis 恢复后投递次数就正确了，死信逻辑照常生效。
-	// 顺序也重要——XAUTOCLAIM 本身会把投递次数 +1，读不到就先认领会白白让计数失真。
-	deliveries, err := c.pendingDeliveries(ctx)
+	c.claimMu.Lock()
+	defer c.claimMu.Unlock()
+	start := c.claimStart
+	if start == "" {
+		start = "-"
+	}
+	pending, err := c.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: c.stream, Group: c.group, Start: start, End: "+", Count: int64(c.batch),
+	}).Result()
 	if err != nil {
 		return 0, fmt.Errorf("read pending deliveries: %w", err)
 	}
-	res, _, err := c.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-		Stream: c.stream, Group: c.group, Consumer: c.name,
-		MinIdle: c.claimIdle, Start: "0-0", Count: int64(c.batch),
-	}).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("xautoclaim: %w", err)
+	next := "-"
+	if len(pending) == c.batch {
+		next = "(" + pending[len(pending)-1].ID
 	}
-	if len(res) == 0 {
-		return 0, nil
-	}
-	processed := 0
-	for _, msg := range res {
-		if deliveries[msg.ID] > c.maxDeliveries {
-			c.deadLetter(ctx, msg, deliveries[msg.ID])
-			processed++
+	ids := make([]string, 0, len(pending))
+	deliveries := make(map[string]int64, len(pending))
+	for _, entry := range pending {
+		if entry.Idle < c.claimIdle {
 			continue
 		}
-		slog.Warn("reclaiming stale message", "id", msg.ID, "deliveries", deliveries[msg.ID])
-		c.process(ctx, msg)
-		processed++
+		ids = append(ids, entry.ID)
+		deliveries[entry.ID] = entry.RetryCount
 	}
-	return processed, nil
-}
-
-// pendingDeliveries 读 PEL 里的投递次数。**出错必须返回 error**：
-// 静默返回空 map 与“没有待确认消息”无法区分，会让调用方把投递次数当成 0，
-// 从而静默关闭 DLQ 上限。
-func (c *Consumer) pendingDeliveries(ctx context.Context) (map[string]int64, error) {
-	pending, err := c.client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: c.stream, Group: c.group, Start: "-", End: "+", Count: 256,
+	if len(ids) == 0 {
+		c.claimStart = next
+		return 0, nil
+	}
+	messages, err := c.client.XClaim(ctx, &redis.XClaimArgs{
+		Stream: c.stream, Group: c.group, Consumer: c.name, MinIdle: c.claimIdle, Messages: ids,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("xclaim: %w", err)
 	}
-	counts := make(map[string]int64, len(pending))
-	for _, entry := range pending {
-		counts[entry.ID] = entry.RetryCount
+	c.claimStart = next
+	for _, msg := range messages {
+		count, known := deliveries[msg.ID]
+		if !known {
+			return 0, fmt.Errorf("missing pending delivery count for %s", msg.ID)
+		}
+		if count > c.maxDeliveries {
+			c.deadLetter(ctx, msg, count)
+			continue
+		}
+		slog.WarnContext(ctx, "reclaiming stale message", "id", msg.ID, "deliveries", count)
+		c.process(ctx, msg)
 	}
-	return counts, nil
+	return len(messages), nil
 }
 
 // process 是幂等消费的核心：

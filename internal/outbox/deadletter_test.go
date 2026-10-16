@@ -2,11 +2,11 @@ package outbox_test
 
 // DLQ 上限的回归测试。
 //
-// 背景：pendingDeliveries 曾经把 XPendingExt 的错误吞掉并返回空 map。判定式是
+// 背景：旧实现曾经把 XPendingExt 的错误吞掉并返回空 map。判定式是
 // `deliveries[id] > maxDeliveries`，map 未命中得 0，于是毒丸消息永远达不到阈值——
 // DLQ 安全网被**静默**关闭（无日志、无指标），一条稳定失败的消息无限重投。
 //
-// 这里用 go-redis 的 AddHook 精确让 XPENDING 失败（XAUTOCLAIM 保持正常），
+// 这里用 go-redis 的 AddHook 精确让 XPENDING 失败（XCLAIM 保持正常），
 // 模拟"Redis 抖动导致投递次数读不到"，不需要改动生产代码。
 
 import (

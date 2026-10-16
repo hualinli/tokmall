@@ -24,8 +24,8 @@ type Message struct {
 }
 
 // Publisher 是传输抽象。默认实现是 Redis Streams（本项目已依赖 Redis，
-// 零新增基础设施）；换成 Kafka 只需实现同一个接口——事件语义、
-// 幂等键、DLQ 与重放流程都不需要改。
+// 零新增基础设施）；换成 Kafka 可复用事件语义与幂等键，但仍需
+// 实现消费者、确认、DLQ 和重放协议，不能仅替换发布者就完成接入。
 type Publisher interface {
 	Publish(ctx context.Context, msg Message) error
 	Name() string
@@ -45,9 +45,9 @@ func (LogPublisher) Publish(_ context.Context, msg Message) error {
 
 // RedisStreamPublisher 把事件 XADD 到 Redis Stream。
 //
-// 为什么选 Redis Streams 而不是 Kafka（ADR-014）：
+// 为什么选 Redis Streams 而不是 Kafka（见 docs/architecture-decisions.md#events）：
 //   - 本项目已有 Redis，Streams 自带 consumer group、消息确认（XACK）、
-//     待处理列表（PEL）与认领（XAUTOCLAIM），足以支撑至少一次投递与
+//     待处理列表（PEL）与分页认领（XPENDING/XCLAIM），足以支撑至少一次投递与
 //     "消费者崩溃后重投"；
 //   - 量级是单机学习项目，Kafka 的分区吞吐与保留策略在这里是过剩能力；
 //   - 代价要诚实记录：Redis 的持久化弱于 Kafka（AOF everysec 仍有秒级

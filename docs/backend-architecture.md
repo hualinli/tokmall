@@ -1,12 +1,12 @@
 # 后端架构与模块边界
 
-> 整理于 2026-10-12。本文描述当前工作区实现；运行时装配以 [cmd/api/main.go](../cmd/api/main.go)、配置以 [config.go](../internal/config/config.go)、接口以 [OpenAPI 契约](../internal/api/openapi.yaml)、数据库结构以 [版本化迁移](../migrations/) 为准。TokMall 是共享 PostgreSQL 的模块化单体，尚未拆分服务。
+> 核对于 2026-10-13。本文描述当前工作区实现；运行时装配以 [cmd/api/main.go](../cmd/api/main.go)、配置以 [config.go](../internal/config/config.go)、接口以 [OpenAPI 契约](../internal/api/openapi.yaml)、数据库结构以 [版本化迁移](../migrations/) 为准。TokMall 是共享 PostgreSQL 的模块化单体，尚未拆分服务。
 
 ## 运行时与依赖边界
 
-`cmd/api` 是组合根：加载并校验配置，连接 PostgreSQL 和 Redis，执行 SQL 迁移，创建 RustFS 客户端、缓存、指标、各模块服务与 handler，再统一注册路由。API 进程也运行对象删除、媒体探测、热榜物化、缓存存在性重建、订单到期、Outbox 中继/消费和周期对账等后台任务；其中多项由配置开关控制。退出时先关 HTTP，再按逆序停止 worker。
+`cmd/api` 是组合根：加载并校验配置，连接 PostgreSQL 和 Redis，执行 SQL 迁移，创建 RustFS 客户端、缓存、指标、各模块服务与 handler，再统一注册路由。API 进程也运行对象删除、媒体探测、热榜物化、缓存存在性重建、订单到期、Outbox 中继/消费和周期对账等后台任务；其中多项由配置开关控制。收到退出信号后调用 HTTP Shutdown，再逆序等待 worker 停止；worker 也会观察已取消的共享 context，见 [main.go](../cmd/api/main.go)。
 
-请求经过 Hertz 中间件（恢复、request ID、traceparent、HTTP 指标和访问日志）后进入 handler，相关实现见 [tracing middleware](../internal/middleware/tracing.go)、[auth middleware](../internal/middleware/auth.go) 和 [HTTP metrics](../internal/observability/http.go)。`registerRoutes` 将 optional-auth 与 protected 路由分组，并在 API 组挂载读限流、在受保护组挂载写限流。handler 解析 HTTP DTO、注入认证身份并映射业务错误；service 执行业务规则；repository 负责 SQL、事务和 ORM 错误翻译。service 暴露领域参数/视图，不把 GORM model 作为跨层 API。接口通常定义在消费侧，装配关系集中在 `main.go`。
+请求经过 Hertz 中间件（恢复、request ID、traceparent、HTTP 指标和访问日志）后进入 handler，相关实现见 [tracing middleware](../internal/middleware/tracing.go)、[auth middleware](../internal/middleware/auth.go) 和 [HTTP metrics](../internal/observability/http.go)。`registerRoutes` 将 optional-auth 与 protected 路由分组，并在 API 组挂载读限流、在受保护组挂载写限流。handler 解析 HTTP DTO、注入认证身份并映射业务错误；service 执行业务规则；repository 负责 SQL、事务和 ORM 错误翻译。service 暴露领域参数/视图，不把 GORM model 作为跨层 API。repository 将 ORM 错误翻译为领域哨兵，service 分类业务拒绝与系统故障，handler 映射 BizError，未知错误返回 500；用 errors.Is/As 保留错误链，见 [统一响应](../internal/response/response.go)。接口通常定义在消费侧，装配关系集中在 `main.go`。
 
 | 层或依赖 | 当前职责与边界 |
 |---|---|
@@ -40,9 +40,13 @@
 
 全局 Feed 使用 `(published_at, id)` 时间游标；游标带 HMAC 签名和排序版本，表示上一页末项。关注 Feed 采用拉模式，读取关注作者完整时间线：低关注量走有界归并，关注量较大时使用全局时间索引；生产排序只有 `TimeRanker`，配置或 service 注入 `HotRanker` 会被拒绝。见 [feed/service.go](../internal/feed/service.go)、[cursor.go](../internal/feed/cursor.go) 和 [ranker.go](../internal/feed/ranker.go)。每作者 TOP 5 是历史实现，不是当前语义；推模式和 `HybridRanker` 尚未实现。
 
-首页默认第一页使用 Cache-Aside、singleflight 和回源前二次检查。可选 L1 分片 LRU 位于 Redis L2 前；L1 TTL 不得长于 L2 TTL。写路径在数据库提交后尝试删除 L2、本地 L1 并递增 Redis `feed:version`，其他实例按版本探测间隔发现失效；当前若 L2 删除失败，版本递增会被跳过；若版本递增本身失败，远端实例也不会及时获知变化。失效调用方记录错误但不回滚业务写，这两种错误路径都依赖远端 L1 TTL 收敛。版本读取失败也会沿用上次值，因此缓存是最终一致而非强一致。点赞数与商品卡在页响应时由feed只读投影合并为一次SQL批量读取，不固定在 Feed 主体缓存内；先分别聚合点赞和SKU价格，避免连接放大计数。
+首页默认第一页使用 Cache-Aside、singleflight 和回源前二次检查。可选 L1 分片 LRU 位于 Redis L2 前；L1 TTL 不得长于 L2 TTL。写路径在数据库提交后尝试先删除本地 L1、再删除 L2，成功后递增 Redis `feed:version`，其他实例按版本探测间隔发现失效；当前若 L2 删除失败，版本递增会被跳过；若版本递增本身失败，远端实例也不会及时获知变化。失效调用方记录错误但不回滚业务写，远端 L1 到期后仍可能回填尚未到期的旧 L2，需要各层 TTL 收敛，不能把 L1 TTL 单独作为总陈旧窗口上界。版本读取失败也会沿用上次值；在途请求可能在另一请求提交并失效后回填旧查询结果，版本号不保证查库/回填原子性。因此缓存是最终一致而非强一致。点赞数与商品卡在页响应时由feed只读投影合并为一次SQL批量读取，不固定在 Feed 主体缓存内；先分别聚合点赞和SKU价格，避免连接放大计数。
 
 `GET /api/v1/feed/hot` 是单独的物化热榜，不是关注 Feed 的 `HotRanker`。互动先更新 Redis 分钟桶，后台每分钟物化冻结窗口；窗口 key 为 v2，条目上限 2000、TTL 10 分钟。游标同时包含 `window_end`、`hot_score` 和 `video_id`，窗口不重写，过期窗口对应游标被拒绝。窗口缺失时才 singleflight 回源；空首页窗口或首页请求遇到 Redis 故障时降级时间流，返回时间游标并在后续请求中继续时间流。已有热榜游标遇到 Redis 故障返回错误，避免切换排序后重复或漏项。实现见 [hot_cache.go](../internal/feed/hot_cache.go) 和 [hot_service.go](../internal/feed/hot_service.go)。
+
+### 存在性判定
+
+[existence.Guard](../internal/existence/guard.go) 只允许真实 DB miss 的 Redis 负缓存短路。本地 Bloom 阴性继续查负缓存/数据库；首次装载前放行，负缓存读取失败也放行。本地过滤器当前用于集合观测，不能证明其他实例尚未提交新记录。重建按命名空间串行，构建期间本地新增双写 active/building，成功切换、失败保留旧集合；不缓存权限或媒体可见性拒绝。测试见 [guard_test.go](../internal/existence/guard_test.go)，业务接入见 [video/existence.go](../internal/video/existence.go) 与 [product/service.go](../internal/product/service.go)。
 
 ### 上传、发布与清理
 
@@ -62,15 +66,29 @@
 
 ## 事件与对账
 
-业务事件与交易事实在同一 PostgreSQL 事务写入 Outbox。Relay 领取到期事件、租约发送并退避重试，投递失败超过上限进入PG内DEAD；消费侧失败进入独立DLQ Stream；默认传输为 Redis Streams 消费组，利用 XACK 和 XAUTOCLAIM 实现至少一次投递。消费者在一个数据库事务中写消费回执和投影，提交后确认 Streams 消息；开启消费者时为其保留独立5连接预算，前台20，总上限25，避免前台行锁等待耗尽消费取连接机会；相同 event ID 可幂等重放。见 [outbox/relay.go](../internal/outbox/relay.go)、[consumer.go](../internal/outbox/consumer.go) 和 [attribution/projector.go](../internal/attribution/projector.go)。Kafka 只是 Publisher 可替换方向，当前没有 Kafka broker 或 Kafka 消费者接入。
+业务事件与交易事实在同一 PostgreSQL 事务写入 Outbox。Relay 领取到期事件、租约发送并退避重试，投递失败超过上限进入PG内DEAD；消费侧失败进入独立DLQ Stream；默认传输为 Redis Streams 消费组，利用 XACK 以及分页 XPENDING/XCLAIM 实现至少一次投递；认领保留扫描位置，投递次数读取与消息来自同一页。消费者在一个数据库事务中写消费回执和投影，提交后确认 Streams 消息；开启消费者时为其保留独立5连接预算，前台20，总上限25，避免前台行锁等待耗尽消费取连接机会；相同 event ID 可幂等重放。见 [outbox/relay.go](../internal/outbox/relay.go)、[consumer.go](../internal/outbox/consumer.go) 和 [attribution/projector.go](../internal/attribution/projector.go)。Kafka 只是 Publisher 可替换方向，当前没有 Kafka broker 或 Kafka 消费者接入。
 
 当前对账有九项可执行 SQL 检查：`inventory_balance`、`order_stock_ledger`、`refund_order_consistency`、`order_payment_consistency`、`author_sales_projection`、`coupon_issuance`、`coupon_usage`、`order_amount_split`、`outbox_delivery`。毛额统计覆盖曾支付过的全部订单（含后来退款订单），退款按发生日另计。实现见 [reconcile/repository.go](../internal/reconcile/repository.go) 和 [cmd/reconcile/main.go](../cmd/reconcile/main.go)。发布按全部消费组确认水位安全回收，容量满时背压把未投递事件留在PG，取件排除有效租约；停止的消费组会影响回收。持久化故障或投递缺口仍依靠PG事实、回执和对账恢复，不能宣称broker零丢失或长期积压自动收敛。
 
+日销重建必须指定实际消费组；支付/退款 Outbox 事件无论 PENDING/PUBLISHED/DEAD，均需有该组回执，未来 timeout 不参与此门禁。同事务以 SHARE ROW EXCLUSIVE NOWAIT 锁订单、明细、退款、Outbox、回执与投影表，从检查到提交排除并发写，争锁或缺回执则拒绝。操作需暂停相关写入、先排空事件再在维护窗口执行，详见 [恢复流程](development-and-operations.md#观测与恢复) 和 [重建门禁测试](../internal/reconcile/rebuild_integration_test.go)。
+
+消费者 PEL 恢复每次有界读取一页 XPENDING，保存排他起始 ID，即使本页没有超时消息也继续推进，到末尾绕回。次数来自同一页，查询失败不认领；XCLAIM 在 Redis 内再次检查 MinIdle。扫描位置不持久化，恢复时间随页数和周期变化，见 [消费者](../internal/outbox/consumer.go) 与 [分页恢复测试](../internal/outbox/claim_pagination_test.go)。
+
+## 认证与可见性
+
+access JWT 验签后提供身份，不逐请求检查账户状态或撤销；登录与 refresh 检查账户可用性，公开资料对不可用账号返回 404。refresh 按 jti 用 Redis SETNX 原子 Claim，只有成功抢占者可签发新 token，TTL 等于旧 token 剩余寿命；Claim 后进程崩溃或签发失败需重新登录。logout 对无效/过期 refresh 幂等成功，Redis 故障返回错误。实现见 [user/service.go](../internal/user/service.go)、[blacklist.go](../internal/user/blacklist.go) 和 [认证中间件](../internal/middleware/auth.go)。
+
+资源归属在服务端校验；非作者操作视频与资源不存在返回相同 404，DELETED 视频详情对所有人不可见，未发布仅作者可见。视频应用层状态图配合数据库来源状态条件更新防竞争，发布另受媒体门禁约束，见 [video/service.go](../internal/video/service.go) 和 [repository.go](../internal/video/repository.go)。浏览器凭据及 XSS 边界见 [前端说明](../web/README.md)。
+
+认证路由同时受全局读配额和认证 IP 配额保护，登录/注册才额外检查规范化账号摘要配额；refresh/logout 无账号标识符，跳过账号配额。邮箱与用户名仍为独立桶。当前固定窗口、Redis 故障 fail-open，具体路由见 [user/handler.go](../internal/user/handler.go)、[限流](../internal/middleware/ratelimit.go) 和 [main.go](../cmd/api/main.go)；阈值以配置为准。
+
 ## 配置与可观测性
 
-`JWT_SECRET` 和 `FEED_CURSOR_SECRET` 在所有环境必填；生产环境进一步校验密钥长度/区分、数据库和 Redis TLS、RustFS TLS、占位凭证等。`TRUSTED_PROXIES` 默认空，表示不信任转发头；不允许配置全网段。限流使用 Redis 固定窗口 Lua：认证按账号及 IP，API 读请求按 IP，受保护写请求按用户；Redis 故障时 fail-open 并记录告警日志，见 [config.go](../internal/config/config.go) 和 [ratelimit.go](../internal/middleware/ratelimit.go)。Prometheus `/metrics` 默认绑定 `127.0.0.1:9091`，启动后会主动探测端点。
+`JWT_SECRET` 和 `FEED_CURSOR_SECRET` 在所有环境必填；生产环境进一步校验密钥长度/区分、数据库和 Redis TLS、RustFS TLS、占位凭证等。`TRUSTED_PROXIES` 默认空，表示不信任转发头；不允许配置全网段。API 读请求按 IP、受保护写请求按用户限流，见 [config.go](../internal/config/config.go) 和 [ratelimit.go](../internal/middleware/ratelimit.go)。Prometheus `/metrics` 默认绑定 `127.0.0.1:9091`，启动后会主动探测端点。
 
 日志由 slog 输出 stdout 和轮转文件；ContextHandler 从 context 注入 request_id、trace_id、span_id、路由模板和用户 ID，并按字段名脱敏。HTTP 指标使用路由模板，避免把资源 ID 作为标签。实现见 [logcontext.go](../internal/observability/logcontext.go)、[traceparent.go](../internal/tracing/traceparent.go) 和 [HTTP metrics](../internal/observability/http.go)。这里只实现 W3C traceparent 的校验、生成与透传，没有完整 OpenTelemetry SDK、OTLP exporter 或跨服务 span 自动埋点。Prometheus 规则在 [tokmall.yml](../observability/prometheus/rules/tokmall.yml)，告警规则文件不等同于部署了 Alertmanager。
+
+对象存储使用 closed/open/half-open 熔断装饰器，半开受限探测；对象不存在和无效大小是业务答复，不计故障，open 映射 503。bucket 检查失败不阻塞启动，同一熔断器包住预签名和对象操作；SDK region 缓存命中时可能本地签名，不能把签名成功视为存储可用。见 [装配](../cmd/api/main.go)、[存储熔断](../internal/breaker/storage.go) 与 [存储客户端](../internal/storage/storage.go)。
 
 ## 明确边界
 
@@ -78,4 +96,4 @@
 - Kafka、支付渠道、部分退款/退货入库、券商品范围、Feed 推送扇出及 HybridRanker 均未接入。
 - PostgreSQL 与 Redis/RustFS 之间没有分布式事务；通过 Outbox、幂等、补偿任务和对账处理已知失败窗口。
 
-进一步的订单字段、状态约束和迁移依据见 [Commerce v1 技术实现](commerce-v1-technical-design.md)；设计取舍见 [ADR](architecture-decisions.md)，后续演进计划见 [roadmap](roadmap.md)。
+进一步的订单字段、状态约束和迁移依据见 [Commerce v1 技术实现](commerce-v1-technical-design.md)；设计取舍见 [关键设计取舍](architecture-decisions.md)，后续演进计划见 [roadmap](roadmap.md)。

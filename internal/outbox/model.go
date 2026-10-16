@@ -24,7 +24,7 @@ const (
 	// EventTypeOrderTimeout 是"延迟事件"：它在订单创建时写入，
 	// 但 available_at 被设成 expires_at，因此中继要等到超时那一刻才会投递。
 	// 它只是**加速器**——订单是否超时最终以数据库状态为准（条件更新），
-	// 轮询 Worker 仍然是安全网。见 ADR-021。
+	// 轮询 Worker 仍然是安全网。见 docs/commerce-v1-technical-design.md 的支付、取消与超时。
 	EventTypeOrderTimeout = "commerce.order.timeout.v1"
 
 	AggregateTypeOrder = "order"

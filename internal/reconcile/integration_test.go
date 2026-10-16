@@ -137,6 +137,10 @@ func toString(value any) string {
 // seedCleanFixture 造一份内部一致的业务数据：商品/SKU/库存/订单/支付/
 // 退款单/库存流水/事件与投影，全部对齐。
 func seedCleanFixture(t *testing.T, db *gorm.DB) (authorID, buyerID, merchantID, skuID int64) {
+	return seedSalesFixture(t, db, true)
+}
+
+func seedSalesFixture(t *testing.T, db *gorm.DB, consumed bool) (authorID, buyerID, merchantID, skuID int64) {
 	t.Helper()
 	prefix := "reconcile-" + uuid.NewString()[:8]
 	require.NoError(t, db.Raw(`INSERT INTO users (email, username, password_hash)
@@ -180,10 +184,12 @@ func seedCleanFixture(t *testing.T, db *gorm.DB) (authorID, buyerID, merchantID,
 		(event_id, event_type, aggregate_type, aggregate_id, partition_key, payload, status, attempts, published_at, available_at)
 		VALUES (?, 'commerce.order.paid.v1', 'order', ?, ?, '{}'::jsonb, 'PUBLISHED', 1, now() - interval '1 hour', now() - interval '1 hour')`,
 		uuid.New(), orderID, "author:"+toStringInt(authorID)).Error)
-	require.NoError(t, db.Exec(`INSERT INTO consumed_events (consumer, event_id, event_type, aggregate_id)
+	if consumed {
+		require.NoError(t, db.Exec(`INSERT INTO consumed_events (consumer, event_id, event_type, aggregate_id)
 		SELECT 'attribution-projection', event_id, event_type, aggregate_id FROM outbox_events WHERE aggregate_id = ?`, orderID).Error)
-	require.NoError(t, db.Exec(`INSERT INTO author_sales_daily (author_id, stat_date, order_count, units_sold, gmv)
+		require.NoError(t, db.Exec(`INSERT INTO author_sales_daily (author_id, stat_date, order_count, units_sold, gmv)
 		VALUES (?, ?, 1, 1, 200)`, authorID, paidAt.Format("2006-01-02")).Error)
+	}
 	return authorID, buyerID, merchantID, skuID
 }
 

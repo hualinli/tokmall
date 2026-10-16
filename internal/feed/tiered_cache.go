@@ -18,16 +18,17 @@ import (
 //
 // 为什么不用 Pub/Sub 广播失效：广播需要每个实例维护订阅连接，
 // 断线期间写入的失效消息会丢（消息不持久），恢复后本地副本可能长期陈旧；
-// 版本号方案没有"丢消息"这个失败模式——最坏情况只是版本探测的刷新间隔
-// （默认 1 秒）内读到旧值，而 L1 的 TTL 是最终兜底。
+// 版本号无需逐条广播，但失效写入和版本读取都可能失败。正常路径的
+// 探测间隔（默认 1 秒）不是故障下的硬上界；L1 到期还可能读到旧 L2，
+// 最终需依赖各层 TTL 收敛。
 const feedVersionKey = "feed:version"
 
 // VersionStamp 维护"当前数据版本"，并把读到的值在本地缓存一小段时间。
 //
 // 为什么要本地缓存版本：如果每次 L1 查询都去 Redis GET 一次版本号，
 // L1 省下的就只剩反序列化，收益大打折扣。本地缓存把版本读取的
-// 频率降到 1/refreshInterval，代价是最长 refreshInterval 的失效延迟——
-// 这个取舍必须写清楚，而不是假装"实时一致"。
+// 频率降到 1/refreshInterval；失效与版本读取成功时，探测带来最多一个
+// 间隔的发现延迟。故障时会沿用旧版本，不能承诺这个上界。
 type VersionStamp struct {
 	client   *redis.Client
 	interval time.Duration
@@ -100,7 +101,8 @@ type VersionSource interface {
 // TieredFeedCache 是"L1 进程内 + L2 Redis"的两级首页缓存。
 //
 // 读路径：L1（内存，命中即返回）→ L2（Redis）→ 未命中（调用方回源数据库）。
-// 写路径：写数据库后 Del（L2）+ 本地 Delete（L1）+ Bump（版本号，让其它实例的 L1 失效）。
+// 写路径：写数据库后先 Delete（本地 L1）、再 Del（L2），成功后 Bump
+// （版本号，让其它实例的 L1 失效）；L2 删除失败时不执行 Bump。
 //
 // l2 用 FirstPageCache 接口而不是具体类型：既保持了"消费侧定义接口"的项目约定，
 // 也让这一层可以用假实现做单元测试（Redis 只用于集成验证）。

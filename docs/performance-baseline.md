@@ -186,7 +186,7 @@
 
 ## 2026-10：L1 观察，不是容量测试
 
-原记录只有5次连续请求：第一条冷、后4条 L1 命中，指标 hit=4/miss=2，响应约9ms→2.5ms。这是功能/延迟观察，没有持续压测、双实例或完整负载数据。默认 L1 TTL 5秒、L2 TTL60秒、版本探测1秒的当前值以 [config](../internal/config/config.go) 为准，失效故障窗口见 [ADR-025](architecture-decisions.md)。
+原记录只有5次连续请求：第一条冷、后4条 L1 命中，指标 hit=4/miss=2，响应约9ms→2.5ms。这是功能/延迟观察，没有持续压测、双实例或完整负载数据。默认 L1 TTL 5秒、L2 TTL60秒、版本探测1秒的当前值以 [config](../internal/config/config.go) 为准，失效故障窗口见 [缓存一致性](architecture-decisions.md#cache)。
 
 缓存穿透历史报告约2,996→5,086 req/s、不存在 ID 的数据库查询降为零，来自旧项目记录；缺少统一原始负载文件，不能当作本轮新实测。Redis 慢命令 Hook 和规则存在是源码事实，不是额外吞吐证明。
 

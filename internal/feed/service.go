@@ -200,7 +200,7 @@ func (s *Service) ListFollowing(ctx context.Context, viewerID int64, limit int, 
 		return nil, err
 	}
 	// 只缓存"无游标 + 默认 limit"的第一页：自定义 limit 与缓存内容绑定，
-	// 混用会串数据；深层翻页命中率低（与全局首页缓存 ADR-012 同取舍）。
+	// 混用会串数据；深层翻页命中率低（与全局首页缓存使用相同边界）。
 	var result *FeedResult
 	shared := before == nil && limit == defaultLimit && s.followingCache != nil
 	if shared {

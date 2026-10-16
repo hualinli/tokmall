@@ -48,9 +48,10 @@ function parsePersisted(raw: string | null): AuthSnapshot | null {
 /**
  * 多标签页登录态同步。
  *
- * 为什么必须做：refresh token 是「单次有效 + 轮换」的（ADR-011），
- * 每个标签页各自持有一份旧 token 并各自定时刷新时，第二个刷新的标签页必然被拉黑踢出登录。
- * 同步后任意标签页轮换成功都会把新 token 对广播给其他标签页，大家始终共用同一份最新凭证。
+ * 为什么必须做：refresh token 是「单次有效 + 轮换」的（见 docs/architecture-decisions.md#auth），
+ * 多个标签页同时使用旧 token 刷新时，只有一个请求能 Claim 成功。
+ * 轮换成功会广播新 token 对，减少其他标签页继续使用旧凭证；
+ * 广播不提供刷新互斥，无法阻止广播到达前的并发刷新竞争。
  *
  * 通道选择：优先 BroadcastChannel（同源标签页/Worker，低延迟、不落盘）；
  * 老浏览器回退到 storage 事件（zustand persist 本来就会把登录态写 localStorage，

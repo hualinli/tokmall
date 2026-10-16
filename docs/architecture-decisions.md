@@ -1,167 +1,75 @@
-# 架构决策记录（ADR-001～032）
+# 关键设计取舍
 
-> 更新于 2026-10-09。保留稳定编号供源码与其他文档引用。本文记录仍有解释价值的决策及其当前实现；历史实验、当时的故障故事和旧性能数字不作为现状依据。实现以代码和 [migrations](../migrations/) 为准，系统边界见 [后端架构](backend-architecture.md)。
+> 核对日期：2026-10-13。本文按当前源码归并为八个主题，只记录选择原因、承担的代价及重新评估条件。具体规则、操作和实验分别维护在 [商城业务](commerce-business.md)、[后端架构](backend-architecture.md)、[商城技术实现](commerce-v1-technical-design.md)、[开发与运维](development-and-operations.md) 和 [性能证据](performance-baseline.md)。文件路径保留，旧编号历史从 Git 查看。
 
-### ADR-001：JWT 认证，不采用服务端 Session
+<a id="monolith"></a>
+## 模块化单体与同库事务
 
-采用短时 access JWT 与 refresh JWT，便于 HTTP API 无 cookie 状态地认证。代价是 JWT 本身不可撤销，因此当前只对 refresh token 引入 Redis 撤销与轮换（ADR-011）；access token 仍靠短 TTL 失效。签名密钥必须显式配置。实现见 [token manager](../internal/token/token.go) 和 [配置校验](../internal/config/config.go)。
+**选择与原因：** 模块按业务组织，共享 PostgreSQL，由 [main.go](../cmd/api/main.go) 装配消费侧接口；跨模块读取使用各自 read model / SQL，持久化 model 不作为跨模块 API。订单、库存、券和 Outbox 在同库事务内提交，让交易不变量由事务及数据库约束守住，适合当前开发和部署规模。
 
-### ADR-002：Feed 路由按场景拆分
+**代价：** 模块仍共享数据库与进程故障域；order/product/inventory 都有库存写入，边界并非独立服务级隔离。PostgreSQL 与 Redis/RustFS 之间没有原子事务，需要缓存失效、事件幂等和对象清理补偿。
 
-全局 Feed、关注 Feed、作者视频列表等场景使用独立路由，便于分别定义认证、限流和 OpenAPI schema。当前路由由 [cmd/api/main.go](../cmd/api/main.go) 注册，契约以 [OpenAPI](../internal/api/openapi.yaml) 为准，route-sync 由 [main_test.go](../cmd/api/main_test.go) 检查。
+**重新评估条件：** 出现独立部署、团队边界或明确的容量隔离需求，并有测量证明收益时，再设计跨服务一致性。模块职责见 [后端架构](backend-architecture.md#运行时与依赖边界)。
 
-### ADR-003：商品卡由消费模块按需批量装配
+<a id="events"></a>
+## Outbox 与 Redis Streams
 
-Feed 和视频模块不共享商品模块的 Go model，也不把商品交易事实复制进 Feed。当前按页批量读取并装配 `product_cards`；商品状态在响应装配时读取，见 [Feed 商品卡 read model](../internal/feed/product_cards.go) 和 [视频商品卡 read model](../internal/video/product_cards.go)。早期只传商品 ID 的方案已被当前 API 行为替代。
+**选择与原因：** 事实与 Outbox 同事务，Relay 通过 Redis Streams 传输。复用现有 Redis，获得消费组、确认和 PEL 恢复能力；消费回执与业务投影同事务，提交后才 XACK，端到端按至少一次处理。实现见 [中继](../internal/outbox/relay.go)、[传输](../internal/outbox/transport.go) 和 [消费者](../internal/outbox/consumer.go)。
 
-### ADR-004：关注 Feed 使用拉模式完整时间线
+**代价：** Redis 的持久化故障仍可能丢失已发布消息，依靠 PG 事件、回执和对账重放恢复。发布按全部消费组确认水位回收；容量满时背压，未追加事件留在 PG，不计普通投递失败。遗留消费组会阻止回收，有限缓冲不能保证长期积压收敛。PG 内 DEAD 与消费侧 DLQ 是两个恢复位置。
 
-关注 Feed 在请求时读取关注作者的完整候选时间线；低关注量使用有界归并，关注量较大时走全局时间索引。旧的每作者 TOP 5 是历史实现。生产排序只有与 `(published_at, id)` 游标一致的 `TimeRanker`；推模式和 HybridRanker 未实现。实现见 [feed/service.go](../internal/feed/service.go) 和 [ranker.go](../internal/feed/ranker.go)，生产配置入口见 [main.go](../cmd/api/main.go)。
+**重新评估条件：** 持续生产速率超过消费速率，或需要独立消息基础设施、分区和保留能力时，先测消费、连接池与入口保护，再评估 broker。当前 Kafka 未接入，替换 Publisher 之外仍需实现消费者与恢复流程。操作见 [观测与恢复](development-and-operations.md#观测与恢复)。
 
-### ADR-005：数据库提交后失效缓存
+<a id="inventory"></a>
+## PostgreSQL 库存与热点锁
 
-采用 Cache-Aside，先提交事实写入，再失效派生缓存。当前首页可使用 Redis L2 与进程内 L1；缓存失效失败不会回滚业务写入，短暂陈旧由缓存 TTL 兜底，因此不承诺强一致。实现见 [tiered_cache.go](../internal/feed/tiered_cache.go)。
+**选择与原因：** 数据库条件扣减、库存非负 CHECK 和业务键唯一流水共同守住库存；下单先准备订单、明细、流水、券和超时事件，最后更新热点库存并提交，缩短成功路径持锁时间。同键请求用事务级 advisory lock 串行化，再判定重放和指纹冲突。实现见 [订单仓储](../internal/order/repository.go) 与 [创建与幂等](commerce-v1-technical-design.md#创建与幂等)。
 
-### ADR-006：Repository、Service、Handler 分层翻译错误
+**代价：** 热点 SKU 仍串行争锁；售罄请求会做最终回滚的准备写入。消费者有独立连接预算，保护连接获取机会，无法隔离数据库 CPU、磁盘或业务行锁。
 
-Repository 将 ORM/数据库错误翻译为领域错误；Service 根据业务上下文处理并记录故障；Handler 将领域错误映射为统一 HTTP 错误，未知错误返回 500。错误接口由消费侧定义，避免 service 和 handler 依赖 GORM 类型；统一 HTTP 映射见 [response.go](../internal/response/response.go)。
+**重新评估条件：** 同条件压测确认热点锁成为瓶颈，且入口保护和缩短事务仍不足时，再评估排队或 Redis 预扣及其补偿成本。当前没有异步下单或秒杀队列。证据见 [性能证据](performance-baseline.md#latest-results)。
 
-### ADR-007：数据库 upload ticket 约束上传凭证
+<a id="timeline"></a>
+## 完整关注时间线与独立热榜
 
-上传票证记录用户、对象 key、有效期和一次性核销状态，防止客户端伪造 key 或引用他人对象。当前实现进一步把预签名 PUT 限定到 staging key，并在核销时封存实际字节；初期的“直接上传最终 key、只检查对象存在”已被 ADR-029 的流程取代。见 [video/service.go](../internal/video/service.go)、[video/repository.go](../internal/video/repository.go) 和 [storage.go](../internal/storage/storage.go)。
+**选择与原因：** 关注流请求时拉取完整时间线，生产仅使用与 `(published_at,id)` 游标一致的 TimeRanker，避免每作者固定 TOP N 漏项。热榜独立使用分钟桶和冻结窗口，签名游标携带窗口、分数、ID，让窗口内翻页稳定。实现见 [时间流](../internal/feed/service.go)、[排序](../internal/feed/ranker.go) 与 [热榜](../internal/feed/hot_service.go)。
 
-### ADR-008：视频状态机由应用规则和数据库条件更新共同保护
+**代价：** 拉模式查询成本随关注量变化；热榜有条数上限和过期时间。首页可降级为时间流并沿用时间游标；已有热榜游标不能中途换排序，窗口到期或 Redis 故障时返回错误。关注流实验 HotRanker 不支持在线游标分页，配置与 service 均拒绝使用。
 
-状态转换集中定义，并在写入时带上来源状态、作者和目标记录条件；用 `RowsAffected` 仲裁并发，而不是依赖先查后写。数据库 CHECK 约束补足不可变状态不变量。媒体探测状态另有发布门禁，见 ADR-028。实现见 [video/service.go](../internal/video/service.go) 与 [迁移 000022](../migrations/000022_probe_publish_gate.up.sql)。
+**重新评估条件：** 关注规模和读写比例的测量证明拉模式受限时，再设计推拉混合、补历史与收件箱游标协议。当前没有个性化推荐或关注推送扇出。细节见 [Feed、排序与缓存](backend-architecture.md#feed排序与缓存)。
 
-### ADR-009：视频不可见时统一返回 404
+<a id="cache"></a>
+## 有限缓存与请求时动态装配
 
-已删除视频对所有人不可见；待发布视频只对作者可见。对无权访问的资源统一返回“未找到”，降低枚举资源和推断他人资源归属的风险。服务层策略见 [video/service.go](../internal/video/service.go)。
+**选择与原因：** 只缓存默认大小首页的第一页视频主体，采用 Cache-Aside、singleflight 和回源前二次检查；可选进程 L1 + Redis L2 用版本号探测跨实例失效。点赞数和商品卡按页合并查询，先分别聚合再连接，保持动态事实新鲜且避免 N+1 和计数放大。实现见 [缓存](../internal/feed/tiered_cache.go)、[动态读取](../internal/feed/dynamic_read.go) 和 [装配](../cmd/api/main.go)。
 
-### ADR-010：测试覆盖分层协议边界
+**代价：** 缓存最终一致；业务提交成功后失效失败不会撤销业务事实。实现先删本地 L1、再删 L2，L2 删除失败会跳过版本递增；版本递增或读取失败也会扩大远端陈旧窗口。L1 到期后仍可能读到尚未到期的旧 L2，不能把探测间隔或 L1 TTL 当作所有故障下的总上界。在途请求还可能在失效之后回填旧查询结果，版本号没有把查库与缓存回填变成原子操作。关注缓存主要依赖用户失效和 TTL，发布/删除不遍历粉丝 key。缓存命中仍访问动态字段数据库。
 
-纯业务规则使用单元测试，handler 使用 Hertz 内存链路，数据库约束/事务使用显式启用的 PostgreSQL 集成测试；契约测试检查路由与 OpenAPI、schema 与 DTO，前端另有 Vitest 和 Playwright。集成脚手架使用 [testsupport](../internal/testsupport/testsupport.go) 的隔离 schema。Fake 测试不能替代 SQL、锁和真实错误翻译验证。
+**重新评估条件：** 明确的新鲜度要求或测量证明动态查询成本不可接受时，再设计版本协议、读时过滤或独立缓存。Bloom 目前仅作本地集合观测，阴性不代表全局不存在，只有真实 DB miss 的共享负缓存可短路；实现与测试见 [存在性边界](backend-architecture.md#存在性判定)。
 
-### ADR-011：refresh token 黑名单与原子轮换
+<a id="media"></a>
+## staging 封存、异步探测与持久化清理
 
-Redis key 按 refresh `jti` 建立，TTL 为 token 剩余有效期；access token 不查黑名单。轮换使用 `SETNX` 原子 Claim 旧 `jti`，并发刷新只有一次能成功，再签发新 token；登出对无效/过期 refresh token 作为幂等成功处理。Redis 故障会影响 refresh/logout。实现见 [user/service.go](../internal/user/service.go) 和 [blacklist.go](../internal/user/blacklist.go)；前端 token 暂存 localStorage 的权衡见 ADR-018。
+**选择与原因：** 预签名 PUT 仅写 staging，绑定大小和类型；服务端检查真实大小并按源 ETag 条件复制最终对象。票证核销与创建持数据库锁并同事务；媒体探测放异步 worker，发布以 PASSED/SKIPPED 为门禁。删除状态与清理任务同事务，存储失败由 worker 重试。实现见 [上传服务](../internal/video/service.go)、[存储](../internal/storage/storage.go)、[探测](../internal/video/probe_worker.go) 与 [清理](../internal/video/cleanup_worker.go)。
 
-### ADR-012：首页默认第一页使用 Cache-Aside 与 singleflight
+**代价：** 锁内存储调用会占用数据库连接；复制成功但 PG 回滚可留下最终孤儿。多 worker 可重复探测，条件写回只接受一次结果；工具缺失/关闭探测记 SKIPPED，不能视为已验证安全。staging 清理需等 PUT 到期，物理删除前旧 GET URL 可能仍有效。默认 RustFS，应用依赖 S3 协议，旧对象迁移需独立处理。
 
-只缓存默认首页第一页，避免将深页、任意 limit 和复合排序键引入缓存。并发回源用 singleflight 合并，并在合并函数内再次检查缓存。Feed 主体可缓存，商品卡按页动态装配；缓存故障时回源数据库。实现见 [feed/service.go](../internal/feed/service.go)；两级缓存失效见 ADR-025。
+**重新评估条件：** 存储成本、慢依赖或公开部署需求明确时，再设计累计配额、孤儿回收、封存租约；真实媒体和对象存储契约测试用于验证该边界，运行与升级见 [运维指南](development-and-operations.md#媒体与旧版本升级)。
 
-### ADR-013：按数据不变量评估数据库约束
+<a id="auth"></a>
+## JWT 轮换与浏览器凭据
 
-唯一约束是幂等写入的基础，CHECK 约束保护状态和金额不变量；外键按写入压力、孤儿容忍度和补偿能力逐表决定，不因“简化”而批量删除。约束变更必须有迁移和明确的应用层/对账兜底，当前结构见 [migrations](../migrations/)。
+**选择与原因：** access JWT 短时有效，refresh 按 jti 使用 Redis SETNX 原子抢占，一次旧 token 只能成功签发一组新凭据。浏览器持久化到 localStorage，并通过 BroadcastChannel/storage 事件同步登录态。实现见 [refresh](../internal/user/service.go)、[原子 Claim](../internal/user/blacklist.go)、[前端持久化](../web/src/lib/auth-store.ts) 和 [标签同步](../web/src/lib/auth-sync.ts)。
 
-### ADR-014：Transactional Outbox 默认通过 Redis Streams 传输
+**代价：** access 不逐请求检查撤销或账户状态；refresh/logout 依赖 Redis，Claim 成功后签发失败需重新登录。登录态广播不能仲裁同时刷新多个标签页，竞争失败仍可能发生；localStorage 凭据可被同源 XSS 读取，HttpOnly Cookie/CSRF 改造未实现。资源权限仍须服务端校验归属，不能从 JWT 或前端按钮推断商家角色门禁。
 
-业务事实和 Outbox 事件在同一 PostgreSQL 事务写入；Relay 采用租约、退避与死信，Streams 消费组提供确认和待处理消息认领，端到端语义是至少一次。数据库消费回执与投影在同一事务提交，随后才 ACK。Redis Streams 是当前实现；Kafka 仅是 Publisher 抽象的可替换方向，仓库没有已接入的 Kafka broker 或 consumer。实现见 [transport.go](../internal/outbox/transport.go)、[relay.go](../internal/outbox/relay.go) 和 [consumer.go](../internal/outbox/consumer.go)。消费回执和对账重放用于补偿 Redis 的持久性边界。
+**重新评估条件：** 要求账户即时停用、会话管理或更强浏览器凭据保护时，定义撤销与 Cookie/CSRF 协议。当前认证、限流与可见性规则见 [后端架构](backend-architecture.md#认证与可见性) 和 [前端说明](../web/README.md)。
 
-### ADR-015：退款只支持全额，不自动处理退货入库
+<a id="recovery"></a>
+## 对账恢复与维护窗口重建
 
-退款金额等于订单实付金额；已发货订单退款不回补库存，已完成订单不允许申请。部分退款需要新的退款累计模型；退货入库需要质检和重新上架流程，目前均未实现。见 [refund_service.go](../internal/order/refund_service.go) 和 [refund_repository.go](../internal/order/refund_repository.go)；未发货退款的库存回补和占用券释放见 ADR-029。
+**选择与原因：** 九项对账核对交易、库存、券、事件与投影；重放沿用 event_id 和实际消费组回执。日销投影重建要求该组支付/退款事件回执齐全，并在同事务取得 NOWAIT 表锁后检查和改写，避免快照已含事实又被旧事件累加。实现见 [重建](../internal/reconcile/repository.go)、[门禁测试](../internal/reconcile/rebuild_integration_test.go) 与 [对账服务](../internal/reconcile/service.go)。
 
-### ADR-016：用本地事务、Outbox 和对账替代分布式事务
+**代价：** 重建需要暂停相关写入的维护窗口，争锁或缺回执则拒绝；不能删回执或伪造回执绕过门禁。对账不自动修复订单、支付、库存、券等业务事实。PEL 分页 XPENDING/XCLAIM 保留扫描位置，避免只扫头部；恢复耗时随页数和周期变化，没有固定恢复 SLA。
 
-交易写入在 PostgreSQL 本地事务提交；跨模块副作用通过 Outbox 至少一次投递和幂等消费者完成，周期对账发现缺少回执时可重放。当前不引入 2PC，也没有跨 PostgreSQL、Redis、S3对象存储 的原子事务。见 [outbox](../internal/outbox/) 和 [reconcile](../internal/reconcile/) 实现。
-
-### ADR-017：作者销售投影保留毛额并单列退款
-
-`order_count`、`units_sold` 和 `gmv` 统计曾支付过的所有订单，包括后来退款的订单；退款订单数和金额按退款发生日单列。消费者若需要净成交额再计算毛额减退款。投影见 [attribution/projector.go](../internal/attribution/projector.go)，对账见 [reconcile/repository.go](../internal/reconcile/repository.go)，两边必须使用相同口径。
-
-### ADR-018：当前前端把 token 存在 localStorage，并同步多标签状态
-
-`BroadcastChannel` 与 storage 事件让多个标签页共享轮换后的 token 对和登出状态，避免标签页长期持有已轮换 token。localStorage 中的 refresh token 可被同源 XSS 读取；HttpOnly Cookie、CSRF 防护和前端凭据模式改造尚未实施。实现见 [auth-sync.ts](../web/src/lib/auth-sync.ts) 和 [auth-store.ts](../web/src/lib/auth-store.ts)。
-
-### ADR-019：库存以 PostgreSQL 条件更新为准，不做 Redis 预扣
-
-下单在数据库事务内按库存条件扣减并写库存流水，数据库约束/幂等流水保护不变量。当前没有 Redis 预扣、秒杀队列或异步下单；只有测量到库存行锁是实际瓶颈时才重新评估。扣减和流水见 [order/repository.go](../internal/order/repository.go)。
-
-下单事务在首次查询订单前，对带命名空间的 `(user_id, idempotency_key)` 取 64 位哈希的 `pg_advisory_xact_lock`，在默认 READ COMMITTED 下先等待前次提交，再判断重放/指纹冲突，最后读取商品、锁券和扣库存。这样券已占用或商品已下架不会遮住同键重放。锁随事务结束释放，哈希碰撞仅造成额外串行化；订单唯一约束继续兜底。不能仅锁不存在的订单行，也不使用跨进程无效的内存锁。
-
-### ADR-020：对非作者的资源操作也统一隐藏存在性
-
-非作者对视频执行删除等操作，与资源不存在使用同一 404 语义，避免自增 ID 暴露资源是否存在。权限必须由服务端身份和资源所有权判断，不接受请求体提供的 user ID 替代认证身份。服务层权限策略见 [video/service.go](../internal/video/service.go)，HTTP 身份来自 [auth middleware](../internal/middleware/auth.go)。
-
-### ADR-021：订单超时采用延迟事件加速与轮询兜底
-
-下单事务写入 `commerce.order.timeout.v1`，`available_at` 等于订单到期时间；消费者在到期后尝试条件关单。周期 worker 使用 `FOR UPDATE SKIP LOCKED` 扫描仍待支付订单。支付请求也执行 lazy expiry。三条路径共享数据库订单状态与库存/券释放规则，消息只加速关单，数据库仍是唯一事实源。实现见 [order/repository.go](../internal/order/repository.go)、[timeout_handler.go](../internal/order/timeout_handler.go) 和 [expiry_worker.go](../internal/order/expiry_worker.go)。
-
-### ADR-022：缓存穿透使用进程内布隆过滤器与 Redis 负缓存
-
-布隆过滤器只在“确定不存在”时短路数据库；首次全量加载完成前必须放行请求，重建时新旧缓冲同时查询。Redis 负缓存跨实例复用真实 miss 并带 TTL 抖动。只有数据库确认记录不存在才写负缓存；权限或可见性拒绝不能写，否则会把有权用户的读取错误缓存为 404。见 [existence](../internal/existence/) 和 [video/existence.go](../internal/video/existence.go)。
-
-### ADR-023：对象存储通过三态熔断装饰器隔离故障
-
-熔断器采用 closed/open/half-open 与受限探测；对象不存在和无效大小等业务答复不计为依赖故障，熔断打开映射为可重试的 503。bucket 启动检查失败会记录警告并继续启动。当前 [storage 装饰器](../internal/breaker/storage.go) 将预签名和对象读写都放在同一个熔断器内；预签名通常可基于已缓存的 bucket region 本地签名，但首次 region 未命中可能向 S3对象存储 查询。上传票证仅在预签名成功后写入数据库；因此预签名失败或熔断打开时不会留下新票证，而 region 已缓存时 S3对象存储 不可用也可能仍能签出 URL。具体边界由 S3对象存储 客户端版本及 region 缓存状态决定。
-
-### ADR-024：优惠券 v1 为商家范围满减券
-
-规则集中在 `coupon.DiscountFor`；当前不支持折扣券、叠加券、商品/品类范围。券模板属于一个商家，下单时只允许用于同一商家的 SKU；这是商家范围而非全平台通用券。门槛按整单商品金额计算。领券锁模板行、条件更新发行数并校验用户限领；订单写入原价、优惠和实付金额，数据库检查金额恒等式。见 [coupon/service.go](../internal/coupon/service.go)、[order/repository.go](../internal/order/repository.go) 和 [迁移 000019](../migrations/000019_coupon.up.sql)。退款成功时退回仍有效的券，过期券标记为 `EXPIRED`。
-
-### ADR-025：L1 跨实例失效使用版本号和短周期探测
-
-首页 L1 是进程内分片 LRU，L2 是 Redis。写入后清理本地 L1 和 Redis L2，并递增 `feed:version`；其他实例按配置的探测间隔发现版本变化，L1 TTL 作为最终兜底且不得大于 L2 TTL。Redis 版本读取失败时会沿用旧版本，缓存 fail-open。实现见 [tiered_cache.go](../internal/feed/tiered_cache.go) 和 [配置校验](../internal/config/config.go)。当前实现中若 L2 `Del` 返回错误，失效函数会提前返回、不执行版本 `Bump`；若 `Bump` 失败，远端也不会获知版本变化。这两种情况中业务写仍成功，远端 L1 依赖 TTL 收敛。
-
-### ADR-026：Redis 慢命令日志忽略预期阻塞命令
-
-慢命令 Hook 记录命令名、耗时和 key 前缀，不记录完整的用户/订单 key。`XREADGROUP`、阻塞队列读取及订阅等正常等待命令被排除，避免把消费者等待误判为 Redis 延迟。实现见 [cache/slowlog.go](../internal/cache/slowlog.go)。
-
-### ADR-027：热榜用分钟桶、冻结窗口和分数游标
-
-独立热榜将互动分值写入分钟桶，由后台任务物化为冻结的 v2 窗口；窗口有 2000 条上限和 10 分钟 TTL。分页游标签名包含 `window_end`、`hot_score`、`video_id`，按分数和 ID 严格续页；已存在的窗口不重写，过期窗口拒绝旧游标。首页窗口缺失时 singleflight 合并回源；空首页或首页 Redis 故障会降级为时间流，返回时间游标，后续请求继续时间流。已有热榜游标遇到窗口过期或 Redis 故障会返回错误，不切换排序以避免重复或漏项。实现见 [hot.go](../internal/feed/hot.go)、[hot_cache.go](../internal/feed/hot_cache.go) 和 [hot_service.go](../internal/feed/hot_service.go)。热榜窗口已经具备冻结分数游标，但关注 Feed 的实验 `HotRanker` 仍不支持在线游标分页，不能混为同一实现。
-
-### ADR-028：媒体探测放入异步 worker，并区分跳过与拒绝
-
-上传请求只检查对象存在性/大小；异步 worker 才调用 ffprobe 验证媒体策略，并在需要时用 ffmpeg remux faststart。状态为 `PENDING/PASSED/REJECTED/SKIPPED`：ffprobe 缺失或校验关闭是 `SKIPPED`，文件损坏或不符合策略是 `REJECTED`；只有 `PASSED/SKIPPED` 可以发布。探测结果通过条件更新写回；暂时下载失败只推迟重试，`DELETED` 视频不取件。数据库迁移加入状态约束、重试时间及发布门禁。见 [probe_worker.go](../internal/video/probe_worker.go)、[probe_repository.go](../internal/video/probe_repository.go) 和 [迁移 000020](../migrations/000020_video_media_probe.up.sql)。多个 worker 可能重复探测，当前没有独占租约。
-
-### ADR-029：上传封存、对象清理补偿与订单资源释放
-
-- 预签名 PUT 只写 `staging/`，绑定声明长度和 Content-Type；视频上限 512 MiB、图片上限 5 MiB。服务端 StatObject 校验真实大小后按源 ETag 条件复制到最终 key，避免并发重传替换已校验字节。见 [storage.go](../internal/storage/storage.go) 和 [video/service.go](../internal/video/service.go)。
-- 票证核销持有数据库行锁；封存、视频/封面票证核销和视频创建在同一数据库事务中。S3对象存储 封存失败会回滚票证核销和视频创建，仍有效的票证可重试；S3对象存储 复制不是事务性回滚的一部分，复制成功而后续数据库步骤失败时可能留下无引用最终对象。封存期间对象存储调用使用 30 秒 deadline。事务与行锁见 [video/repository.go](../internal/video/repository.go)。
-- 删除状态和 `object_delete_jobs` 同事务写入；API 进程内 worker 每 10 秒取任务，删除失败延迟 1 分钟重试。未使用票证和 staging 对象等原 PUT 过期后清理；媒体回写与删除共用视频行锁。旧部署发出的、目标为最终 key 的 PUT URL 不能被新代码撤销，升级时须等待其最长有效期结束。见 [cleanup_worker.go](../internal/video/cleanup_worker.go) 和 [迁移 000023](../migrations/000023_object_cleanup.up.sql)。
-- 取消、轮询超时、延迟事件超时、支付时 lazy expiry 和退款成功都释放订单占用券；有效券回到 `UNUSED`，过期券记为 `EXPIRED`，订单继续保留历史引用。唯一索引排除 `REFUNDED/CANCELED/EXPIRED` 订单。实现见 [order/repository.go](../internal/order/repository.go)、[refund_repository.go](../internal/order/refund_repository.go) 和 [迁移 000024](../migrations/000024_closed_order_coupon.up.sql)。
-- 退款成功事件和作者日销投影继续使用毛额加单列退款口径（ADR-017）；退款申请本身不改变已支付成交事实。
-
-对应的约束与升级修复位于 migrations 000020～000024：媒体状态/发布门禁、退券后的券重用、对象清理任务和历史数据修复。当前没有累计存储配额、每日上传配额或外部支付渠道结算。
-
-### ADR-030：默认对象存储改用RustFS，应用依赖S3协议
-
-MinIO服务端归档后，开发环境与CI统一使用固定版本RustFS 1.0.1；应用保留minio-go作为S3客户端，不引入RustFS专有管理API。配置改为 `S3_*` / `S3Config`，熔断指标标识为 `s3`，服务端部署参数使用 `RUSTFS_*`。业务模块继续通过消费侧接口调用上传签名、对象检查、ETag封存、读写和删除，不修改订单、库存或视频表结构。
-
-新部署使用独立的 `rustfs-data` 卷，不把旧MinIO卷直接交给RustFS，不包含历史对象搬迁；已有 `MINIO_*` 环境变量须显式改名。浏览器直传和Range播放仍走预签名S3 URL。签名长度/类型、源ETag条件复制、CORS、URL到期、删除幂等性由真实存储契约测试约束；CI backend与E2E都运行RustFS。历史压测源码包、环境和数据保留原样，旧MinIO上的吞吐不自动成为RustFS容量结论。参见 [storage](../internal/storage/storage.go)、[契约测试](../internal/storage/upload_integration_test.go)、[Compose](../docker-compose.yml) 和 [运维](development-and-operations.md)。
-
-### ADR-031：业务文本长度按字符计，口令与邮箱例外
-
-标题、描述、规格、关键词、券名、退款理由与备注、订单幂等键和支付单号的长度上限按 Unicode 字符计数，与 OpenAPI `maxLength` 及 PostgreSQL `VARCHAR(n)` 的语义一致。按字节计会让中文用户在合同允许 200 字时约 66 字就被拒绝。两个例外：口令上限按 UTF-8 字节计 72，因为 Go 的 bcrypt 对超过 72 字节的口令拒绝生成哈希，不能改成按字符放行；邮箱上限按 RFC 5321 的八位字节计 254。写入 `last_error` 的错误文本仍按字节限制行大小，但只在字符边界截断，否则会写入非法 UTF-8，PostgreSQL 会拒绝整条更新。
-
-### ADR-032：账号配额只作用于携带标识符的登录与注册
-
-登录与注册的请求体带有账号标识符，按规范化后的标识符哈希限 10 次/分钟，用于抵御对单个账号的撞库。refresh 与 logout 不携带标识符：若回退为按 IP 计同一配额，NAT 或 CGNAT 出口下的用户会共用 10 次/分钟并被误伤，刷新失败后被迫重新登录。它们只受 IP 配额约束；refresh token 每次使用即旋转并拉黑，不依赖计数防护。已知限制：同一账号的邮箱与用户名是两个独立桶，最多得到两倍配额；改为按账号 ID 计数，或在业务层累计失败次数，可以消除这一偏差。
-
-### ADR-033：Stream容量预算与消费确认水位共同控制投递
-
-长度裁剪曾删除未消费事件。发布改为Redis Lua原子执行：要求配置消费组存在，水位取所有消费组的最早PEL项或最后读取位置，只删除全部组已安全消费的前缀。`OUTBOX_STREAM_MAX_LEN`成为条数预算；满时保持消息，在安全回收后低于半预算再恢复追加。短期背压状态设置60秒TTL，服务重启或TTL到期不绕过容量与确认检查。此方案使用Redis6.2起支持的MINID，避免要求当前环境必须升级到8.2的ACKED命令。
-
-中继将未追加事件释放并延迟到下个tick，背压不消耗失败次数、不进入DEAD；事件继续保留在PG。取件过滤有效leased_until，防止多中继同时认领同一租约；延迟释放带attempts条件，保护后来认领的事件。普通投递失败仍按原规则重试/死信；成功追加与PG发布标记之间仍可能重复投递，消费幂等继续必要。
-
-只支持当前单Redis客户端部署；停止或遗留消费组会阻止安全回收，应通过运维明确处理。PG积压也受容量约束，长期生产速率高于消费速率时仍需消费提速及入口限流。本次不把有限缓冲宣称为长期自动收敛保证。真实PG/Redis测试覆盖并发发布、多个消费组、乱序ACK、预算1、租约与背压恢复，阶段压测单独记录于性能证据。
-
-### ADR-034：消费者保留独立数据库连接预算
-
-开启Outbox消费者时，前台及普通后台任务使用20连接池，消费回执、日销投影和延迟关单共用独立5连接池；总上限仍为25，不靠增加PG连接数掩盖库存行锁等待。关闭消费者时前台恢复25。消费者的处理事务与幂等回执保持原有语义，两个池的等待指标分别以 `db="tokmall"` 与 `db="tokmall_consumer"` 暴露。
-
-隔离保护的是连接获取，不隔离PG CPU、磁盘和业务行锁；超时处理仍可能等热点库存锁。当前消费循环串行，5连接是预算上限，不等于5路并行。真实PG测试耗尽前台池后，独立消费池仍能获取连接；指标注册测试保证同一出口可监控两个池。逐步压测另见性能证据。
-
-### ADR-035：Feed动态字段合并为一次SQL读取
-
-页面缓存继续只保留视频主体；点赞数与商品卡在每个响应中通过feed自己的只读投影一次批量查询。点赞、SKU价格分别聚合后再连接，避免一对多关系放大计数；商品上下架状态、挂载启停、SKU启停和最低价沿用原口径。全局、关注、作者页与热榜复用装配入口，商品封面仍按请求签名。
-
-不把动态字段冻结进首页缓存，也不新增互动写后失效协议。收益来自减少一次数据库往返与连接获取；复杂SQL的执行成本可能抵消部分收益，必须同池预算A/B。真实PG覆盖多点赞/多商品/多SKU的计数与过滤、空列表，以及缓存命中后取消点赞/解绑/改价的新鲜度；独立旧读接口保留为未注入合并投影时的兼容路径。
-
-### ADR-036：热点库存更新放到下单事务尾部
-
-下单仍保持订单/明细/库存流水/券/超时Outbox同库同事务。幂等锁、服务端价格与来源校验之后，先完成独立记录准备；最后以 `quantity >= quantity_requested` 条件扣库存，随后直接提交。成功路径库存锁之后不再等待明细、流水、券核销或Outbox的数据库往返。不存在中间事实对外可见的窗口：任何失败都回滚所有准备写入。
-
-不删除库存非负约束或账本唯一键，不转为最终一致扣库存，不增加数据库连接上限。券锁仍先于库存锁，避免改变既有冲突顺序。售罄时会多做一些最终回滚的写入，这是缩短成功订单临界区的取舍，长期售罄流量应通过入口保护减少无效工作。真实PG覆盖500买家争100件、同键同券、支付/取消/超时/退款竞争；新增用券库存不足后的全事实回滚与同键补货重试。
+**重新评估条件：** 数据规模或可用性要求不允许停写时，再设计快照与增量切换，保留事实和回执完整性证明。毛额与退款口径见 [商城技术实现](commerce-v1-technical-design.md#推广归因与对账恢复)，维护步骤见 [观测与恢复](development-and-operations.md#观测与恢复)。

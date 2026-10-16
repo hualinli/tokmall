@@ -4,20 +4,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// ExistenceMetrics 暴露缓存穿透防护的三层效果：
+// ExistenceMetrics 暴露存在性观测与负缓存效果：
 //
 //	existence_lookup_total{namespace,result} —— 请求最终走到哪一层
-//	  （bloom_rejected / negative_cache_hit / database / warmup / ...）
-//	existence_bloom_rejected_total           —— 被布隆过滤器直接挡掉的数量
+//	  （bloom_miss / negative_cache_hit / database / warmup / ...）
 //	existence_negative_cache_hit_total       —— 被负缓存挡掉的数量
 //	existence_miss_marked_total              —— 回写负缓存的次数
 //
 // 这几个指标的用途不是"好看"，而是回答"防护到底有没有生效"：
-// 压测不存在 ID 时 database 占比应该接近 0；如果它一直很高，说明
-// 过滤器没装载（warmup 卡住）或负缓存 TTL 太短。
+// 重复请求同一不存在 ID 应命中负缓存；随机新 ID 仍会查数据库。
+// bloom_miss 表示本地集合未命中后放行，不代表拒绝请求。
 type ExistenceMetrics struct {
 	lookup      *prometheus.CounterVec
-	bloom       *prometheus.CounterVec
 	negative    *prometheus.CounterVec
 	missMarked  *prometheus.CounterVec
 	ready       *prometheus.GaugeVec
@@ -30,9 +28,6 @@ func NewExistenceMetrics(reg prometheus.Registerer) *ExistenceMetrics {
 		lookup: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "existence_lookup_total", Help: "Existence lookups by namespace and the layer that answered",
 		}, []string{"namespace", "result"}),
-		bloom: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "existence_bloom_rejected_total", Help: "Lookups rejected by the bloom filter (definitely absent)",
-		}, []string{"namespace"}),
 		negative: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "existence_negative_cache_hit_total", Help: "Lookups rejected by the negative cache",
 		}, []string{"namespace"}),
@@ -49,12 +44,8 @@ func NewExistenceMetrics(reg prometheus.Registerer) *ExistenceMetrics {
 			Name: "existence_filter_bits", Help: "Bit array size of the active bloom filter",
 		}, []string{"namespace"}),
 	}
-	reg.MustRegister(m.lookup, m.bloom, m.negative, m.missMarked, m.ready, m.filterCount, m.filterBits)
+	reg.MustRegister(m.lookup, m.negative, m.missMarked, m.ready, m.filterCount, m.filterBits)
 	return m
-}
-
-func (m *ExistenceMetrics) BloomRejected(namespace string) {
-	m.bloom.WithLabelValues(namespace).Inc()
 }
 
 func (m *ExistenceMetrics) NegativeHit(namespace string) {
@@ -100,5 +91,5 @@ func (m *ExistenceMetrics) Observe(namespace string, ready bool, items, bits uin
 // Collectors 暴露底层 collector：main 之外的调用方（测试、自定义注册器）
 // 需要拿到真实指标名做校验，而不是靠字符串约定猜。
 func (m *ExistenceMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.lookup, m.bloom, m.negative, m.missMarked, m.ready, m.filterCount, m.filterBits}
+	return []prometheus.Collector{m.lookup, m.negative, m.missMarked, m.ready, m.filterCount, m.filterBits}
 }

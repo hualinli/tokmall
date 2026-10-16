@@ -78,7 +78,7 @@ type Order struct {
 	MerchantID int64  `gorm:"column:merchant_id"`
 	Status     Status `gorm:"column:status"`
 	// TotalAmount 是**实付金额**（= OriginalAmount - DiscountAmount）。
-	// GMV 口径按实付计（ADR-017 的延伸），优惠单独列出来供对账。
+	// GMV 口径按实付计（见 docs/commerce-business.md 的成交统计），优惠单独列出来供对账。
 	TotalAmount Amount `gorm:"column:total_amount"`
 	// OriginalAmount 是商品原价合计；DiscountAmount 是券带来的优惠。
 	OriginalAmount Amount `gorm:"column:original_amount"`

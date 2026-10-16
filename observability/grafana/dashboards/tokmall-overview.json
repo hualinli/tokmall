@@ -512,7 +512,7 @@
         {
           "refId": "C",
           "expr": "job:tokmall_existence_reject_ratio:rate5m",
-          "legendFormat": "被过滤器直接拒绝的比例",
+          "legendFormat": "负缓存拒绝比例",
           "datasource": {
             "type": "prometheus",
             "uid": "tokmall"

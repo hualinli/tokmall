@@ -2,7 +2,9 @@ package existence
 
 import (
 	"context"
+	"errors"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,27 +58,62 @@ func TestFilterFalsePositiveRateMatchesTheory(t *testing.T) {
 	require.Lessf(t, rate, fp*2, "误判率显著高于设计值，说明参数推导或哈希实现有问题")
 }
 
-// TestRotatingKeepsOldEntriesVisibleDuringRebuild 重建期间不能出现假阴性：
-// 新过滤器只装了重建那一刻的数据，旧数据必须仍能从 standby 命中。
-func TestRotatingKeepsOldEntriesVisibleDuringRebuild(t *testing.T) {
-	rotating := NewRotating(1000, 0.01)
-	for i := int64(1); i <= 100; i++ {
-		rotating.Add(uint64(i))
+// 真实读取在第二、第三轮重建及失败后仍须保留；不能只验证一次交换。
+func TestRotatingRebuildKeepsLiveData(t *testing.T) {
+	r := NewRotating(1000, .01)
+	load := func(add func(int64) error) error { return add(42) }
+	require.NoError(t, r.Rebuild(load))
+	for range 3 {
+		require.NoError(t, r.Rebuild(func(add func(int64) error) error {
+			require.True(t, r.Test(42), "加载下一份数据前，旧数据仍可见")
+			return add(42)
+		}))
+		require.True(t, r.Test(42))
+		count, _, _ := r.Snapshot()
+		require.Equal(t, uint64(1), count, "完整数据必须在 active，不在将被清空的缓冲")
 	}
-	require.False(t, rotating.Ready(), "重建完成前必须处于 warmup")
+	before := r.Builds()
+	require.Error(t, r.Rebuild(func(add func(int64) error) error {
+		require.NoError(t, add(99))
+		r.Add(777)
+		return errors.New("loader failed")
+	}))
+	require.True(t, r.Test(42))
+	require.True(t, r.Test(777), "失败不能丢失本地新增")
+	require.Equal(t, before, r.Builds())
+}
 
-	// 模拟重建：只装入后 50 个 ID
-	rotating.BeginRebuild()
-	for i := int64(51); i <= 100; i++ {
-		rotating.Add(uint64(i))
+func TestRotatingRebuildPreservesConcurrentAdds(t *testing.T) {
+	r := NewRotating(10000, .001)
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Rebuild(func(add func(int64) error) error {
+			close(entered)
+			<-release
+			return add(1)
+		})
+	}()
+	<-entered
+	var wg sync.WaitGroup
+	for i := uint64(2); i <= 1000; i++ {
+		wg.Add(1)
+		go func(id uint64) { defer wg.Done(); r.Add(id) }(i)
 	}
-	rotating.CommitRebuild()
-	require.True(t, rotating.Ready())
+	wg.Wait()
+	close(release)
+	require.NoError(t, <-done)
+	for i := uint64(1); i <= 1000; i++ {
+		require.True(t, r.Test(i), "id=%d", i)
+	}
+}
 
-	for i := int64(1); i <= 100; i++ {
-		require.Truef(t, rotating.Test(uint64(i)), "重建后 id=%d 变成不存在", i)
-	}
-	require.Equal(t, int64(1), rotating.Builds())
+func TestRotatingRebuildDropsRemovedEntries(t *testing.T) {
+	r := NewRotating(1000, .001)
+	require.NoError(t, r.Rebuild(func(add func(int64) error) error { return add(42) }))
+	require.NoError(t, r.Rebuild(func(add func(int64) error) error { return add(99) }))
+	require.False(t, r.Test(42), "重建不能一直向旧 active 累积")
+	require.True(t, r.Test(99))
 }
 
 // TestGuardWarmupPassesEverything：空过滤器对任何 ID 都返回"不存在"，
@@ -89,9 +126,8 @@ func TestGuardWarmupPassesEverything(t *testing.T) {
 	require.False(t, guard.Ready("video"))
 }
 
-// TestGuardRejectsAbsentIDAfterLoad：装载完成后，不存在的 ID 被过滤器直接挡掉，
-// 既不查 Redis 也不查库。
-func TestGuardRejectsAbsentIDAfterLoad(t *testing.T) {
+// Bloom 阴性只说明未装载过，必须继续查询共享负缓存与数据库。
+func TestGuardBloomMissFailsOpen(t *testing.T) {
 	marker := &fakeMarker{}
 	guard := NewGuard(map[string]uint64{"video": 1000}, marker, 0.01, WithStats(NopStats{}))
 	require.NoError(t, guard.Rebuild("video", func(add func(int64) error) error {
@@ -110,8 +146,8 @@ func TestGuardRejectsAbsentIDAfterLoad(t *testing.T) {
 	checksBefore := marker.checks
 	ok, err = guard.MayExist(context.Background(), "video", 999_999)
 	require.NoError(t, err)
-	require.False(t, ok, "不存在的 ID 应被布隆过滤器挡掉")
-	require.Equal(t, checksBefore, marker.checks, "布隆过滤器拒绝时不应访问 Redis")
+	require.True(t, ok, "未装载 ID 必须放行到数据库")
+	require.Equal(t, checksBefore+1, marker.checks)
 }
 
 // TestGuardNegativeCacheShortCircuits：过滤器放行但负缓存命中时同样不查库。
@@ -207,4 +243,21 @@ func (f *fakeMarker) IsMissing(_ context.Context, namespace string, id int64) (b
 
 func key(namespace string, id int64) string {
 	return namespace + ":" + string(rune(id))
+}
+
+func TestGuardOtherInstanceCreatedEntityPasses(t *testing.T) {
+	marker := &fakeMarker{}
+	a := NewGuard(map[string]uint64{"video": 1000}, marker, .01)
+	b := NewGuard(map[string]uint64{"video": 1000}, marker, .01)
+	for _, g := range []*Guard{a, b} {
+		require.NoError(t, g.Rebuild("video", func(add func(int64) error) error { return add(1) }))
+	}
+	a.Add("video", 42)
+	ok, err := b.MayExist(context.Background(), "video", 42)
+	require.NoError(t, err)
+	require.True(t, ok, "另一实例没有该 ID 时应继续查数据库")
+	b.MarkMissing(context.Background(), "video", 999)
+	ok, err = b.MayExist(context.Background(), "video", 999)
+	require.NoError(t, err)
+	require.False(t, ok, "真实 DB miss 的负缓存仍然有效")
 }

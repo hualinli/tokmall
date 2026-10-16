@@ -65,4 +65,4 @@ PENDING_PAYMENT ──支付──▶ PAID ──商家发货──▶ FULFILLIN
 - 秒杀、曝光/点击转化漏斗，以及完整的平台运营/商家后台权限体系。
 - 前端优惠券流程；OpenAPI 中虽有热榜接口，当前前端也没有调用热榜的运行时代码。
 
-后续设想统一见 [路线图](roadmap.md)；已作出的实现取舍见 [架构决策](architecture-decisions.md)。
+后续设想统一见 [路线图](roadmap.md)；已作出的实现取舍见 [关键设计取舍](architecture-decisions.md)。

@@ -1,20 +1,6 @@
-// Package existence 提供"这个 ID 到底有没有可能存在"的廉价预判，
-// 用来挡住缓存穿透：对不存在的 ID 反复查询会把请求全部打到数据库。
-//
-// 两层防护，顺序固定：
-//
-//	布隆过滤器（进程内，零网络往返）
-//	  → 判 false：一定不存在，直接返回 404，不查库也不查缓存；
-//	负缓存（Redis，带 TTL 抖动）
-//	  → 上一次查库确认不存在，短期内不再查库；
-//	数据库
-//	  → 只有前两层都放行才真正查询，查到不存在时回写负缓存。
-//
-// 为什么布隆过滤器用进程内而不是 Redis：它只需要回答"可能/一定不"，
-// 放在进程内没有网络往返（这正是它相对负缓存的价值）；代价是每个实例
-// 各有一份，靠"定期重建 + 轮换"保持与数据库接近，而不是靠分布式一致性。
-// 删除/下架不会从过滤器里移除（布隆过滤器不支持删除），残留的假阳性
-// 只会让请求多走一次数据库，不会把存在的数据判成不存在——方向是安全的。
+// Package existence 提供进程内 Bloom 观测和共享负缓存。
+// 本地 Bloom 只覆盖已装载的 ID，无法证明其它实例尚未创建数据。
+// 因此阴性结果也必须继续查询负缓存/数据库，不能直接返回 404。
 package existence
 
 import (
@@ -128,72 +114,63 @@ func splitmix64(x uint64) uint64 {
 	return x ^ (x >> 31)
 }
 
-// Rotating 是"双缓冲 + 轮换"的布隆过滤器集合：
-//
-//	重建时写入 standby，重建完成后与 active 交换；查询同时问 active 与 standby。
-//
-// 为什么需要它：布隆过滤器不能删除元素，业务数据却在删除；只靠"只加不减"
-// 会让误判率随历史数据无限上升。轮换用一次全量重建把过滤器拉回设计容量，
-// 同时保证切换瞬间不出现假阴性（旧数据仍在 standby 里）。
+// Rotating 在完整构建成功后切换过滤器。构建期间查询仍使用 active；
+// 本实例新增同时写入 active 与 building，避免切换丢失并发增量。
+// 这只保证本地轮换安全，不保证数据库跨实例同步的完整性。
 type Rotating struct {
-	expected uint64
-	fpRate   float64
-
-	mu      sync.RWMutex
-	active  *Filter
-	standby *Filter
-
+	expected  uint64
+	fpRate    float64
+	rebuildMu sync.Mutex
+	mu        sync.RWMutex
+	active    *Filter
+	building  *Filter
 	rebuiltAt time.Time
 	builds    atomic.Int64
-	// ready 表示至少完成过一次全量重建。空过滤器会对所有 ID 返回"不存在"，
-	// 如果启动后立刻用它做判断，真实数据会被整片判成 404——这是灾难性假阴性。
-	// 因此重建完成前一律放行（warmup 状态），只损失一点防护效果，不影响正确性。
-	ready atomic.Bool
+	ready     atomic.Bool
 }
 
 func NewRotating(expected uint64, fpRate float64) *Rotating {
-	return &Rotating{
-		expected: expected,
-		fpRate:   fpRate,
-		active:   NewFilter(expected, fpRate),
-		standby:  NewFilter(expected, fpRate),
-	}
+	return &Rotating{expected: expected, fpRate: fpRate, active: NewFilter(expected, fpRate)}
 }
 
 func (r *Rotating) Add(value uint64) {
 	r.mu.RLock()
-	active := r.active
-	r.mu.RUnlock()
-	active.Add(value)
+	defer r.mu.RUnlock()
+	r.active.Add(value)
+	if r.building != nil {
+		r.building.Add(value)
+	}
 }
 
-// Ready 表示过滤器已经装载过一次全量数据，可以参与"一定不存在"的判断。
+// Ready 只表示完成过一次装载，不表示与数据库实时一致。
 func (r *Rotating) Ready() bool { return r.ready.Load() }
 
 func (r *Rotating) Test(value uint64) bool {
 	r.mu.RLock()
-	active, standby := r.active, r.standby
-	r.mu.RUnlock()
-	// 两个都问：重建期间新数据进 standby，旧数据还在 active。
-	return active.Test(value) || standby.Test(value)
+	defer r.mu.RUnlock()
+	return r.active.Test(value)
 }
 
-// BeginRebuild 清空 standby，准备接收全量数据。
-func (r *Rotating) BeginRebuild() *Filter {
+// Rebuild 串行构建；失败仅丢弃新缓冲，已服务的过滤器和增量不变。
+func (r *Rotating) Rebuild(loader func(add func(int64) error) error) error {
+	r.rebuildMu.Lock()
+	defer r.rebuildMu.Unlock()
+	next := NewFilter(r.expected, r.fpRate)
+	r.mu.Lock()
+	r.building = next
+	r.mu.Unlock()
+	err := loader(func(id int64) error { next.Add(uint64(id)); return nil })
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.standby = NewFilter(r.expected, r.fpRate)
-	return r.standby
-}
-
-// CommitRebuild 把重建好的过滤器切换为 active，原 active 保留为 standby。
-func (r *Rotating) CommitRebuild() {
-	r.mu.Lock()
-	r.active, r.standby = r.standby, r.active
+	r.building = nil
+	if err != nil {
+		return err
+	}
+	r.active = next
 	r.rebuiltAt = time.Now()
-	r.mu.Unlock()
 	r.builds.Add(1)
 	r.ready.Store(true)
+	return nil
 }
 
 func (r *Rotating) RebuiltAt() time.Time {
@@ -204,12 +181,10 @@ func (r *Rotating) RebuiltAt() time.Time {
 
 func (r *Rotating) Builds() int64 { return r.builds.Load() }
 
-// Snapshot 返回 active 过滤器的统计，供指标暴露。
 func (r *Rotating) Snapshot() (count uint64, bits uint64, hashes uint64) {
 	r.mu.RLock()
-	active := r.active
-	r.mu.RUnlock()
-	return active.Count(), active.Bits(), active.Hashes()
+	defer r.mu.RUnlock()
+	return r.active.Count(), r.active.Bits(), r.active.Hashes()
 }
 
 // Guard 把"布隆过滤器 + 负缓存"组合成对业务友好的接口。
@@ -235,7 +210,6 @@ type MissingMarker interface {
 
 // Stats 是缓存穿透防护的指标接口（实现在 observability）。
 type Stats interface {
-	BloomRejected(namespace string)
 	NegativeHit(namespace string)
 	MissMarked(namespace string)
 	Lookup(namespace string, result string)
@@ -243,7 +217,6 @@ type Stats interface {
 
 type NopStats struct{}
 
-func (NopStats) BloomRejected(string)  {}
 func (NopStats) NegativeHit(string)    {}
 func (NopStats) MissMarked(string)     {}
 func (NopStats) Lookup(string, string) {}
@@ -278,13 +251,8 @@ func NewGuard(namespaces map[string]uint64, marker MissingMarker, fpRate float64
 // ErrNoFilter 表示查询了未注册的命名空间——这是装配错误，必须显式暴露。
 var ErrNoFilter = errors.New("existence: namespace has no filter registered")
 
-// MayExist 是热路径上的廉价判断：
-//
-//	false → 一定不存在（布隆过滤器保证无假阴性），调用方直接返回 404；
-//	true  → 可能不存在，继续走负缓存与数据库。
-//
-// Redis 故障时返回 true（放行到数据库）：宁可多查一次库，也不能因为
-// 缓存故障把真实存在的数据判成不存在。
+// MayExist 只用已确认的数据库 miss 短路。Bloom 阴性不能作为全局不存在证明。
+// 首次装载前以及 Redis 故障时放行到数据库。
 func (g *Guard) MayExist(ctx context.Context, namespace string, id int64) (bool, error) {
 	filter, ok := g.filters[namespace]
 	if !ok {
@@ -295,10 +263,9 @@ func (g *Guard) MayExist(ctx context.Context, namespace string, id int64) (bool,
 		g.stats.Lookup(namespace, "warmup")
 		return true, nil
 	}
+	result := "database"
 	if !filter.Test(uint64(id)) {
-		g.stats.BloomRejected(namespace)
-		g.stats.Lookup(namespace, "bloom_rejected")
-		return false, nil
+		result = "bloom_miss"
 	}
 	missing, err := g.missing.IsMissing(ctx, namespace, id)
 	if err != nil {
@@ -312,7 +279,7 @@ func (g *Guard) MayExist(ctx context.Context, namespace string, id int64) (bool,
 		g.stats.Lookup(namespace, "negative_cache_hit")
 		return false, nil
 	}
-	g.stats.Lookup(namespace, "database")
+	g.stats.Lookup(namespace, result)
 	return true, nil
 }
 
@@ -332,28 +299,20 @@ func (g *Guard) MarkMissing(ctx context.Context, namespace string, id int64) {
 	g.stats.MissMarked(namespace)
 }
 
-// Add 在业务侧成功创建实体后把 ID 加入过滤器，避免"刚创建就被判不存在"。
+// Add 在业务侧成功创建实体后更新本地过滤器的观测集合。
 func (g *Guard) Add(namespace string, id int64) {
 	if filter, ok := g.filters[namespace]; ok {
 		filter.Add(uint64(id))
 	}
 }
 
-// Rebuild 全量重建指定命名空间的过滤器：loader 负责把当前所有存在的 ID
-// 喂给返回的 Filter，然后 Commit。重建期间查询同时看新旧两份，不会出现假阴性。
+// Rebuild 全量重建指定命名空间；失败保留上一次完整装载与本地增量。
 func (g *Guard) Rebuild(namespace string, loader func(add func(id int64) error) error) error {
 	filter, ok := g.filters[namespace]
 	if !ok {
 		return ErrNoFilter
 	}
-	filter.BeginRebuild()
-	if err := loader(func(id int64) error { filter.Add(uint64(id)); return nil }); err != nil {
-		// 重建失败不回滚 standby：它仍是空过滤器，查询结果由 active 决定，
-		// 不会产生假阴性；下次重建会重新覆盖。
-		return err
-	}
-	filter.CommitRebuild()
-	return nil
+	return filter.Rebuild(loader)
 }
 
 // Snapshot 返回某命名空间 active 过滤器的统计（元素数、位数组长度、哈希个数）。
