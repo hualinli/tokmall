@@ -12,7 +12,7 @@ import (
 
 // 售后（退款）闭环的领域模型与命令。
 //
-// 业务范围（与 docs/commerce-business.md 保持一致）：
+// 业务范围（与 docs/business.md 保持一致）：
 //   - 只支持全额退款：订单是单 SKU 订单，退款金额恒等于订单实付金额；
 //   - 可申请状态：PAID（已付款未发货）、FULFILLING（已发货待收货）；
 //   - COMPLETED 之后不接受退款申请（本项目不建模 7 天无理由与退货物流）；
@@ -39,6 +39,8 @@ type RequestRefundCommand struct {
 	RequestRefundParams
 	RefundNo    string
 	RequestedAt time.Time
+	// RespondBy 是本次申请的商家处理截止时间。被拒绝后再次申请会生成新退款单，截止时间也重新计算。
+	RespondBy time.Time
 }
 
 // RefundView 是 service 边界的只读结果，model 不出 service。
@@ -70,6 +72,8 @@ type DecideRefundCommand struct {
 	DecideRefundParams
 	DecidedBy int64
 	DecidedAt time.Time
+	// MinAutoCompleteAt：拒绝退款并退回 FULFILLING 时，自动确认截止时间至少顺延到这里。
+	MinAutoCompleteAt time.Time
 }
 
 // refundRecord 是 repository → service 的内部载体。
@@ -98,10 +102,12 @@ func (s *Service) RequestRefund(ctx context.Context, params RequestRefundParams)
 	if err != nil {
 		return nil, err
 	}
+	requestedAt := s.now()
 	record, err := s.refunds.RequestRefund(ctx, RequestRefundCommand{
 		RequestRefundParams: params,
 		RefundNo:            refundNo,
-		RequestedAt:         s.now(),
+		RequestedAt:         requestedAt,
+		RespondBy:           requestedAt.Add(s.refundRespondWindow),
 	})
 	if err != nil {
 		return nil, err
@@ -118,10 +124,12 @@ func (s *Service) DecideRefund(ctx context.Context, params DecideRefundParams) (
 		return nil, errRefundRepositoryMissing
 	}
 	// 同意退款必须有明确裁决人；拒绝允许不写备注，但备注长度受限。
+	now := s.now()
 	record, err := s.refunds.DecideRefund(ctx, DecideRefundCommand{
 		DecideRefundParams: params,
 		DecidedBy:          params.MerchantID,
-		DecidedAt:          s.now(),
+		DecidedAt:          now,
+		MinAutoCompleteAt:  now.Add(s.refundRejectGrace),
 	})
 	if err != nil {
 		return nil, err

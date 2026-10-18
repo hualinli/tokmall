@@ -50,21 +50,25 @@ const (
 // Refund 是售后单据。金额恒等于订单实付金额（本项目只支持全额退款），
 // 因此不需要独立的金额快照字段；拆分退款是后续演进，不在当前范围。
 type Refund struct {
-	ID             int64        `gorm:"column:id;primaryKey"`
-	RefundNo       string       `gorm:"column:refund_no"`
-	OrderID        int64        `gorm:"column:order_id"`
-	UserID         int64        `gorm:"column:user_id"`
-	MerchantID     int64        `gorm:"column:merchant_id"`
-	Amount         Amount       `gorm:"column:amount"`
-	Reason         string       `gorm:"column:reason"`
-	Status         RefundStatus `gorm:"column:status"`
-	RequestedAt    time.Time    `gorm:"column:requested_at"`
-	DecidedAt      *time.Time   `gorm:"column:decided_at"`
-	DecidedBy      *int64       `gorm:"column:decided_by"`
-	DecisionRemark *string      `gorm:"column:decision_remark"`
-	RefundedAt     *time.Time   `gorm:"column:refunded_at"`
-	CreatedAt      time.Time    `gorm:"column:created_at"`
-	UpdatedAt      time.Time    `gorm:"column:updated_at"`
+	ID          int64        `gorm:"column:id;primaryKey"`
+	RefundNo    string       `gorm:"column:refund_no"`
+	OrderID     int64        `gorm:"column:order_id"`
+	UserID      int64        `gorm:"column:user_id"`
+	MerchantID  int64        `gorm:"column:merchant_id"`
+	Amount      Amount       `gorm:"column:amount"`
+	Reason      string       `gorm:"column:reason"`
+	Status      RefundStatus `gorm:"column:status"`
+	RequestedAt time.Time    `gorm:"column:requested_at"`
+	// RespondBy 是申请那一刻确定的商家处理截止时间。改配置不能改已经写下来的期限。
+	RespondBy time.Time  `gorm:"column:respond_by"`
+	DecidedAt *time.Time `gorm:"column:decided_at"`
+	DecidedBy *int64     `gorm:"column:decided_by"`
+	// DecisionSource 区分商家裁决和超时自动同意。未裁决时为空。
+	DecisionSource *string    `gorm:"column:decision_source"`
+	DecisionRemark *string    `gorm:"column:decision_remark"`
+	RefundedAt     *time.Time `gorm:"column:refunded_at"`
+	CreatedAt      time.Time  `gorm:"column:created_at"`
+	UpdatedAt      time.Time  `gorm:"column:updated_at"`
 }
 
 func (Refund) TableName() string { return "refunds" }
@@ -78,7 +82,7 @@ type Order struct {
 	MerchantID int64  `gorm:"column:merchant_id"`
 	Status     Status `gorm:"column:status"`
 	// TotalAmount 是**实付金额**（= OriginalAmount - DiscountAmount）。
-	// GMV 口径按实付计（见 docs/commerce-business.md 的成交统计），优惠单独列出来供对账。
+	// GMV 口径按实付计（见 docs/business.md 的成交统计），优惠单独列出来供对账。
 	TotalAmount Amount `gorm:"column:total_amount"`
 	// OriginalAmount 是商品原价合计；DiscountAmount 是券带来的优惠。
 	OriginalAmount Amount `gorm:"column:original_amount"`
@@ -93,9 +97,11 @@ type Order struct {
 	ExpiresAt          time.Time  `gorm:"column:expires_at"`
 	PaidAt             *time.Time `gorm:"column:paid_at"`
 	FulfillingAt       *time.Time `gorm:"column:fulfilling_at"`
-	CompletedAt        *time.Time `gorm:"column:completed_at"`
-	CanceledAt         *time.Time `gorm:"column:canceled_at"`
-	ExpiredAt          *time.Time `gorm:"column:expired_at"`
+	// AutoCompleteAt 是发货时写入的自动确认收货截止时间；拒绝退款退回 FULFILLING 时只会顺延。
+	AutoCompleteAt *time.Time `gorm:"column:auto_complete_at"`
+	CompletedAt    *time.Time `gorm:"column:completed_at"`
+	CanceledAt     *time.Time `gorm:"column:canceled_at"`
+	ExpiredAt      *time.Time `gorm:"column:expired_at"`
 	// RefundFromStatus 记录进入 REFUND_REQUESTED 前的状态（PAID / FULFILLING），
 	// 商家拒绝退款时订单退回该状态，而不是靠猜测或重新推导。
 	RefundFromStatus *Status    `gorm:"column:refund_from_status"`

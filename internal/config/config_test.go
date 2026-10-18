@@ -26,6 +26,54 @@ func TestLoadDevelopmentUsesLocalDefaults(t *testing.T) {
 	require.Empty(t, cfg.TrustedProxies, "默认不信任任何转发头，限流按 TCP 对端地址")
 }
 
+func TestLoadOrderAutoCompletePolicy(t *testing.T) {
+	setDevelopmentEnv(t)
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-for-local-run")
+	t.Setenv("FEED_CURSOR_SECRET", "dev-cursor-secret-for-local-run")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.OrderAutoCompleteEnabled)
+	require.Equal(t, 7*24*time.Hour, cfg.OrderAutoCompleteAfter)
+	require.Equal(t, 3*24*time.Hour, cfg.OrderAutoCompleteRejectGrace)
+	require.Equal(t, time.Minute, cfg.OrderAutoCompleteInterval)
+	require.Equal(t, 100, cfg.OrderAutoCompleteBatchSize)
+
+	t.Setenv("ORDER_AUTO_COMPLETE_AFTER", "2m")
+	t.Setenv("ORDER_AUTO_COMPLETE_REJECT_GRACE", "1m")
+	cfg, err = Load()
+	require.NoError(t, err)
+	require.Equal(t, 2*time.Minute, cfg.OrderAutoCompleteAfter)
+	require.Equal(t, time.Minute, cfg.OrderAutoCompleteRejectGrace)
+
+	// 关闭 worker 不能绕过窗口校验：发货与拒绝退款仍会使用它。
+	t.Setenv("ORDER_AUTO_COMPLETE_ENABLED", "false")
+	t.Setenv("ORDER_AUTO_COMPLETE_AFTER", "0s")
+	_, err = Load()
+	require.ErrorContains(t, err, "ORDER_AUTO_COMPLETE_AFTER")
+}
+
+func TestLoadRefundAutoApprovePolicy(t *testing.T) {
+	setDevelopmentEnv(t)
+	t.Setenv("JWT_SECRET", "dev-jwt-secret-for-local-run")
+	t.Setenv("FEED_CURSOR_SECRET", "dev-cursor-secret-for-local-run")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.RefundAutoApproveEnabled)
+	require.Equal(t, 48*time.Hour, cfg.RefundAutoApproveAfter)
+	require.Equal(t, time.Minute, cfg.RefundAutoApproveInterval)
+	require.Equal(t, 100, cfg.RefundAutoApproveBatchSize)
+
+	t.Setenv("REFUND_AUTO_APPROVE_AFTER", "2m")
+	cfg, err = Load()
+	require.NoError(t, err)
+	require.Equal(t, 2*time.Minute, cfg.RefundAutoApproveAfter)
+
+	t.Setenv("REFUND_AUTO_APPROVE_ENABLED", "false")
+	t.Setenv("REFUND_AUTO_APPROVE_AFTER", "0s")
+	_, err = Load()
+	require.ErrorContains(t, err, "REFUND_AUTO_APPROVE_AFTER")
+}
+
 // TestLoadRequiresSigningSecretsInEveryEnvironment 锁住审计结论：
 // 内置开发默认密钥一旦随 APP_ENV 误配带到公网实例，任何人都能伪造 token/游标。
 func TestLoadRequiresSigningSecretsInEveryEnvironment(t *testing.T) {

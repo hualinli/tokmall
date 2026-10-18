@@ -109,6 +109,13 @@ func TestRequestRefundTrimsReasonAndMapsView(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "尺码不合适", repo.requested[0].Reason)
 	require.Equal(t, "尺码不合适", view.Reason)
+	require.Equal(t, time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).Add(DefaultRefundRespondWindow), repo.requested[0].RespondBy)
+	service.SetRefundRespondWindow(2 * time.Hour)
+	_, err = service.RequestRefund(context.Background(), RequestRefundParams{
+		UserID: 9, OrderID: 43, Reason: "再申请一次",
+	})
+	require.NoError(t, err)
+	require.Equal(t, time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).Add(2*time.Hour), repo.requested[1].RespondBy)
 	require.Equal(t, int64(42), view.OrderID)
 	require.Equal(t, RefundStatusRequested, view.Status)
 	require.Equal(t, StatusRefundRequested, view.OrderStatus)
@@ -159,6 +166,21 @@ func TestDecideRefundRejectKeepsNoRefundedAt(t *testing.T) {
 	require.Equal(t, RefundStatusRejected, view.Status)
 	require.Equal(t, StatusPaid, view.OrderStatus, "拒绝后订单退回申请前状态")
 	require.Nil(t, view.RefundedAt)
+}
+
+func TestDecideRefundPassesAutoCompleteGrace(t *testing.T) {
+	repo := &fakeRefundRepository{}
+	service := newRefundService(t, repo)
+	decidedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	_, err := service.DecideRefund(context.Background(), DecideRefundParams{MerchantID: 3, OrderID: 1})
+	require.NoError(t, err)
+	require.Equal(t, decidedAt.Add(DefaultRefundRejectGrace), repo.decided[0].MinAutoCompleteAt)
+
+	service.SetAutoCompletePolicy(0, time.Hour)
+	_, err = service.DecideRefund(context.Background(), DecideRefundParams{MerchantID: 3, OrderID: 1})
+	require.NoError(t, err)
+	require.Equal(t, decidedAt.Add(time.Hour), repo.decided[1].MinAutoCompleteAt)
 }
 
 func TestDecideRefundPropagatesRepositorySentinel(t *testing.T) {
@@ -224,4 +246,48 @@ func TestRefundServiceNilRepositoryGuard(t *testing.T) {
 	_, err := service.GetRefund(context.Background(), 1, 1, false)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, errRefundRepositoryMissing))
+}
+
+func TestRefundDecisionColumns(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	merchantID := int64(3)
+	remark := "同意"
+
+	cols, err := merchantDecision(DecideRefundCommand{
+		DecideRefundParams: DecideRefundParams{Remark: remark},
+		DecidedBy:          merchantID,
+		DecidedAt:          at,
+	}).writeColumns(RefundStatusSucceeded)
+	require.NoError(t, err)
+	require.Equal(t, string(RefundStatusSucceeded), cols["status"])
+	require.Equal(t, merchantID, cols["decided_by"])
+	require.Equal(t, at, cols["decided_at"])
+	require.Equal(t, &remark, cols["decision_remark"])
+	require.Equal(t, string(decisionSourceMerchant), cols["decision_source"])
+
+	_, err = (refundDecision{At: at, Source: decisionSourceMerchant}).writeColumns(RefundStatusSucceeded)
+	require.EqualError(t, err, "merchant refund decision requires decided_by")
+
+	timeoutCols, err := (refundDecision{At: at, Source: decisionSourceTimeout}).writeColumns(RefundStatusSucceeded)
+	require.NoError(t, err)
+	require.Equal(t, string(decisionSourceTimeout), timeoutCols["decision_source"])
+	decidedBy, ok := timeoutCols["decided_by"]
+	require.True(t, ok, "超时同意必须显式写 decided_by，不能省掉这一列")
+	require.Nil(t, decidedBy)
+
+	_, err = (refundDecision{At: at, DecidedBy: &merchantID, Source: decisionSourceTimeout}).writeColumns(RefundStatusSucceeded)
+	require.EqualError(t, err, "timeout refund decision must leave decided_by empty")
+
+	_, err = (refundDecision{At: at, Source: decisionSourceTimeout}).writeColumns(RefundStatusRejected)
+	require.EqualError(t, err, "timeout refund decision can only approve")
+}
+
+func TestRequestRefundRejectsDeadlineNotAfterRequest(t *testing.T) {
+	repo := &GormRepository{}
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	_, err := repo.RequestRefund(context.Background(), RequestRefundCommand{
+		RequestedAt: now,
+		RespondBy:   now,
+	})
+	require.EqualError(t, err, "refund respond_by must be after requested_at")
 }

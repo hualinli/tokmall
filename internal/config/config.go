@@ -50,31 +50,42 @@ const (
 	defaultOrderExpiryWorkerOn  = true
 	defaultOrderExpiryInterval  = 5 * time.Second
 	defaultOrderExpiryBatchSize = 100
-	defaultOutboxRelayOn        = true
-	defaultOutboxRelayTick      = time.Second
-	defaultOutboxRelayBatch     = 50
-	defaultOutboxRelayLease     = 30 * time.Second
-	defaultOutboxMaxAttempts    = 5
-	defaultOutboxStream         = "tokmall:events:commerce.v1"
-	defaultOutboxDLQSuffix      = ":dlq"
-	defaultOutboxStreamMaxLen   = 10000
-	defaultOutboxConsumerOn     = true
-	defaultOutboxGroup          = "attribution-projection"
-	defaultOutboxMaxDeliver     = 5
-	defaultOutboxClaimIdle      = 30 * time.Second
-	defaultReconcileOn          = true
-	defaultReconcileInterval    = 5 * time.Minute
-	defaultReconcileGrace       = time.Minute
-	defaultExistenceOn          = true
-	defaultExistenceExpected    = 1_000_000
-	defaultExistenceFPRate      = 0.01
-	defaultExistenceNegTTL      = 30 * time.Second
-	defaultExistenceNegJitter   = 15 * time.Second
-	defaultExistenceRebuildTick = 10 * time.Minute
-	defaultBreakerOn            = true
-	defaultBreakerThreshold     = 5
-	defaultBreakerOpenDuration  = 5 * time.Second
-	defaultBreakerMaxOpen       = 30 * time.Second
+	// 自动确认收货：与 order.DefaultAutoCompleteAfter / DefaultRefundRejectGrace 保持一致。
+	defaultOrderAutoCompleteOn       = true
+	defaultOrderAutoCompleteAfter    = 7 * 24 * time.Hour
+	defaultOrderAutoCompleteGrace    = 3 * 24 * time.Hour
+	defaultOrderAutoCompleteInterval = time.Minute
+	defaultOrderAutoCompleteBatch    = 100
+	// 退款处理时限：与 order.DefaultRefundRespondWindow 保持一致。
+	defaultRefundAutoApproveOn       = true
+	defaultRefundAutoApproveAfter    = 48 * time.Hour
+	defaultRefundAutoApproveInterval = time.Minute
+	defaultRefundAutoApproveBatch    = 100
+	defaultOutboxRelayOn             = true
+	defaultOutboxRelayTick           = time.Second
+	defaultOutboxRelayBatch          = 50
+	defaultOutboxRelayLease          = 30 * time.Second
+	defaultOutboxMaxAttempts         = 5
+	defaultOutboxStream              = "tokmall:events:commerce.v1"
+	defaultOutboxDLQSuffix           = ":dlq"
+	defaultOutboxStreamMaxLen        = 10000
+	defaultOutboxConsumerOn          = true
+	defaultOutboxGroup               = "attribution-projection"
+	defaultOutboxMaxDeliver          = 5
+	defaultOutboxClaimIdle           = 30 * time.Second
+	defaultReconcileOn               = true
+	defaultReconcileInterval         = 5 * time.Minute
+	defaultReconcileGrace            = time.Minute
+	defaultExistenceOn               = true
+	defaultExistenceExpected         = 1_000_000
+	defaultExistenceFPRate           = 0.01
+	defaultExistenceNegTTL           = 30 * time.Second
+	defaultExistenceNegJitter        = 15 * time.Second
+	defaultExistenceRebuildTick      = 10 * time.Minute
+	defaultBreakerOn                 = true
+	defaultBreakerThreshold          = 5
+	defaultBreakerOpenDuration       = 5 * time.Second
+	defaultBreakerMaxOpen            = 30 * time.Second
 
 	// defaultMetricsAddr 默认只监听回环地址：/metrics 会暴露路由级 QPS/延迟、
 	// 连接池与运行时指标，属于容量指纹。生产如需 Prometheus 抓取，
@@ -154,6 +165,18 @@ type Config struct {
 	BreakerMaxOpen             time.Duration
 	OrderExpiryWorkerInterval  time.Duration
 	OrderExpiryWorkerBatchSize int
+	// OrderAutoComplete*：发货后自动确认收货的窗口、拒绝退款后的最短剩余时间与扫描 worker。
+	OrderAutoCompleteEnabled     bool
+	OrderAutoCompleteAfter       time.Duration
+	OrderAutoCompleteRejectGrace time.Duration
+	OrderAutoCompleteInterval    time.Duration
+	OrderAutoCompleteBatchSize   int
+	// RefundAutoApprove*：商家处理退款的时限，以及到期自动同意的扫描 worker。
+	// After 在关闭 worker 时仍会写入新申请的 respond_by。
+	RefundAutoApproveEnabled   bool
+	RefundAutoApproveAfter     time.Duration
+	RefundAutoApproveInterval  time.Duration
+	RefundAutoApproveBatchSize int
 }
 
 type RedisConfig struct {
@@ -332,6 +355,42 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	orderAutoCompleteEnabled, err := envBool("ORDER_AUTO_COMPLETE_ENABLED", defaultOrderAutoCompleteOn)
+	if err != nil {
+		return nil, err
+	}
+	orderAutoCompleteAfter, err := envDuration("ORDER_AUTO_COMPLETE_AFTER", defaultOrderAutoCompleteAfter)
+	if err != nil {
+		return nil, err
+	}
+	orderAutoCompleteGrace, err := envDuration("ORDER_AUTO_COMPLETE_REJECT_GRACE", defaultOrderAutoCompleteGrace)
+	if err != nil {
+		return nil, err
+	}
+	orderAutoCompleteInterval, err := envDuration("ORDER_AUTO_COMPLETE_INTERVAL", defaultOrderAutoCompleteInterval)
+	if err != nil {
+		return nil, err
+	}
+	orderAutoCompleteBatch, err := envInt("ORDER_AUTO_COMPLETE_BATCH_SIZE", defaultOrderAutoCompleteBatch)
+	if err != nil {
+		return nil, err
+	}
+	refundAutoApproveEnabled, err := envBool("REFUND_AUTO_APPROVE_ENABLED", defaultRefundAutoApproveOn)
+	if err != nil {
+		return nil, err
+	}
+	refundAutoApproveAfter, err := envDuration("REFUND_AUTO_APPROVE_AFTER", defaultRefundAutoApproveAfter)
+	if err != nil {
+		return nil, err
+	}
+	refundAutoApproveInterval, err := envDuration("REFUND_AUTO_APPROVE_INTERVAL", defaultRefundAutoApproveInterval)
+	if err != nil {
+		return nil, err
+	}
+	refundAutoApproveBatch, err := envInt("REFUND_AUTO_APPROVE_BATCH_SIZE", defaultRefundAutoApproveBatch)
+	if err != nil {
+		return nil, err
+	}
 	outboxRelayEnabled, err := envBool("OUTBOX_RELAY_ENABLED", defaultOutboxRelayOn)
 	if err != nil {
 		return nil, err
@@ -491,6 +550,16 @@ func Load() (*Config, error) {
 		OrderExpiryWorkerInterval:  orderExpiryWorkerInterval,
 		OrderExpiryWorkerBatchSize: orderExpiryWorkerBatchSize,
 
+		OrderAutoCompleteEnabled:     orderAutoCompleteEnabled,
+		OrderAutoCompleteAfter:       orderAutoCompleteAfter,
+		OrderAutoCompleteRejectGrace: orderAutoCompleteGrace,
+		OrderAutoCompleteInterval:    orderAutoCompleteInterval,
+		OrderAutoCompleteBatchSize:   orderAutoCompleteBatch,
+		RefundAutoApproveEnabled:     refundAutoApproveEnabled,
+		RefundAutoApproveAfter:       refundAutoApproveAfter,
+		RefundAutoApproveInterval:    refundAutoApproveInterval,
+		RefundAutoApproveBatchSize:   refundAutoApproveBatch,
+
 		OutboxRelayEnabled:          outboxRelayEnabled,
 		OutboxRelayInterval:         outboxRelayInterval,
 		OutboxRelayBatchSize:        outboxRelayBatch,
@@ -547,6 +616,20 @@ func (c *Config) validate() error {
 	}
 	if c.OrderExpiryWorkerBatchSize <= 0 {
 		return errors.New("ORDER_EXPIRY_WORKER_BATCH_SIZE must be positive")
+	}
+	// 窗口与宽限期始终参与发货和拒绝退款，即使关闭扫描 worker 也必须有效。
+	if c.OrderAutoCompleteAfter <= 0 || c.OrderAutoCompleteRejectGrace <= 0 {
+		return errors.New("ORDER_AUTO_COMPLETE_AFTER and ORDER_AUTO_COMPLETE_REJECT_GRACE must be positive")
+	}
+	if c.OrderAutoCompleteInterval <= 0 || c.OrderAutoCompleteBatchSize <= 0 {
+		return errors.New("ORDER_AUTO_COMPLETE_INTERVAL and ORDER_AUTO_COMPLETE_BATCH_SIZE must be positive")
+	}
+	// 时限始终参与新的退款申请，即使关闭扫描 worker 也必须有效。
+	if c.RefundAutoApproveAfter <= 0 {
+		return errors.New("REFUND_AUTO_APPROVE_AFTER must be positive")
+	}
+	if c.RefundAutoApproveInterval <= 0 || c.RefundAutoApproveBatchSize <= 0 {
+		return errors.New("REFUND_AUTO_APPROVE_INTERVAL and REFUND_AUTO_APPROVE_BATCH_SIZE must be positive")
 	}
 	if c.OutboxRelayInterval <= 0 || c.OutboxRelayBatchSize <= 0 || c.OutboxRelayLease <= 0 || c.OutboxMaxAttempts <= 0 {
 		return errors.New("outbox relay interval, batch size, lease and max attempts must be positive")

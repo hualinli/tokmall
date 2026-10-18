@@ -1064,6 +1064,7 @@ paths:
     post:
       tags: [orders]
       summary: 买家确认完成（FULFILLING → COMPLETED）
+      description: 到达 auto_complete_at 后系统会自动确认；此后再调用按重放返回 200。
       parameters:
         - $ref: "#/components/parameters/OrderID"
       responses:
@@ -2429,6 +2430,10 @@ components:
         fulfilling_at:
           type: string
           format: date-time
+        auto_complete_at:
+          type: string
+          format: date-time
+          description: 仅 FULFILLING 时返回；到期后系统自动确认收货。拒绝退款退回 FULFILLING 时可能顺延
         completed_at:
           type: string
           format: date-time

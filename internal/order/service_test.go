@@ -60,7 +60,7 @@ func (f *fakeOrderRepository) Get(context.Context, int64, int64, bool) (*orderRe
 func (f *fakeOrderRepository) List(context.Context, int64, int64, int, bool) ([]orderRecord, error) {
 	return nil, errors.New("not implemented")
 }
-func (f *fakeOrderRepository) Transition(context.Context, int64, int64, bool, Status, time.Time) (*transitionRecord, error) {
+func (f *fakeOrderRepository) Transition(context.Context, TransitionCommand) (*transitionRecord, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -94,7 +94,7 @@ func (f *fakeTransitionRepository) Get(context.Context, int64, int64, bool) (*or
 func (f *fakeTransitionRepository) List(context.Context, int64, int64, int, bool) ([]orderRecord, error) {
 	return nil, errors.New("not implemented")
 }
-func (f *fakeTransitionRepository) Transition(context.Context, int64, int64, bool, Status, time.Time) (*transitionRecord, error) {
+func (f *fakeTransitionRepository) Transition(context.Context, TransitionCommand) (*transitionRecord, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -299,4 +299,34 @@ func TestServiceCancelPassesAuthenticatedOwnerAndMapsReplay(t *testing.T) {
 	require.Equal(t, int64(9), repo.cancelOrderID)
 	require.True(t, result.Replayed)
 	require.Equal(t, StatusCanceled, result.Status)
+}
+
+type capturingTransitionRepository struct {
+	fakeTransitionRepository
+	commands []TransitionCommand
+}
+
+func (f *capturingTransitionRepository) Transition(_ context.Context, cmd TransitionCommand) (*transitionRecord, error) {
+	f.commands = append(f.commands, cmd)
+	return &transitionRecord{Order: Order{ID: cmd.OrderID, Status: cmd.To}}, nil
+}
+
+func TestServiceFulfillSetsAutoCompleteDeadline(t *testing.T) {
+	repo := &capturingTransitionRepository{}
+	svc := newTestOrderService(repo)
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+
+	_, err := svc.Fulfill(context.Background(), 7, 1)
+	require.NoError(t, err)
+	require.Equal(t, now.Add(DefaultAutoCompleteAfter), repo.commands[0].AutoCompleteAt)
+
+	svc.SetAutoCompletePolicy(2*time.Minute, 0)
+	_, err = svc.Fulfill(context.Background(), 7, 1)
+	require.NoError(t, err)
+	require.Equal(t, now.Add(2*time.Minute), repo.commands[1].AutoCompleteAt)
+
+	_, err = svc.Complete(context.Background(), 3, 1)
+	require.NoError(t, err)
+	require.True(t, repo.commands[2].AutoCompleteAt.IsZero(), "买家确认收货不改截止时间")
+	require.False(t, repo.commands[2].Merchant)
 }

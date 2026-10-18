@@ -60,6 +60,7 @@ function OrderDetailPage() {
           <p>创建：{new Date(order.data.created_at).toLocaleString()}</p>
           {order.data.paid_at && <p>支付：{new Date(order.data.paid_at).toLocaleString()}</p>}
           {order.data.fulfilling_at && <p>发货：{new Date(order.data.fulfilling_at).toLocaleString()}</p>}
+          {order.data.auto_complete_at && <p className="text-amber-300">将于 {new Date(order.data.auto_complete_at).toLocaleString()} 自动确认收货</p>}
           {order.data.completed_at && <p>完成：{new Date(order.data.completed_at).toLocaleString()}</p>}
           {order.data.canceled_at && <p>取消：{new Date(order.data.canceled_at).toLocaleString()}</p>}
           {order.data.expired_at && <p>超时：{new Date(order.data.expired_at).toLocaleString()}</p>}

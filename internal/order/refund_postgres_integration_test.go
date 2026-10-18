@@ -358,6 +358,58 @@ func TestPostgresRefundProof(t *testing.T) {
 		_, err = svc.DecideRefund(context.Background(), DecideRefundParams{MerchantID: merchantID, OrderID: created.OrderID, Approve: false})
 		require.ErrorIs(t, err, ErrRefundAlreadyDecided, "已成功的退款不能再被拒绝")
 	})
+
+	t.Run("decision source and respond deadline are constrained", func(t *testing.T) {
+		buyers, merchantID, skuID := seedRefundFixture(t, db, "refund-deadline", 1, 2)
+		svc := refundService(NewRepository(db))
+		created := mustCreatePaidOrder(t, svc, buyers[0], skuID, "refund-deadline", 1)
+		_, err := svc.RequestRefund(context.Background(), RequestRefundParams{
+			UserID: buyers[0], OrderID: created.OrderID, Reason: "等到期",
+		})
+		require.NoError(t, err)
+
+		var row struct {
+			ID          int64
+			Source      *string
+			DecidedBy   *int64
+			RespondBy   time.Time
+			RequestedAt time.Time
+		}
+		require.NoError(t, db.Raw(`SELECT id, decision_source AS source, decided_by, respond_by, requested_at
+			FROM refunds WHERE order_id = ?`, created.OrderID).Scan(&row).Error)
+		require.Nil(t, row.Source, "未裁决的退款单没有来源")
+		require.True(t, row.RespondBy.Equal(row.RequestedAt.Add(DefaultRefundRespondWindow)))
+
+		err = db.Exec(`UPDATE refunds SET decision_source = 'MERCHANT' WHERE id = ?`, row.ID).Error
+		require.ErrorContains(t, err, "refunds_decision_check", "未裁决不能带上来源")
+		err = db.Exec(`UPDATE refunds SET decided_by = ? WHERE id = ?`, merchantID, row.ID).Error
+		require.ErrorContains(t, err, "refunds_decision_check", "未裁决不能有裁决人")
+
+		_, err = svc.DecideRefund(context.Background(), DecideRefundParams{
+			MerchantID: merchantID, OrderID: created.OrderID, Approve: true, Remark: "同意",
+		})
+		require.NoError(t, err)
+		require.NoError(t, db.Raw(`SELECT id, decision_source AS source, decided_by, respond_by, requested_at
+			FROM refunds WHERE order_id = ?`, created.OrderID).Scan(&row).Error)
+		require.NotNil(t, row.Source)
+		require.Equal(t, "MERCHANT", *row.Source)
+		require.NotNil(t, row.DecidedBy)
+		require.Equal(t, merchantID, *row.DecidedBy)
+
+		err = db.Exec(`UPDATE refunds SET decided_by = NULL WHERE id = ?`, row.ID).Error
+		require.ErrorContains(t, err, "refunds_decision_check", "商家来源必须有裁决人")
+		err = db.Exec(`UPDATE refunds SET decision_source = 'TIMEOUT', decided_by = ? WHERE id = ?`, merchantID, row.ID).Error
+		require.ErrorContains(t, err, "refunds_decision_check", "超时来源不能填写裁决人")
+		err = db.Exec(`UPDATE refunds SET decision_source = 'TIMEOUT', status = 'REJECTED', decided_by = NULL, refunded_at = NULL WHERE id = ?`, row.ID).Error
+		require.ErrorContains(t, err, "refunds_decision_check", "超时来源只能同意")
+		err = db.Exec(`UPDATE refunds SET respond_by = requested_at WHERE id = ?`, row.ID).Error
+		require.ErrorContains(t, err, "refunds_respond_by_check")
+
+		require.NoError(t, db.Exec(`UPDATE refunds SET decision_source = 'TIMEOUT', decided_by = NULL WHERE id = ?`, row.ID).Error)
+		var source string
+		require.NoError(t, db.Raw(`SELECT decision_source FROM refunds WHERE id = ?`, row.ID).Scan(&source).Error)
+		require.Equal(t, "TIMEOUT", source, "超时同意必须能落库，且 decided_by 为空")
+	})
 }
 
 type refundExpectation struct {

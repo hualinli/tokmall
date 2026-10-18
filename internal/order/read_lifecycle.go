@@ -22,11 +22,24 @@ type OrderView struct {
 	ExpiresAt    time.Time  `json:"expires_at"`
 	PaidAt       *time.Time `json:"paid_at,omitempty"`
 	FulfillingAt *time.Time `json:"fulfilling_at,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	CanceledAt   *time.Time `json:"canceled_at,omitempty"`
-	ExpiredAt    *time.Time `json:"expired_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	Item         ItemView   `json:"item"`
+	// AutoCompleteAt 仅在订单处于 FULFILLING 时返回，其他状态下它不再生效。
+	AutoCompleteAt *time.Time `json:"auto_complete_at,omitempty"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	CanceledAt     *time.Time `json:"canceled_at,omitempty"`
+	ExpiredAt      *time.Time `json:"expired_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Item           ItemView   `json:"item"`
+}
+
+// TransitionCommand 是履约命令的仓储参数。AutoCompleteAt 只在发货时使用，
+// 由 service 按自动确认窗口计算，仓储不自行决定业务时长。
+type TransitionCommand struct {
+	ActorID        int64
+	OrderID        int64
+	Merchant       bool
+	To             Status
+	At             time.Time
+	AutoCompleteAt time.Time
 }
 
 type OrderPage struct {
@@ -94,7 +107,12 @@ func (s *Service) transition(ctx context.Context, actorID, orderID int64, mercha
 	if actorID <= 0 || orderID <= 0 {
 		return nil, ErrInvalidParam
 	}
-	record, err := s.repo.Transition(ctx, actorID, orderID, merchant, to, s.now())
+	now := s.now()
+	cmd := TransitionCommand{ActorID: actorID, OrderID: orderID, Merchant: merchant, To: to, At: now}
+	if to == StatusFulfilling {
+		cmd.AutoCompleteAt = now.Add(s.autoCompleteAfter)
+	}
+	record, err := s.repo.Transition(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +131,9 @@ func mapOrderView(record orderRecord) OrderView {
 			MerchantID: item.MerchantIDSnapshot, ProductTitle: item.ProductTitleSnapshot,
 			SKUSpec: item.SKUSpecSnapshot, UnitPrice: item.UnitPrice,
 			Quantity: item.Quantity, LineAmount: item.LineAmount},
+	}
+	if o.Status == StatusFulfilling {
+		view.AutoCompleteAt = o.AutoCompleteAt
 	}
 	if o.SourceVideoID != nil && o.SourceAuthorID != nil && o.SourceProductID != nil {
 		view.Source = &Source{VideoID: *o.SourceVideoID, AuthorID: *o.SourceAuthorID, ProductID: *o.SourceProductID}
@@ -179,21 +200,27 @@ func (r *GormRepository) List(ctx context.Context, actorID, beforeID int64, limi
 	return result, nil
 }
 
-func (r *GormRepository) Transition(ctx context.Context, actorID, orderID int64, merchant bool, to Status, at time.Time) (*transitionRecord, error) {
+func (r *GormRepository) Transition(ctx context.Context, cmd TransitionCommand) (*transitionRecord, error) {
+	merchant, to := cmd.Merchant, cmd.To
 	if (merchant && to != StatusFulfilling) || (!merchant && to != StatusCompleted) {
 		return nil, ErrInvalidParam
 	}
+	at := cmd.At.UTC()
+	autoCompleteAt := cmd.AutoCompleteAt.UTC()
+	if merchant && !autoCompleteAt.After(at) {
+		return nil, ErrInvalidParam
+	}
 	owner := "user_id"
-	column := "completed_at"
+	changes := map[string]any{"status": string(to), "completed_at": at, "updated_at": at}
 	if merchant {
 		owner = "merchant_id"
-		column = "fulfilling_at"
+		changes = map[string]any{"status": string(to), "fulfilling_at": at, "auto_complete_at": autoCompleteAt, "updated_at": at}
 	}
 	var result *transitionRecord
 	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		var order Order
 		err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND "+owner+" = ?", orderID, actorID).Take(&order).Error
+			Where("id = ? AND "+owner+" = ?", cmd.OrderID, cmd.ActorID).Take(&order).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrOrderNotFound
 		}
@@ -209,9 +236,8 @@ func (r *GormRepository) Transition(ctx context.Context, actorID, orderID int64,
 		if !canFulfillTransition(order.Status, to) {
 			return ErrOrderStateConflict
 		}
-		at = at.UTC()
 		updated := db.Model(&Order{}).Where("id = ? AND status = ?", order.ID, string(order.Status)).
-			Updates(map[string]any{"status": string(to), column: at, "updated_at": at})
+			Updates(changes)
 		if updated.Error != nil {
 			return updated.Error
 		}
@@ -222,6 +248,7 @@ func (r *GormRepository) Transition(ctx context.Context, actorID, orderID int64,
 		order.UpdatedAt = at
 		if merchant {
 			order.FulfillingAt = &at
+			order.AutoCompleteAt = &autoCompleteAt
 		} else {
 			order.CompletedAt = &at
 		}
@@ -229,4 +256,23 @@ func (r *GormRepository) Transition(ctx context.Context, actorID, orderID int64,
 		return nil
 	})
 	return result, err
+}
+
+// AutoCompleteDue 把至多 limit 笔已到截止时间的 FULFILLING 订单确认收货，返回实际完成数。
+//
+// 子查询 FOR UPDATE SKIP LOCKED 跳过正被买家申请退款或确认收货锁住的订单，
+// 外层 status 条件兜底：谁先提交谁生效，退款申请晚到会看到 COMPLETED 而被拒绝。
+// 确认收货没有库存、券或事件副作用，因此可以用一条语句批量完成。
+func (r *GormRepository) AutoCompleteDue(ctx context.Context, now time.Time, limit int) (int64, error) {
+	now = now.UTC()
+	result := r.db.WithContext(ctx).Exec(`UPDATE orders SET status = ?, completed_at = ?, updated_at = ?
+		WHERE status = ? AND id IN (
+			SELECT id FROM orders
+			WHERE status = ? AND auto_complete_at <= ?
+			ORDER BY auto_complete_at, id
+			LIMIT ?
+			FOR UPDATE SKIP LOCKED)`,
+		string(StatusCompleted), now, now,
+		string(StatusFulfilling), string(StatusFulfilling), now, limit)
+	return result.RowsAffected, result.Error
 }

@@ -112,7 +112,7 @@ func run() error {
 	var hotScoreRecorder feed.HotScoreRecorder
 	var hotMetrics *observability.HotFeedMetrics
 	redisClient, err := cache.NewClient(cfg.RedisConfig,
-		// 慢命令日志：缓存命中后瓶颈就在 Redis 读上（见 performance-baseline），
+		// 慢命令日志：缓存命中后瓶颈就在 Redis 读上（见 docs/performance.md），
 		// 没有这层日志就只能看到"命中率"，看不到"哪条命令慢"。
 		cache.WithSlowCommandLogging(cache.SlowCommandThreshold, observability.NewRedisMetrics(metricsRegistry)))
 	if err != nil {
@@ -301,6 +301,8 @@ func run() error {
 	// 同一 GormRepository 同时实现订单命令与退款命令；注入分开是为了让
 	// service 只依赖它真正使用的消费侧接口。
 	orderService.SetRefundRepository(orderRepository)
+	orderService.SetAutoCompletePolicy(cfg.OrderAutoCompleteAfter, cfg.OrderAutoCompleteRejectGrace)
+	orderService.SetRefundRespondWindow(cfg.RefundAutoApproveAfter)
 	orderHandler := order.NewHandler(orderService)
 	promotionHandler := promotion.NewHandler(promotion.NewService(promotion.NewRepository(db)))
 	couponHandler := coupon.NewHandler(coupon.NewService(coupon.NewRepository(db)))
@@ -469,6 +471,26 @@ func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.
 		go func() {
 			defer close(done)
 			expiryWorker.Run(workerCtx)
+		}()
+	}
+	if cfg.RefundAutoApproveEnabled {
+		refundApproveWorker := order.NewRefundAutoApproveWorker(orderRepo, cfg.RefundAutoApproveInterval, cfg.RefundAutoApproveBatchSize)
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "refund auto approve worker")
+		go func() {
+			defer close(done)
+			refundApproveWorker.Run(workerCtx)
+		}()
+	}
+	if cfg.OrderAutoCompleteEnabled {
+		autoCompleteWorker := order.NewAutoCompleteWorker(orderRepo, cfg.OrderAutoCompleteInterval, cfg.OrderAutoCompleteBatchSize)
+		workerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "order auto complete worker")
+		go func() {
+			defer close(done)
+			autoCompleteWorker.Run(workerCtx)
 		}()
 	}
 	if redisClient == nil {

@@ -23,6 +23,11 @@ import (
 // 因此"申请退款 vs 发货"、"同意退款 vs 确认收货"、"两次同意"这些竞争，
 // 最终都由订单行锁 + 状态条件更新仲裁成唯一合法终态。
 func (r *GormRepository) RequestRefund(ctx context.Context, cmd RequestRefundCommand) (*refundRecord, error) {
+	requestedAt := cmd.RequestedAt.UTC()
+	respondBy := cmd.RespondBy.UTC()
+	if !respondBy.After(requestedAt) {
+		return nil, errors.New("refund respond_by must be after requested_at")
+	}
 	var result *refundRecord
 	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		var order Order
@@ -54,7 +59,7 @@ func (r *GormRepository) RequestRefund(ctx context.Context, cmd RequestRefundCom
 		refund := Refund{
 			RefundNo: cmd.RefundNo, OrderID: order.ID, UserID: order.UserID,
 			MerchantID: order.MerchantID, Amount: order.TotalAmount, Reason: cmd.Reason,
-			Status: RefundStatusRequested, RequestedAt: cmd.RequestedAt.UTC(),
+			Status: RefundStatusRequested, RequestedAt: requestedAt, RespondBy: respondBy,
 		}
 		claim := db.Clauses(clause.OnConflict{
 			Columns:     []clause.Column{{Name: "order_id"}},
@@ -76,7 +81,7 @@ func (r *GormRepository) RequestRefund(ctx context.Context, cmd RequestRefundCom
 			return nil
 		}
 
-		at := cmd.RequestedAt.UTC()
+		at := requestedAt
 		from := order.Status
 		updated := db.Model(&Order{}).
 			Where("id = ? AND status = ?", order.ID, string(from)).
@@ -133,10 +138,13 @@ func (r *GormRepository) DecideRefund(ctx context.Context, cmd DecideRefundComma
 		if err != nil {
 			return err
 		}
+		// 商家路径在这里把命令收成裁决事实。超时自动同意会自己构造一份，
+		// 两条路都进 approveRefund，避免以后各写一套同意逻辑。
+		decision := merchantDecision(cmd)
 		if cmd.Approve {
-			return approveRefund(db, order, *pending, cmd, &result)
+			return approveRefund(db, order, *pending, decision, &result)
 		}
-		return rejectRefund(db, order, *pending, cmd, &result)
+		return rejectRefund(db, order, *pending, decision, cmd.MinAutoCompleteAt, &result)
 	})
 	if err != nil {
 		return nil, err
@@ -144,15 +152,161 @@ func (r *GormRepository) DecideRefund(ctx context.Context, cmd DecideRefundComma
 	return result, nil
 }
 
-func approveRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundCommand, result **refundRecord) error {
-	at := cmd.DecidedAt.UTC()
-	remark := nullableRemark(cmd.Remark)
+// ApproveOverdueRefund 在一个事务里处理一笔到期仍未裁决的退款：先锁订单行，
+// 再把 TIMEOUT 裁决交给 approveRefund。没有到期行时返回 false。
+//
+// 只锁 orders（FOR UPDATE OF o SKIP LOCKED），不在这条 SELECT 里锁 refunds。
+// DecideRefund 也是先锁订单再改退款单；如果这里先锁退款单，worker 和商家会互相等待。
+// 商家正握着订单锁时，这一笔被跳过，等下一轮再看。
+func (r *GormRepository) ApproveOverdueRefund(ctx context.Context, now time.Time) (bool, error) {
+	now = now.UTC()
+	var approved *refundRecord
+	err := r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var locked struct {
+			ID int64 `gorm:"column:id"`
+		}
+		err := db.Raw(`
+			SELECT o.id
+			FROM orders AS o
+			JOIN refunds AS rf ON rf.order_id = o.id
+			WHERE o.status = ? AND rf.status = ? AND rf.respond_by <= ?
+			ORDER BY rf.respond_by, rf.id
+			LIMIT 1
+			FOR UPDATE OF o SKIP LOCKED`,
+			string(StatusRefundRequested), string(RefundStatusRequested), now,
+		).Scan(&locked).Error
+		if err != nil {
+			return err
+		}
+		if locked.ID == 0 {
+			return nil
+		}
+		var order Order
+		err = db.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", locked.ID).Take(&order).Error
+		if err != nil {
+			return err
+		}
+		pending, err := findRefundByStatus(db, order.ID, RefundStatusRequested)
+		if errors.Is(err, ErrRefundNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// FOR UPDATE OF o 只锁订单。READ COMMITTED 下，订单行若在本语句快照之后被提交过，
+		// PG 会取最新版本并重查 WHERE；JOIN 进来的 refunds 不会刷新，仍用快照里的旧行。
+		// 查询条件只负责挑出候选。锁内再用订单和当前待处理退款单重新判断，
+		// 否则商家拒绝旧单、买家立刻再申请后，可能把还没到期的新退款单自动同意。
+		if order.Status != StatusRefundRequested || pending.RespondBy.After(now) {
+			return nil
+		}
+		var result *refundRecord
+		if err := approveRefund(db, order, *pending, timeoutDecision(now), &result); err != nil {
+			return err
+		}
+		approved = result
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if approved == nil {
+		return false, nil
+	}
+	slog.InfoContext(ctx, "auto approved overdue refund",
+		"order_id", approved.Order.ID, "refund_no", approved.Refund.RefundNo)
+	return true, nil
+}
+
+// decisionSource 区分裁决是商家做出的，还是处理时限到期后系统做出的。
+type decisionSource string
+
+const (
+	decisionSourceMerchant decisionSource = "MERCHANT"
+	decisionSourceTimeout  decisionSource = "TIMEOUT"
+)
+
+// refundDecision 是写入退款单的裁决事实：时间、裁决人、来源、备注。
+// 商家同意/拒绝与超时自动同意各自构造，approveRefund 不再接收整份 DecideRefundCommand
+// （那份命令还带着订单、是否同意、自动确认顺延，都不是退款单上的字段）。
+type refundDecision struct {
+	At        time.Time
+	DecidedBy *int64
+	Source    decisionSource
+	Remark    string
+}
+
+func merchantDecision(cmd DecideRefundCommand) refundDecision {
+	decidedBy := cmd.DecidedBy
+	return refundDecision{
+		At:        cmd.DecidedAt,
+		DecidedBy: &decidedBy,
+		Source:    decisionSourceMerchant,
+		Remark:    cmd.Remark,
+	}
+}
+
+func timeoutDecision(at time.Time) refundDecision {
+	return refundDecision{At: at.UTC(), Source: decisionSourceTimeout}
+}
+
+// writeColumns 生成退款单裁决列。时间、备注和来源都从裁决事实本身取，
+// 避免调用方另传一份、和 d.At / d.Remark 对不上。
+// 来源决定 decided_by：商家必须有人，超时必须为空，而且超时只能同意。
+func (d refundDecision) writeColumns(status RefundStatus) (map[string]any, error) {
+	at := d.At.UTC()
+	cols := map[string]any{
+		"status": string(status), "decided_at": at, "decision_remark": nullableRemark(d.Remark),
+		"decision_source": string(d.Source), "updated_at": at,
+	}
+	switch d.Source {
+	case decisionSourceMerchant:
+		if d.DecidedBy == nil || *d.DecidedBy <= 0 {
+			return nil, errors.New("merchant refund decision requires decided_by")
+		}
+		cols["decided_by"] = *d.DecidedBy
+	case decisionSourceTimeout:
+		if status != RefundStatusSucceeded {
+			return nil, errors.New("timeout refund decision can only approve")
+		}
+		if d.DecidedBy != nil {
+			return nil, errors.New("timeout refund decision must leave decided_by empty")
+		}
+		// map 更新里的 nil 会写成 NULL。跳过零值只发生在用 struct 更新时。
+		cols["decided_by"] = nil
+	default:
+		return nil, errors.New("refund decision source is required")
+	}
+	return cols, nil
+}
+
+func (d refundDecision) applyTo(refund *Refund, status RefundStatus) {
+	at := d.At.UTC()
+	refund.Status = status
+	refund.DecidedAt = &at
+	refund.DecisionRemark = nullableRemark(d.Remark)
+	source := string(d.Source)
+	refund.DecisionSource = &source
+	refund.UpdatedAt = at
+	if d.DecidedBy == nil {
+		refund.DecidedBy = nil
+		return
+	}
+	id := *d.DecidedBy
+	refund.DecidedBy = &id
+}
+
+func approveRefund(db *gorm.DB, order Order, pending Refund, decision refundDecision, result **refundRecord) error {
+	at := decision.At.UTC()
+	cols, err := decision.writeColumns(RefundStatusSucceeded)
+	if err != nil {
+		return err
+	}
+	cols["refunded_at"] = at
 	decided := db.Model(&Refund{}).
 		Where("id = ? AND status = ?", pending.ID, string(RefundStatusRequested)).
-		Updates(map[string]any{
-			"status": string(RefundStatusSucceeded), "decided_at": at, "decided_by": cmd.DecidedBy,
-			"decision_remark": remark, "refunded_at": at, "updated_at": at,
-		})
+		Updates(cols)
 	if decided.Error != nil {
 		return decided.Error
 	}
@@ -205,25 +359,21 @@ func approveRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundCom
 	order.Status = StatusRefunded
 	order.RefundedAt = &at
 	order.UpdatedAt = at
-	pending.Status = RefundStatusSucceeded
-	pending.DecidedAt = &at
-	pending.DecidedBy = &cmd.DecidedBy
-	pending.DecisionRemark = remark
+	decision.applyTo(&pending, RefundStatusSucceeded)
 	pending.RefundedAt = &at
-	pending.UpdatedAt = at
 	*result = &refundRecord{Refund: pending, Order: order}
 	return nil
 }
 
-func rejectRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundCommand, result **refundRecord) error {
-	at := cmd.DecidedAt.UTC()
-	remark := nullableRemark(cmd.Remark)
+func rejectRefund(db *gorm.DB, order Order, pending Refund, decision refundDecision, minAutoCompleteAt time.Time, result **refundRecord) error {
+	at := decision.At.UTC()
+	cols, err := decision.writeColumns(RefundStatusRejected)
+	if err != nil {
+		return err
+	}
 	decided := db.Model(&Refund{}).
 		Where("id = ? AND status = ?", pending.ID, string(RefundStatusRequested)).
-		Updates(map[string]any{
-			"status": string(RefundStatusRejected), "decided_at": at, "decided_by": cmd.DecidedBy,
-			"decision_remark": remark, "updated_at": at,
-		})
+		Updates(cols)
 	if decided.Error != nil {
 		return decided.Error
 	}
@@ -233,11 +383,24 @@ func rejectRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundComm
 
 	// 拒绝后订单退回申请前状态：PAID 可继续发货，FULFILLING 可继续收货。
 	restored := *order.RefundFromStatus
+	changes := map[string]any{"status": string(restored), "refund_from_status": nil, "updated_at": at}
+	var resumed *time.Time
+	if restored == StatusFulfilling {
+		if order.AutoCompleteAt == nil {
+			return errors.New("order invariant violated: fulfilled order has no auto complete deadline")
+		}
+		// 退款申请期间截止时间可能已经过去；顺延到至少 MinAutoCompleteAt，
+		// 买家仍有时间确认收货或再次申请，不会在拒绝的下一刻被自动确认。
+		deadline := *order.AutoCompleteAt
+		if minimum := minAutoCompleteAt.UTC(); deadline.Before(minimum) {
+			deadline = minimum
+		}
+		changes["auto_complete_at"] = deadline
+		resumed = &deadline
+	}
 	updated := db.Model(&Order{}).
 		Where("id = ? AND status = ?", order.ID, string(StatusRefundRequested)).
-		Updates(map[string]any{
-			"status": string(restored), "refund_from_status": nil, "updated_at": at,
-		})
+		Updates(changes)
 	if updated.Error != nil {
 		return updated.Error
 	}
@@ -245,14 +408,13 @@ func rejectRefund(db *gorm.DB, order Order, pending Refund, cmd DecideRefundComm
 		return ErrOrderStateConflict
 	}
 
+	if resumed != nil {
+		order.AutoCompleteAt = resumed
+	}
 	order.Status = restored
 	order.RefundFromStatus = nil
 	order.UpdatedAt = at
-	pending.Status = RefundStatusRejected
-	pending.DecidedAt = &at
-	pending.DecidedBy = &cmd.DecidedBy
-	pending.DecisionRemark = remark
-	pending.UpdatedAt = at
+	decision.applyTo(&pending, RefundStatusRejected)
 	*result = &refundRecord{Refund: pending, Order: order}
 	return nil
 }

@@ -36,6 +36,14 @@ const (
 	maxIdempotencyKeyLength = 128
 	maxOrderQuantity        = 1000
 	defaultPaymentTTL       = 30 * time.Minute
+	// DefaultAutoCompleteAfter 是发货后到系统自动确认收货的默认窗口。
+	DefaultAutoCompleteAfter = 7 * 24 * time.Hour
+	// DefaultRefundRejectGrace 是拒绝退款退回 FULFILLING 后，买家至少还剩的确认/再申请时间：
+	// 否则申请期间截止时间已过，拒绝的下一刻就会被自动确认，买家失去再次申请的机会。
+	DefaultRefundRejectGrace = 3 * 24 * time.Hour
+	// DefaultRefundRespondWindow 是买家申请后，商家处理退款的默认时限。
+	// 与 REFUND_AUTO_APPROVE_AFTER、迁移 000026 回填用的 2 天是同一个数。
+	DefaultRefundRespondWindow = 48 * time.Hour
 )
 
 type Source struct {
@@ -194,7 +202,7 @@ type Repository interface {
 	Cancel(ctx context.Context, userID, orderID int64, canceledAt time.Time) (*cancelRecord, error)
 	Get(ctx context.Context, actorID, orderID int64, merchant bool) (*orderRecord, error)
 	List(ctx context.Context, actorID, beforeID int64, limit int, merchant bool) ([]orderRecord, error)
-	Transition(ctx context.Context, actorID, orderID int64, merchant bool, to Status, at time.Time) (*transitionRecord, error)
+	Transition(ctx context.Context, cmd TransitionCommand) (*transitionRecord, error)
 }
 
 func (s *Service) Pay(ctx context.Context, params PayParams) (*PaymentResult, error) {
@@ -242,6 +250,10 @@ type Service struct {
 	newOrderNo  func() (string, error)
 	newRefundNo func() (string, error)
 	paymentTTL  time.Duration
+
+	autoCompleteAfter   time.Duration
+	refundRejectGrace   time.Duration
+	refundRespondWindow time.Duration
 }
 
 func NewService(repo Repository) *Service {
@@ -252,8 +264,29 @@ func NewService(repo Repository) *Service {
 			id, err := uuid.NewV7()
 			return id.String(), err
 		},
-		newRefundNo: defaultRefundNo,
-		paymentTTL:  defaultPaymentTTL,
+		newRefundNo:         defaultRefundNo,
+		paymentTTL:          defaultPaymentTTL,
+		autoCompleteAfter:   DefaultAutoCompleteAfter,
+		refundRejectGrace:   DefaultRefundRejectGrace,
+		refundRespondWindow: DefaultRefundRespondWindow,
+	}
+}
+
+// SetAutoCompletePolicy 由装配方按配置覆盖自动确认窗口与拒绝退款后的最短剩余时间；非正值保留默认。
+func (s *Service) SetAutoCompletePolicy(after, rejectGrace time.Duration) {
+	if after > 0 {
+		s.autoCompleteAfter = after
+	}
+	if rejectGrace > 0 {
+		s.refundRejectGrace = rejectGrace
+	}
+}
+
+// SetRefundRespondWindow 由装配方按配置覆盖商家处理退款的时限；非正值保留默认。
+// 它只影响之后的新申请，不改已经写在退款单上的 respond_by。
+func (s *Service) SetRefundRespondWindow(window time.Duration) {
+	if window > 0 {
+		s.refundRespondWindow = window
 	}
 }
 

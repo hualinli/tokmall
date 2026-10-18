@@ -74,7 +74,7 @@ func (r *handlerOrderRepository) Get(context.Context, int64, int64, bool) (*orde
 func (r *handlerOrderRepository) List(context.Context, int64, int64, int, bool) ([]orderRecord, error) {
 	return nil, r.err
 }
-func (r *handlerOrderRepository) Transition(context.Context, int64, int64, bool, Status, time.Time) (*transitionRecord, error) {
+func (r *handlerOrderRepository) Transition(context.Context, TransitionCommand) (*transitionRecord, error) {
 	return nil, r.err
 }
 

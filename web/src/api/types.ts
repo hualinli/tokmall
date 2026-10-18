@@ -1911,7 +1911,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 买家确认完成（FULFILLING → COMPLETED） */
+        /**
+         * 买家确认完成（FULFILLING → COMPLETED）
+         * @description 到达 auto_complete_at 后系统会自动确认；此后再调用按重放返回 200。
+         */
         post: {
             parameters: {
                 query?: never;
@@ -3092,6 +3095,11 @@ export interface components {
             paid_at?: string;
             /** Format: date-time */
             fulfilling_at?: string;
+            /**
+             * Format: date-time
+             * @description 仅 FULFILLING 时返回；到期后系统自动确认收货。拒绝退款退回 FULFILLING 时可能顺延
+             */
+            auto_complete_at?: string;
             /** Format: date-time */
             completed_at?: string;
             /** Format: date-time */
