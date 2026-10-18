@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -59,8 +60,10 @@ type CacheStats interface {
 
 // RedisFeedCache 首页缓存的 Redis 实现。
 type RedisFeedCache struct {
-	client *redis.Client
-	ttl    time.Duration
+	client     *redis.Client
+	ttl        time.Duration
+	pageKey    string
+	versionKey string
 }
 
 func NewRedisFeedCache(client *redis.Client, ttl time.Duration) *RedisFeedCache {
@@ -144,19 +147,77 @@ func (c *RedisFollowingFeedCache) InvalidateFollowingFeed(ctx context.Context, f
 	return c.client.Del(ctx, followingCacheKeys(followerID)...).Err()
 }
 
+// storedFirstPage 把回填时看到的 feed:version 和页面绑在一起。
+// 读取时版本不一致就当未命中，避免旧查询结果被标成新版本。
+type storedFirstPage struct {
+	Version int64       `json:"version"`
+	Result  *FeedResult `json:"result"`
+}
+
+// setPageIfVersion 在 Redis 里同时检查版本和写入页面。
+// 检查与写入之间不能拆成两次往返，否则失效已经发生后，旧页面仍能写回去。
+var setPageIfVersion = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false then current = '0' end
+if current ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+return 1
+`)
+
 func (c *RedisFeedCache) Get(ctx context.Context) (*FeedResult, error) {
-	data, err := c.client.Get(ctx, firstPageKey).Bytes()
+	_, result, err := c.GetWithVersion(ctx)
+	return result, err
+}
+
+func (c *RedisFeedCache) keys() (page string, version string) {
+	page, version = c.pageKey, c.versionKey
+	if page == "" {
+		page = firstPageKey
+	}
+	if version == "" {
+		version = feedVersionKey
+	}
+	return page, version
+}
+
+func (c *RedisFeedCache) GetWithVersion(ctx context.Context) (int64, *FeedResult, error) {
+	pageKey, _ := c.keys()
+	data, err := c.client.Get(ctx, pageKey).Bytes()
 	if errors.Is(err, redis.Nil) {
-		return nil, nil //nolint:nilnil // 见上方注释：未命中不是错误
+		return 0, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	result := &FeedResult{}
-	if err := json.Unmarshal(data, result); err != nil {
-		return nil, err
+	var wrapped storedFirstPage
+	if err := json.Unmarshal(data, &wrapped); err == nil && wrapped.Result != nil {
+		return wrapped.Version, wrapped.Result, nil
 	}
-	return result, nil
+	legacy := &FeedResult{}
+	if err := json.Unmarshal(data, legacy); err != nil {
+		return 0, nil, err
+	}
+	return 0, legacy, nil
+}
+
+func (c *RedisFeedCache) SetIfVersion(ctx context.Context, observed int64, result *FeedResult) (bool, error) {
+	payload, err := json.Marshal(storedFirstPage{Version: observed, Result: result})
+	if err != nil {
+		return false, err
+	}
+	ttl := jitteredTTL(c.ttl)
+	if ttl < time.Millisecond {
+		ttl = time.Millisecond
+	}
+	pageKey, versionKey := c.keys()
+	wrote, err := setPageIfVersion.Run(ctx, c.client,
+		[]string{versionKey, pageKey},
+		strconv.FormatInt(observed, 10), payload, ttl.Milliseconds(),
+	).Int()
+	if err != nil {
+		return false, err
+	}
+	return wrote == 1, nil
 }
 
 func (c *RedisFeedCache) Set(ctx context.Context, result *FeedResult) error {
@@ -164,11 +225,13 @@ func (c *RedisFeedCache) Set(ctx context.Context, result *FeedResult) error {
 	if err != nil {
 		return err
 	}
-	return c.client.Set(ctx, firstPageKey, data, jitteredTTL(c.ttl)).Err()
+	pageKey, _ := c.keys()
+	return c.client.Set(ctx, pageKey, data, jitteredTTL(c.ttl)).Err()
 }
 
 func (c *RedisFeedCache) Del(ctx context.Context) error {
-	return c.client.Del(ctx, firstPageKey).Err()
+	pageKey, _ := c.keys()
+	return c.client.Del(ctx, pageKey).Err()
 }
 
 // InvalidateFeedCache 实现 video 模块的消费侧接口（video 定义、main 装配）：

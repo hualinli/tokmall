@@ -460,12 +460,25 @@ func (s *Service) firstPage(ctx context.Context) (*FeedResult, error) {
 		if err == nil && cached != nil {
 			return cached, nil
 		}
+		observed := int64(0)
+		filler, versioned := s.cache.(interface {
+			Observe(context.Context) int64
+			Fill(context.Context, *FeedResult, int64) error
+		})
+		if versioned {
+			observed = filler.Observe(loadCtx)
+		}
 		result, err := s.loadPage(loadCtx, nil, defaultLimit)
 		if err != nil {
 			return nil, err
 		}
-		// Set 失败只影响后续命中率，不能因此让本次请求失败。
-		if err := s.cache.Set(loadCtx, result); err != nil {
+		// 回填失败只影响后续命中率，不能因此让本次请求失败。
+		// 带回源前的版本：失效发生在查询期间时，条件写入会放弃旧结果。
+		if versioned {
+			if err := filler.Fill(loadCtx, result, observed); err != nil {
+				slog.Warn("feed cache set failed", "err", err)
+			}
+		} else if err := s.cache.Set(loadCtx, result); err != nil {
 			slog.Warn("feed cache set failed", "err", err)
 		}
 		return result, nil

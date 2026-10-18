@@ -224,7 +224,7 @@ func newTestService(repo Repository) *Service {
 	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, &fakeCache{}, nil, nil)
 }
 
-func newTestServiceWithCache(repo Repository, cache *fakeCache) *Service {
+func newTestServiceWithCache(repo Repository, cache FirstPageCache) *Service {
 	return NewService(repo, NewCodec("test-cursor-secret"), fakeURLProvider{}, cache, nil, nil)
 }
 
@@ -405,6 +405,52 @@ func TestFirstPage_CacheHit(t *testing.T) {
 	repo.mu.Lock()
 	require.Equal(t, 0, repo.calls, "命中缓存不得查库")
 	repo.mu.Unlock()
+}
+
+type snapshotCache struct {
+	fakeCache
+	version int64
+}
+
+func (s *snapshotCache) Observe(context.Context) int64 { return s.version }
+
+func (s *snapshotCache) Fill(ctx context.Context, result *FeedResult, observed int64) error {
+	if observed != s.version {
+		return nil
+	}
+	return s.Set(ctx, result)
+}
+
+type invalidateOnceRepo struct {
+	*fakeRepo
+	cache  *snapshotCache
+	bumped bool
+}
+
+func (r *invalidateOnceRepo) ListPublished(ctx context.Context, before *Cursor, limit int) ([]Video, error) {
+	if !r.bumped {
+		r.bumped = true
+		r.cache.version++
+	}
+	return r.fakeRepo.ListPublished(ctx, before, limit)
+}
+
+// TestFirstPage_DoesNotCachePageReadBeforeInvalidation：
+// 查询进行中版本被递增后，这次读到的旧页面不能进入缓存；下一次回源才可以。
+func TestFirstPage_DoesNotCachePageReadBeforeInvalidation(t *testing.T) {
+	cache := &snapshotCache{version: 1}
+	repo := &invalidateOnceRepo{fakeRepo: &fakeRepo{videos: fiveVideos()}, cache: cache}
+	svc := newTestServiceWithCache(repo, cache)
+
+	res, err := svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, res.Items)
+	require.Zero(t, cache.sets, "失效发生在查询期间，不能回填")
+	require.Nil(t, cache.store)
+
+	_, err = svc.List(context.Background(), 0, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, cache.sets)
 }
 
 // TestFirstPage_PopulatesCache 未命中时查库并回填，第二次命中。

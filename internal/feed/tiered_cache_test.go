@@ -43,6 +43,8 @@ type fakeVersionSource struct {
 
 func (f *fakeVersionSource) Current(context.Context) int64 { return f.version }
 
+func (f *fakeVersionSource) Live(context.Context) (int64, error) { return f.version, nil }
+
 func (f *fakeVersionSource) Bump(context.Context) error {
 	f.bumps++
 	f.version++
@@ -151,6 +153,67 @@ func (panicFirstPageCache) Set(context.Context, *FeedResult) error {
 
 func (panicFirstPageCache) Del(context.Context) error {
 	panic("L2 must not be touched on L1 hit")
+}
+
+// versionedPage 模拟带版本条件写入的 L2。版本与 fakeVersionSource 共用。
+type versionedPage struct {
+	fakeFirstPageCache
+	version *fakeVersionSource
+	stored  int64
+}
+
+func (p *versionedPage) GetWithVersion(context.Context) (int64, *FeedResult, error) {
+	p.gets++
+	if p.result == nil {
+		return 0, nil, nil
+	}
+	return p.stored, p.result, nil
+}
+
+func (p *versionedPage) SetIfVersion(_ context.Context, observed int64, result *FeedResult) (bool, error) {
+	if p.version.version != observed {
+		return false, nil
+	}
+	p.sets++
+	p.result = result
+	p.stored = observed
+	return true, nil
+}
+
+// TestFillDropsPageReadBeforeInvalidation 复现回源与失效交错：
+// 先观察到版本 1 并读到旧页面，随后失效把版本加到 2，这次回填必须被丢掉。
+func TestFillDropsPageReadBeforeInvalidation(t *testing.T) {
+	version := &fakeVersionSource{version: 1}
+	l2 := &versionedPage{version: version}
+	cache := newTestTieredCache(t, l2, version, noopStats{})
+	observed := cache.Observe(context.Background())
+	require.Equal(t, int64(1), observed)
+
+	require.NoError(t, cache.InvalidateFeedCache(context.Background()))
+	require.Equal(t, int64(2), version.version)
+
+	stale := &FeedResult{Items: []FeedItem{{VideoID: 1}}}
+	require.NoError(t, cache.Fill(context.Background(), stale, observed))
+	require.Zero(t, l2.sets, "版本已变化，旧页面不能写回 L2")
+
+	got, err := cache.Get(context.Background())
+	require.NoError(t, err)
+	require.Nil(t, got)
+	require.Zero(t, cache.L1Stats().Entries)
+}
+
+func TestFillKeepsPageWhenVersionUnchanged(t *testing.T) {
+	version := &fakeVersionSource{version: 4}
+	l2 := &versionedPage{version: version}
+	cache := newTestTieredCache(t, l2, version, noopStats{})
+	observed := cache.Observe(context.Background())
+	page := &FeedResult{Items: []FeedItem{{VideoID: 9}}}
+	require.NoError(t, cache.Fill(context.Background(), page, observed))
+
+	got, err := cache.Get(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(9), got.Items[0].VideoID)
+	require.Equal(t, 1, cache.L1Stats().Entries)
 }
 
 // TestVersionChangeInvalidatesL1AcrossInstances 是跨实例失效的核心用例：
