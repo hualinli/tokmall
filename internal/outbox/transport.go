@@ -45,7 +45,7 @@ func (LogPublisher) Publish(_ context.Context, msg Message) error {
 
 // RedisStreamPublisher 把事件 XADD 到 Redis Stream。
 //
-// 为什么选 Redis Streams 而不是 Kafka（见 docs/architecture-decisions.md#events）：
+// 为什么选 Redis Streams 而不是 Kafka（见 docs/architecture.md#events）：
 //   - 本项目已有 Redis，Streams 自带 consumer group、消息确认（XACK）、
 //     待处理列表（PEL）与分页认领（XPENDING/XCLAIM），足以支撑至少一次投递与
 //     "消费者崩溃后重投"；

@@ -362,7 +362,7 @@ func (s *Service) GetProfile(ctx context.Context, userID int64) (*PublicUser, er
 // （不产生 token 泛滥）。这是无状态 JWT 下无法用事务时对顺序的取舍。
 // Redis SETNX 原子 Claim 旧 jti，并发刷新只有一次可以成功签发。
 // Claim 成功后签发失败也需重新登录；access token 不逐请求检查撤销状态。
-// 当前权衡见 docs/architecture-decisions.md#auth。
+// 当前权衡见 docs/architecture.md#auth。
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResult, error) {
 	claims, err := s.tokens.Verify(refreshToken)
 	if err != nil || !claims.IsRefresh() {

@@ -276,7 +276,7 @@ func (r *runner) runPenetration(ctx context.Context) error {
 	return nil
 }
 
-// runFeed 压读路径（首页 Feed），用于和 performance-baseline.md 的历史数据对照。
+// runFeed 压读路径（首页 Feed），用于和 docs/performance.md 的历史数据对照。
 func (r *runner) runFeed(ctx context.Context) error {
 	fmt.Printf("开始压测读路径：并发=%d 时长=%s\n", r.cfg.concurrency, r.cfg.duration)
 	if err := r.awaitMeasurement(ctx); err != nil {

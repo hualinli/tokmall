@@ -13,7 +13,7 @@ import (
 // SlowCommandThreshold 是 Redis 慢命令的判定阈值。
 //
 // 为什么需要它：缓存命中后系统的瓶颈就从数据库移到了 Redis（见
-// docs/performance-baseline.md），但在此之前 Redis 是"黑盒"——只有命中率指标，
+// docs/performance.md），但在此之前 Redis 是"黑盒"——只有命中率指标，
 // 看不到"哪条命令慢、慢多少、打在什么 key 上"。慢命令日志把这一层打开。
 //
 // 阈值取 10ms：正常命令在本地 Redis 上应当 <1ms，超过 10ms 说明要么网络抖动、

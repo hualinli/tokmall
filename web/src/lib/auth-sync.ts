@@ -48,7 +48,7 @@ function parsePersisted(raw: string | null): AuthSnapshot | null {
 /**
  * 多标签页登录态同步。
  *
- * 为什么必须做：refresh token 是「单次有效 + 轮换」的（见 docs/architecture-decisions.md#auth），
+ * 为什么必须做：refresh token 是「单次有效 + 轮换」的（见 docs/architecture.md#auth），
  * 多个标签页同时使用旧 token 刷新时，只有一个请求能 Claim 成功。
  * 轮换成功会广播新 token 对，减少其他标签页继续使用旧凭证；
  * 广播不提供刷新互斥，无法阻止广播到达前的并发刷新竞争。

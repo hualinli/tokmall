@@ -1,6 +1,6 @@
 # 后端压测原始证据
 
-结论与适用范围集中在 [性能基线](../docs/performance-baseline.md)，这里解释证据结构与复现方法。
+结论与适用范围集中在 [性能](../docs/performance.md)，这里解释证据结构与复现方法。
 
 `2026-10-09/smoke` 是5秒工具验收，不用作简历性能指标。`2026-10-09/formal` 是正式实验：Feed A/B/C各180秒×3轮，50并发；交易单热点/100分散SKU，各10/50/100并发、120秒×3轮。API、压测端与Docker同机，属于固定条件下的吞吐对照，不证明独立部署的容量上限。限流关闭，权限、幂等、事务、账本与默认INFO日志保留；媒体使用模拟元数据，支付是项目模拟支付。
 
@@ -17,7 +17,7 @@
 
 ## 复现
 
-依照 [开发运维](../docs/development-and-operations.md) 编译API、loadgen、reconcile并准备标准端口容器。确保Redis DB15专用且为空，18080/19091可用。每次新实验使用新目录，避免把不同构建混为同一实验。
+依照 [运维](../docs/operations.md) 编译API、loadgen、reconcile并准备标准端口容器。确保Redis DB15专用且为空，18080/19091可用。每次新实验使用新目录，避免把不同构建混为同一实验。
 
 ```bash
 python3 scripts/benchmark_backend.py --output benchmarks/new-run \

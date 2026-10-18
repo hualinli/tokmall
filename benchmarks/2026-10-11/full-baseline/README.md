@@ -1,6 +1,6 @@
 # 当前完整优化版本的 k6 本机基线
 
-结论和限制统一见 [性能基线](../../../docs/performance-baseline.md)。服务版本33c29ea，Feed L1+L2开启，关闭隔离实例限流；权限、事务、幂等、日志、后台worker与对账保留。测试不修改业务库，Redis DB15经空库检查后专用于实验。
+结论和限制统一见 [性能](../../../docs/performance.md)。服务版本33c29ea，Feed L1+L2开启，关闭隔离实例限流；权限、事务、幂等、日志、后台worker与对账保留。测试不修改业务库，Redis DB15经空库检查后专用于实验。
 
 ## 证据
 
@@ -18,7 +18,7 @@ Feed每轮检查每个响应含20个视频。交易每个VU使用独立买家，
 
 ## 复现
 
-准备标准端口PG/Redis/RustFS，按开发运维编译bin/api、bin/reconcile，安装本轮使用的k6 v2.3.0到bin/k6。确保Redis DB15专用且为空，18080/19091空闲。
+准备标准端口PG/Redis/RustFS，按运维文档编译bin/api、bin/reconcile，安装本轮使用的k6 v2.3.0到bin/k6。确保Redis DB15专用且为空，18080/19091空闲。
 
 ```bash
 python3 scripts/benchmark_k6.py --output .gocache/benchmarks/new-run --confirm-commerce

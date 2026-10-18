@@ -10,7 +10,7 @@ React/TypeScript/Vite/TanStack Router与Query/Tailwind，API类型来自 [OpenAP
 
 ## 运行和验证
 
-Node22、pnpm11与CI对齐。先安装依赖，再从根目录`make dev`，前端:5173代理`/api`和`/health`到本地API:8080；配置见 [vite.config.ts](vite.config.ts)。后端环境与迁移见 [开发运维](../docs/development-and-operations.md)。
+Node22、pnpm11与CI对齐。先安装依赖，再从根目录`make dev`，前端:5173代理`/api`和`/health`到本地API:8080；配置见 [vite.config.ts](vite.config.ts)。后端环境与迁移见 [运维](../docs/operations.md)。
 
 ```bash
 pnpm install --frozen-lockfile
@@ -27,4 +27,4 @@ pnpm test:e2e               # 后端与PG/Redis/RustFS需已运行
 
 [Playwright](playwright.config.ts)使用单worker，必要时启动Vite，复用已有前端；它不替你启动后端。当前E2E合成媒体要求测试后端显式`MEDIA_PROBE_ENABLED=false`，与真实媒体准入测试分开。用例覆盖认证、Feed播放/分页、社交、上传、交易/退款与[过期订单重新购买](e2e/checkout-retry.spec.ts)；关注/点赞既检查乐观UI也等待服务端事实。单测与E2E通过数是某次运行结果，不能永久写成固定覆盖承诺。
 
-Token目前持久化在localStorage，多标签用BroadcastChannel/storage事件同步；这不防同源XSS，HttpOnly Cookie/CSRF改造仍未实现，见 [JWT 与浏览器凭据](../docs/architecture-decisions.md#auth)。
+Token目前持久化在localStorage，多标签用BroadcastChannel/storage事件同步；这不防同源XSS，HttpOnly Cookie/CSRF改造仍未实现，见 [JWT 与浏览器凭据](../docs/architecture.md#auth)。

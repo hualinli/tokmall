@@ -1,7 +1,7 @@
 // Package coupon 实现优惠券/促销域（v1：满减券）。
 //
-// 业务规则见 docs/commerce-business.md，事务约束见
-// docs/commerce-v1-technical-design.md：发行量、每人限领、领取截止、
+// 业务规则见 docs/business.md，事务约束见
+// docs/architecture.md 的优惠券一节：发行量、每人限领、领取截止、
 // 券状态机、整数分金额、整单门槛、退款退券、对账覆盖——缺一条就会出现
 // "券可以无限领、无限用、过期还能领"那类问题。
 package coupon
