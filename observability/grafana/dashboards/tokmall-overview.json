@@ -493,8 +493,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "existence_filter_ready",
-          "legendFormat": "{{namespace}} 过滤器就绪",
+          "expr": "sum by (namespace) (increase(existence_negative_cache_hit_total[5m]))",
+          "legendFormat": "{{namespace}} 负缓存命中",
           "datasource": {
             "type": "prometheus",
             "uid": "tokmall"
@@ -502,8 +502,8 @@
         },
         {
           "refId": "B",
-          "expr": "existence_filter_items",
-          "legendFormat": "{{namespace}} 元素数",
+          "expr": "sum by (namespace) (increase(existence_miss_marked_total[5m]))",
+          "legendFormat": "{{namespace}} 新写入的 miss",
           "datasource": {
             "type": "prometheus",
             "uid": "tokmall"

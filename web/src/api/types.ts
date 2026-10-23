@@ -3273,6 +3273,16 @@ export interface components {
             restore_stock: boolean;
             /** Format: date-time */
             requested_at: string;
+            /**
+             * Format: date-time
+             * @description 申请时确定的商家处理截止时间。逾期未裁决将自动同意
+             */
+            respond_by: string;
+            /**
+             * @description 裁决来源。MERCHANT 是商家做出的；TIMEOUT 是逾期自动同意，此时没有裁决人。未裁决时不返回
+             * @enum {string}
+             */
+            decision_source?: "MERCHANT" | "TIMEOUT";
             /** Format: date-time */
             decided_at?: string;
             decision_remark?: string;

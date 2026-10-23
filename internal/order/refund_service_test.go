@@ -32,7 +32,7 @@ func (f *fakeRefundRepository) RequestRefund(_ context.Context, cmd RequestRefun
 	from := StatusPaid
 	return &refundRecord{
 		Order:  Order{ID: cmd.OrderID, OrderNo: "order-1", Status: StatusRefundRequested, RefundFromStatus: &from},
-		Refund: Refund{ID: 7, RefundNo: cmd.RefundNo, OrderID: cmd.OrderID, Amount: 1200, Reason: cmd.Reason, Status: RefundStatusRequested, RequestedAt: cmd.RequestedAt},
+		Refund: Refund{ID: 7, RefundNo: cmd.RefundNo, OrderID: cmd.OrderID, Amount: 1200, Reason: cmd.Reason, Status: RefundStatusRequested, RequestedAt: cmd.RequestedAt, RespondBy: cmd.RespondBy},
 	}, nil
 }
 
@@ -116,6 +116,7 @@ func TestRequestRefundTrimsReasonAndMapsView(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).Add(2*time.Hour), repo.requested[1].RespondBy)
+	require.True(t, view.RespondBy.Equal(repo.requested[0].RespondBy))
 	require.Equal(t, int64(42), view.OrderID)
 	require.Equal(t, RefundStatusRequested, view.Status)
 	require.Equal(t, StatusRefundRequested, view.OrderStatus)

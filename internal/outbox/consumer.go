@@ -138,6 +138,9 @@ func (c *Consumer) Run(ctx context.Context) {
 	}
 }
 
+// EnsureGroup 创建消费组。测试和直接调用 ConsumeOnce 的一方需要先建组；Run 自己会调。
+func (c *Consumer) EnsureGroup(ctx context.Context) error { return c.ensureGroup(ctx) }
+
 func (c *Consumer) ensureGroup(ctx context.Context) error {
 	// MKSTREAM：组可以先于第一条消息存在，否则"先启动消费者再产生事件"会报错。
 	err := c.client.XGroupCreateMkStream(ctx, c.stream, c.group, "0").Err()

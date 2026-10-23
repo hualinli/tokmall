@@ -232,8 +232,8 @@ func (r *runner) runCommerce(ctx context.Context) error {
 
 // runPenetration 压"缓存穿透"路径：反复请求**不存在**的详情 ID。
 //
-// 这是缓存穿透防护的验收场景：没有防护时每个请求都会打到数据库
-// （B+ 树查空），有防护时应该被布隆过滤器/负缓存挡在应用层。
+// 这是负缓存的验收场景：没有防护时每个请求都会打到数据库
+// （B+ 树查空）。第一次见到的 ID 仍会查库，确认 miss 之后的重复请求被负缓存挡住。
 // 通过 /metrics 里的 existence_lookup_total 可以看到请求最终走到了哪一层。
 func (r *runner) runPenetration(ctx context.Context) error {
 	fmt.Printf("开始压测穿透路径（不存在的视频 ID）：并发=%d 时长=%s\n", r.cfg.concurrency, r.cfg.duration)
@@ -249,8 +249,8 @@ func (r *runner) runPenetration(ctx context.Context) error {
 			defer wg.Done()
 			sequence := 0
 			for time.Now().Before(deadline) {
-				// 高段位 ID 保证不存在，且每个请求都换一个（避免负缓存把同一 ID 的
-				// 重复请求挡掉后测不出布隆过滤器的效果）。
+				// 高段位 ID 保证不存在，且每个请求都换一个。
+				// 重复同一个 ID 会被负缓存挡住，测不到第一次 miss 的数据库成本。
 				id := 900_000_000 + worker*1_000_000 + sequence
 				sequence++
 				started := time.Now()

@@ -45,20 +45,24 @@ type RequestRefundCommand struct {
 
 // RefundView 是 service 边界的只读结果，model 不出 service。
 type RefundView struct {
-	RefundID       int64        `json:"refund_id"`
-	RefundNo       string       `json:"refund_no"`
-	OrderID        int64        `json:"order_id"`
-	OrderNo        string       `json:"order_no"`
-	Amount         Amount       `json:"amount"`
-	Reason         string       `json:"reason"`
-	Status         RefundStatus `json:"status"`
-	RestoreStock   bool         `json:"restore_stock"`
-	RequestedAt    time.Time    `json:"requested_at"`
-	DecidedAt      *time.Time   `json:"decided_at,omitempty"`
-	DecisionRemark *string      `json:"decision_remark,omitempty"`
-	RefundedAt     *time.Time   `json:"refunded_at,omitempty"`
-	OrderStatus    Status       `json:"order_status"`
-	Replayed       bool         `json:"replayed"`
+	RefundID     int64        `json:"refund_id"`
+	RefundNo     string       `json:"refund_no"`
+	OrderID      int64        `json:"order_id"`
+	OrderNo      string       `json:"order_no"`
+	Amount       Amount       `json:"amount"`
+	Reason       string       `json:"reason"`
+	Status       RefundStatus `json:"status"`
+	RestoreStock bool         `json:"restore_stock"`
+	RequestedAt  time.Time    `json:"requested_at"`
+	// RespondBy 是申请时确定的商家处理截止时间。
+	RespondBy time.Time `json:"respond_by"`
+	// DecisionSource 区分商家裁决和超时自动同意。未裁决时为空。
+	DecisionSource *string    `json:"decision_source,omitempty"`
+	DecidedAt      *time.Time `json:"decided_at,omitempty"`
+	DecisionRemark *string    `json:"decision_remark,omitempty"`
+	RefundedAt     *time.Time `json:"refunded_at,omitempty"`
+	OrderStatus    Status     `json:"order_status"`
+	Replayed       bool       `json:"replayed"`
 }
 
 type DecideRefundParams struct {
@@ -157,7 +161,8 @@ func mapRefundView(record *refundRecord) *RefundView {
 		RefundID: r.ID, RefundNo: r.RefundNo, OrderID: r.OrderID, OrderNo: record.Order.OrderNo,
 		Amount: r.Amount, Reason: r.Reason, Status: r.Status,
 		RestoreStock: record.Order.RefundFromStatus != nil && *record.Order.RefundFromStatus == StatusPaid,
-		RequestedAt:  r.RequestedAt, DecidedAt: r.DecidedAt, DecisionRemark: r.DecisionRemark,
+		RequestedAt:  r.RequestedAt, RespondBy: r.RespondBy, DecisionSource: r.DecisionSource,
+		DecidedAt: r.DecidedAt, DecisionRemark: r.DecisionRemark,
 		RefundedAt: r.RefundedAt, OrderStatus: record.Order.Status, Replayed: record.Replayed,
 	}
 }

@@ -2611,7 +2611,7 @@ components:
           description: 商家裁决备注，可选
     RefundDetail:
       type: object
-      required: [refund_id, refund_no, order_id, order_no, amount, reason, status, restore_stock, requested_at, order_status, replayed]
+      required: [refund_id, refund_no, order_id, order_no, amount, reason, status, restore_stock, requested_at, respond_by, order_status, replayed]
       properties:
         refund_id:
           type: integer
@@ -2637,6 +2637,14 @@ components:
         requested_at:
           type: string
           format: date-time
+        respond_by:
+          type: string
+          format: date-time
+          description: 申请时确定的商家处理截止时间。逾期未裁决将自动同意
+        decision_source:
+          type: string
+          enum: [MERCHANT, TIMEOUT]
+          description: 裁决来源。MERCHANT 是商家做出的；TIMEOUT 是逾期自动同意，此时没有裁决人。未裁决时不返回
         decided_at:
           type: string
           format: date-time

@@ -137,6 +137,8 @@ make outbox-status
 
 **消费者参数。** [NewConsumer](../internal/outbox/consumer.go) 默认每批 32 条、阻塞 2 秒、认领空闲阈值 30 秒、最多投递 5 次。`main.go` 目前没有把 `OUTBOX_CLAIM_IDLE` / `OUTBOX_CONSUMER_MAX_DELIVERIES` 传给消费者，所以改这两个环境变量不生效。
 
+`OUTBOX_TRANSPORT` 默认 `redis`：中继把事件放进 Streams，再由消费者处理。设为 `postgres` 时改为消费者直接用 `SKIP LOCKED` 取 outbox 表，并且不再启动中继和 Streams 消费者。两种方式不要同时开。
+
 ## 对账与恢复
 
 ```bash

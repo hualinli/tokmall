@@ -54,6 +54,9 @@ export function Header() {
           <Link to="/" className="rounded-lg px-3 py-2 hover:bg-zinc-800">
             Feed
           </Link>
+          <Link to="/learn" className="rounded-lg px-3 py-2 hover:bg-zinc-800">
+            教程
+          </Link>
           {accessToken && (
             <>
               <Link to="/upload" className="rounded-lg px-3 py-2 hover:bg-zinc-800">

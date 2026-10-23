@@ -74,6 +74,19 @@ function OrderDetailPage() {
             <p>退款金额：¥{(refund.data.amount / 100).toFixed(2)}</p>
             <p>申请原因：{refund.data.reason}</p>
             <p className="text-zinc-400">申请时间：{new Date(refund.data.requested_at).toLocaleString()}</p>
+            {refund.data.status === 'REQUESTED' && (
+              <p className="text-amber-300">
+                {merchant
+                  ? `请在 ${new Date(refund.data.respond_by).toLocaleString()} 前处理，逾期自动同意`
+                  : `商家需在 ${new Date(refund.data.respond_by).toLocaleString()} 前处理，逾期将自动退款`}
+              </p>
+            )}
+            {refund.data.status === 'SUCCEEDED' && refund.data.decision_source === 'TIMEOUT' && (
+              <p className="text-amber-300">商家逾期未处理，已自动退款</p>
+            )}
+            {refund.data.status === 'SUCCEEDED' && refund.data.decision_source === 'MERCHANT' && (
+              <p className="text-zinc-400">商家已同意退款</p>
+            )}
             {refund.data.decided_at && <p className="text-zinc-400">裁决时间：{new Date(refund.data.decided_at).toLocaleString()}</p>}
             {refund.data.decision_remark && <p className="text-zinc-400">商家备注：{refund.data.decision_remark}</p>}
             {refund.data.refunded_at && <p className="text-zinc-400">退款时间：{new Date(refund.data.refunded_at).toLocaleString()}</p>}

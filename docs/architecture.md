@@ -13,7 +13,7 @@ TokMall 是共享 PostgreSQL 的模块化单体。`cmd/api` 是组合根：加�
 | 依赖 | 职责 |
 |---|---|
 | PostgreSQL | 所有业务事实：交易、状态机、幂等约束、Outbox、消费回执、投影、删除任务。表结构只由 golang-migrate 管理，禁止 AutoMigrate |
-| Redis | Feed 缓存与版本号、负缓存、限流、refresh token 抢占、热榜分钟桶与窗口、Streams 事件传输。不保存交易事实 |
+| Redis | Feed 缓存与版本号、负缓存、限流、refresh token 抢占、热榜分钟桶与窗口、默认的 Streams 事件传输。不保存交易事实 |
 | RustFS | S3 兼容的私有媒体存储。浏览器用预签名 URL 直传，服务端负责封存、探测、清理 |
 
 **分层。** handler 处理 HTTP DTO、读取认证身份、把业务错误映射为响应；service 执行业务规则，对外只暴露领域参数和视图；repository 负责 SQL、事务，并把 ORM 错误翻译成领域哨兵错误。错误用 `%w` 包装、`errors.Is/As` 判断；业务拒绝不按系统错误记日志，未知错误返回 500。见 [统一响应](../internal/response/response.go)。
@@ -23,6 +23,8 @@ TokMall 是共享 PostgreSQL 的模块化单体。`cmd/api` 是组合根：加�
 **为什么是单体。** 订单、库存、券、Outbox 在同一个 PG 事务里提交，交易不变量由事务和数据库约束直接守住，不需要分布式事务。
 
 **代价。** 所有模块共享数据库和进程的故障域；库存写入分散在 order/product/inventory 三处，靠数据库约束兜底。PG 与 Redis/RustFS 之间没有原子性，需要缓存失效、事件幂等和对象清理补偿。拆分服务的前提是出现独立部署、团队边界或容量隔离需求，并有测量证明收益。
+
+**教学入口的取舍。** 教程复用前端 `/learn`，以独立场景的分步模型说明交易语义，避免学习操作向业务库写入演示订单；学习记录留在浏览器，不增加业务表或 API。代价是模型需随实现维护，不能证明数据库锁和回滚正确，也不提供跨设备进度同步；验证仍依赖真实集成测试。入口与使用范围见[前端说明](../web/README.md)。
 
 ### 模块与数据归属
 
@@ -39,7 +41,7 @@ TokMall 是共享 PostgreSQL 的模块化单体。`cmd/api` 是组合根：加�
 | `outbox` | 中继、Streams 消费、回执、DLQ | `outbox_events`、`consumed_events` |
 | `attribution` | 作者成交实时统计、日销投影 | `author_sales_daily` |
 | `reconcile` | 九项对账、事件重放、投影重建 | 跨模块只读 |
-| `breaker` / `existence` / `tracing` | 存储熔断、负缓存与布隆过滤器、traceparent | 横切能力 |
+| `breaker` / `existence` / `tracing` | 存储熔断、负缓存、traceparent | 横切能力 |
 
 <a id="commerce"></a>
 
@@ -132,7 +134,7 @@ TokMall 是共享 PostgreSQL 的模块化单体。`cmd/api` 是组合根：加�
 - 停用的消费组会阻止回收。背压只把积压留在 PG，不保证长期收敛。
 - 消费者串行逐条提交，是当前的吞吐短板。
 
-**待证明。** 更该比较的对象是"消费者直接用 `FOR UPDATE SKIP LOCKED` 从 PG outbox 表取事件"，而不是 Kafka。上面最难的几个 bug（裁剪丢消息、PEL 尾部恢复不到、DEAD 与 DLQ 分两处）都来自多了一个队列。Streams 的收益需要对照数据支撑，见 [性能计划](performance.md#plan)。
+**直接消费。** `OUTBOX_TRANSPORT=postgres` 时不启动中继和 Streams 消费者，由 [DirectConsumer](../internal/outbox/direct_consumer.go) 用 `FOR UPDATE SKIP LOCKED` 取到期事件，回执和投影仍在同一个事务里。默认仍是 `redis`。对照排空耗时见 [性能](performance.md#streams-vs-postgres)。
 
 <a id="recovery"></a>
 
@@ -204,13 +206,13 @@ TokMall 是共享 PostgreSQL 的模块化单体。`cmd/api` 是组合根：加�
 
 ## 存在性判定（防穿透）
 
-[existence.Guard](../internal/existence/guard.go) 组合了本地布隆过滤器和 Redis 负缓存：
+[existence.Guard](../internal/existence/guard.go) 只使用 Redis 负缓存：
 
 - 负缓存只记录真实的数据库 miss，带 TTL 抖动；不记录"存在但不可见"的未发布视频，否则会误伤作者本人。
 - 负缓存读取失败时放行到数据库，不把依赖故障伪装成 404。
-- 布隆过滤器首次装载前放行；重建成功才原子切换，失败保留旧集合，构建期间本地新增同时写两份。
+- 没有命中负缓存的请求继续查数据库。新建的视频和商品不需要登记到本地集合。
 
-**布隆过滤器目前不参与判定。** 本地阴性不能证明其他实例没有刚创建这条记录，所以阴性仍继续查负缓存和数据库，`MayExist` 里它只影响一个指标标签。它的成本却是真实的：常驻内存，加上每 10 分钟全表扫描重建。真正挡住穿透的是负缓存。建议删除，或者改成能参与判定的设计（例如由数据库变更驱动的共享过滤器）。
+本地布隆过滤器已删除。它的阴性不能证明其他实例没有刚创建这条记录，所以从不参与判定，却要常驻内存并每 10 分钟全表重建。
 
 <a id="media"></a>
 

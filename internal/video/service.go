@@ -54,10 +54,9 @@ type Repository interface {
 type ExistenceGuard interface {
 	MayExist(ctx context.Context, namespace string, id int64) (bool, error)
 	MarkMissing(ctx context.Context, namespace string, id int64)
-	Add(namespace string, id int64)
 }
 
-// existenceNamespace 必须与装配方注册的布隆过滤器命名空间一致。
+// existenceNamespace 必须与装配方注册的负缓存命名空间一致。
 const existenceNamespace = "video"
 
 // Storage 同样由 service 定义：最小化依赖面，方便单测注入 fake。
@@ -335,10 +334,6 @@ func (s *Service) Create(ctx context.Context, userID int64, p CreateParams) (*Cr
 		}
 		slog.Error("create video failed", "user_id", userID, "err", err)
 		return nil, fmt.Errorf("create video: %w", err)
-	}
-	// 新视频立即更新本地过滤器；其它实例尚未同步时也会放行到数据库。
-	if s.existence != nil {
-		s.existence.Add(existenceNamespace, v.ID)
 	}
 	return &CreateResult{VideoID: v.ID, Status: v.Status}, nil
 }

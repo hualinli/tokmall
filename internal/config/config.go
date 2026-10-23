@@ -77,11 +77,8 @@ const (
 	defaultReconcileInterval         = 5 * time.Minute
 	defaultReconcileGrace            = time.Minute
 	defaultExistenceOn               = true
-	defaultExistenceExpected         = 1_000_000
-	defaultExistenceFPRate           = 0.01
 	defaultExistenceNegTTL           = 30 * time.Second
 	defaultExistenceNegJitter        = 15 * time.Second
-	defaultExistenceRebuildTick      = 10 * time.Minute
 	defaultBreakerOn                 = true
 	defaultBreakerThreshold          = 5
 	defaultBreakerOpenDuration       = 5 * time.Second
@@ -127,15 +124,17 @@ type Config struct {
 	ReadRateLimit            int
 	OrderExpiryWorkerEnabled bool
 	// Outbox 相关配置：中继把 outbox_events 投递到事件流，消费者做幂等投影。
-	OutboxRelayEnabled          bool
-	OutboxRelayInterval         time.Duration
-	OutboxRelayBatchSize        int
-	OutboxRelayLease            time.Duration
-	OutboxMaxAttempts           int
-	OutboxStream                string
-	OutboxDLQStream             string
-	OutboxStreamMaxLen          int64
-	OutboxConsumerEnabled       bool
+	OutboxRelayEnabled    bool
+	OutboxRelayInterval   time.Duration
+	OutboxRelayBatchSize  int
+	OutboxRelayLease      time.Duration
+	OutboxMaxAttempts     int
+	OutboxStream          string
+	OutboxDLQStream       string
+	OutboxStreamMaxLen    int64
+	OutboxConsumerEnabled bool
+	// OutboxTransport 是 redis（中继到 Streams）或 postgres（消费者直接 SKIP LOCKED 取表）。
+	OutboxTransport             string
 	OutboxConsumerGroup         string
 	OutboxConsumerMaxDeliveries int
 	OutboxClaimIdle             time.Duration
@@ -144,18 +143,11 @@ type Config struct {
 	ReconcileInterval time.Duration
 	// ReconcileGrace：事件发布后等待消费回执的宽限期，超过即视为可能丢失。
 	ReconcileGrace time.Duration
-	// ExistenceEnabled：缓存穿透防护（布隆过滤器 + 负缓存）。
+	// ExistenceEnabled：缓存穿透防护（Redis 负缓存）。
 	ExistenceEnabled bool
-	// ExistenceExpected 是每个命名空间的预期元素数，决定位数组大小与误判率。
-	ExistenceExpected uint64
-	// ExistenceFPRate 是已装载集合的目标假阳性率；不代表跨实例数据同步完整。
-	ExistenceFPRate float64
 	// ExistenceNegativeTTL/Jitter 是负缓存有效期与其随机抖动（防集中过期）。
 	ExistenceNegativeTTL    time.Duration
 	ExistenceNegativeJitter time.Duration
-	// ExistenceRebuildInterval 是全量重建布隆过滤器的周期（删除无法从过滤器移除，
-	// 靠重建把误判率拉回设计值）。
-	ExistenceRebuildInterval time.Duration
 	// BreakerEnabled：对象存储等下游依赖的熔断器。
 	BreakerEnabled bool
 	// BreakerFailureThreshold 是连续失败多少次后打开。
@@ -415,6 +407,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	outboxTransport := envString("OUTBOX_TRANSPORT", "redis")
 	outboxConsumerEnabled, err := envBool("OUTBOX_CONSUMER_ENABLED", defaultOutboxConsumerOn)
 	if err != nil {
 		return nil, err
@@ -444,23 +437,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	existenceExpected, err := envInt64("EXISTENCE_EXPECTED_ITEMS", defaultExistenceExpected)
-	if err != nil {
-		return nil, err
-	}
-	existenceFPRate, err := envFloat("EXISTENCE_FP_RATE", defaultExistenceFPRate)
-	if err != nil {
-		return nil, err
-	}
 	existenceNegTTL, err := envDuration("EXISTENCE_NEGATIVE_TTL", defaultExistenceNegTTL)
 	if err != nil {
 		return nil, err
 	}
 	existenceNegJitter, err := envDuration("EXISTENCE_NEGATIVE_JITTER", defaultExistenceNegJitter)
-	if err != nil {
-		return nil, err
-	}
-	existenceRebuild, err := envDuration("EXISTENCE_REBUILD_INTERVAL", defaultExistenceRebuildTick)
 	if err != nil {
 		return nil, err
 	}
@@ -569,6 +550,7 @@ func Load() (*Config, error) {
 		OutboxDLQStream:             outboxStream + defaultOutboxDLQSuffix,
 		OutboxStreamMaxLen:          outboxStreamMaxLen,
 		OutboxConsumerEnabled:       outboxConsumerEnabled,
+		OutboxTransport:             outboxTransport,
 		OutboxConsumerGroup:         envString("OUTBOX_CONSUMER_GROUP", defaultOutboxGroup),
 		OutboxConsumerMaxDeliveries: outboxMaxDeliveries,
 		OutboxClaimIdle:             outboxClaimIdle,
@@ -577,12 +559,9 @@ func Load() (*Config, error) {
 		ReconcileInterval: reconcileInterval,
 		ReconcileGrace:    reconcileGrace,
 
-		ExistenceEnabled:         existenceEnabled,
-		ExistenceExpected:        uint64(existenceExpected),
-		ExistenceFPRate:          existenceFPRate,
-		ExistenceNegativeTTL:     existenceNegTTL,
-		ExistenceNegativeJitter:  existenceNegJitter,
-		ExistenceRebuildInterval: existenceRebuild,
+		ExistenceEnabled:        existenceEnabled,
+		ExistenceNegativeTTL:    existenceNegTTL,
+		ExistenceNegativeJitter: existenceNegJitter,
 
 		BreakerEnabled:          breakerEnabled,
 		BreakerFailureThreshold: breakerThreshold,
@@ -640,6 +619,9 @@ func (c *Config) validate() error {
 	if strings.TrimSpace(c.OutboxStream) == "" || strings.TrimSpace(c.OutboxConsumerGroup) == "" {
 		return errors.New("OUTBOX_STREAM and OUTBOX_CONSUMER_GROUP must be non-empty")
 	}
+	if c.OutboxTransport != "redis" && c.OutboxTransport != "postgres" {
+		return errors.New("OUTBOX_TRANSPORT must be redis or postgres")
+	}
 	if c.OutboxConsumerMaxDeliveries <= 0 || c.OutboxClaimIdle <= 0 {
 		return errors.New("outbox consumer max deliveries and claim idle must be positive")
 	}
@@ -664,17 +646,8 @@ func (c *Config) validate() error {
 		}
 	}
 	if c.ExistenceEnabled {
-		if c.ExistenceExpected == 0 {
-			return errors.New("EXISTENCE_EXPECTED_ITEMS must be positive")
-		}
-		if c.ExistenceFPRate <= 0 || c.ExistenceFPRate >= 1 {
-			return errors.New("EXISTENCE_FP_RATE must be in (0,1)")
-		}
 		if c.ExistenceNegativeTTL <= 0 || c.ExistenceNegativeJitter < 0 {
 			return errors.New("EXISTENCE_NEGATIVE_TTL must be positive and jitter non-negative")
-		}
-		if c.ExistenceRebuildInterval <= 0 {
-			return errors.New("EXISTENCE_REBUILD_INTERVAL must be positive")
 		}
 	}
 	if host, port, err := net.SplitHostPort(c.MetricsAddr); err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {

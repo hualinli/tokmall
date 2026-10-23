@@ -789,7 +789,6 @@ func TestGetProductHidesSKUsWhenOffSale(t *testing.T) {
 // fakeExistenceGuard 记录缓存穿透防护的调用。
 type fakeExistenceGuard struct {
 	reject bool
-	added  []int64
 	calls  int
 }
 
@@ -798,30 +797,8 @@ func (g *fakeExistenceGuard) MayExist(context.Context, string, int64) (bool, err
 	return !g.reject, nil
 }
 func (g *fakeExistenceGuard) MarkMissing(context.Context, string, int64) {}
-func (g *fakeExistenceGuard) Add(_ string, id int64)                     { g.added = append(g.added, id) }
 
-// TestCreateProductRegistersIDInGuard 锁死一个真实踩过的坑：
-// 布隆过滤器是"定期全量重建 + 创建时增量登记"的组合，漏了后者就会出现
-// "商品创建成功、紧接着查详情 404"（实测：GET /products/{新 id} 返回 404，
-// 直到下一次重建）。这个用例保证创建路径一定会登记 ID。
-func TestCreateProductRegistersIDInGuard(t *testing.T) {
-	repo := &fakeProductRepository{createProductFn: func(_ context.Context, p *Product) error {
-		p.ID = 4242
-		return nil
-	}}
-	guard := &fakeExistenceGuard{}
-	svc := NewService(repo, fakeProductURLProvider{}, &fakeImageValidator{})
-	svc.SetExistenceGuard(guard)
-
-	item, err := svc.CreateProduct(context.Background(), CreateProductParams{
-		MerchantID: 7, Title: "新商品",
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(4242), item.ID)
-	require.Equal(t, []int64{4242}, guard.added, "新建商品必须立刻登记进布隆过滤器")
-}
-
-// TestGetProductShortCircuitsWhenGuardRejects：过滤器说"一定不存在"时不查库。
+// TestGetProductShortCircuitsWhenGuardRejects：负缓存说"一定不存在"时不查库。
 func TestGetProductShortCircuitsWhenGuardRejects(t *testing.T) {
 	repo := &fakeProductRepository{}
 	guard := &fakeExistenceGuard{reject: true}

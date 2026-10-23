@@ -33,7 +33,6 @@ const (
 type ExistenceGuard interface {
 	MayExist(ctx context.Context, namespace string, id int64) (bool, error)
 	MarkMissing(ctx context.Context, namespace string, id int64)
-	Add(namespace string, id int64)
 }
 
 const existenceNamespace = "product"
@@ -164,10 +163,6 @@ func (s *Service) CreateProduct(ctx context.Context, p CreateProductParams) (*Pr
 	err := s.repo.CreateProduct(ctx, &product)
 	if err != nil {
 		return nil, err
-	}
-	// 本地集合立即更新；其它实例未装载该 ID 时也会放行到数据库。
-	if s.existence != nil {
-		s.existence.Add(existenceNamespace, product.ID)
 	}
 	return s.toProductItem(ctx, &product)
 }

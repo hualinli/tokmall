@@ -275,16 +275,12 @@ func run() error {
 		videoService, // ImageTicketValidator：封面防伪造复用视频模块的凭证核销
 	)
 	productHandler := product.NewHandler(productService)
-	// 缓存穿透防护：布隆过滤器（进程内）+ 负缓存（Redis）。
-	// 装配在这里而不是模块内部：video/product 只依赖"能否问一句是否存在"的接口。
-	var existenceGuard *existence.Guard
-	var existenceMetrics *observability.ExistenceMetrics
+	// 缓存穿透防护只剩共享负缓存。本地布隆过滤器不参与判定，已删除。
 	if cfg.ExistenceEnabled {
-		existenceMetrics = observability.NewExistenceMetrics(metricsRegistry)
-		existenceGuard = existence.NewGuard(
-			map[string]uint64{"video": cfg.ExistenceExpected, "product": cfg.ExistenceExpected},
+		existenceMetrics := observability.NewExistenceMetrics(metricsRegistry)
+		existenceGuard := existence.NewGuard(
+			[]string{"video", "product"},
 			existence.NewRedisMissingMarker(redisClient),
-			cfg.ExistenceFPRate,
 			existence.WithTTL(cfg.ExistenceNegativeTTL),
 			existence.WithJitter(cfg.ExistenceNegativeJitter),
 			existence.WithStats(existenceMetrics),
@@ -317,7 +313,7 @@ func run() error {
 			video.WithProbeBatch(cfg.MediaProbeBatch),
 		)
 	}
-	workers := startWorkers(ctx, cfg, db, consumerDB, redisClient, orderRepository, metricsRegistry, existenceGuard, existenceMetrics, videoRepository, productRepository, hotFeed, mediaProbeWorker, storageClient)
+	workers := startWorkers(ctx, cfg, db, consumerDB, redisClient, orderRepository, metricsRegistry, hotFeed, mediaProbeWorker, storageClient)
 	registerRoutes(h, routes{
 		db:          db,
 		token:       tokenManager,
@@ -413,8 +409,6 @@ func stopWorker(name string, cancel context.CancelFunc, done <-chan struct{}, ti
 // 消费组可以先建立，事件随后到达，不会出现"事件已在流里但没有消费者"。
 func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.DB, redisClient *redis.Client,
 	orderRepo *order.GormRepository, registry *prometheus.Registry,
-	guard *existence.Guard, existenceMetrics *observability.ExistenceMetrics,
-	videoRepo *video.GormRepository, productRepo *product.GormRepository,
 	hotFeed *feed.RedisHotFeed, mediaProbe *video.ProbeWorker, cleanupStorage video.ObjectDeleter) *backgroundWorkers {
 	workers := &backgroundWorkers{}
 	cleanupCtx, cleanupCancel := context.WithCancel(ctx)
@@ -441,23 +435,6 @@ func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.
 		workerCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		workers.add(cancel, done, "hot window worker")
-		go func() {
-			defer close(done)
-			worker.Run(workerCtx)
-		}()
-	}
-	if guard != nil {
-		worker := existence.NewRebuildWorker(guard, cfg.ExistenceRebuildInterval,
-			map[string]existence.LoaderFunc{
-				"video": func(ctx context.Context, add func(int64) error) error { return videoRepo.EachVideoID(ctx, 1000, add) },
-				"product": func(ctx context.Context, add func(int64) error) error {
-					return productRepo.EachProductID(ctx, 1000, add)
-				},
-			},
-			observability.NewExistenceMetricsObserver(existenceMetrics))
-		workerCtx, cancel := context.WithCancel(ctx)
-		done := make(chan struct{})
-		workers.add(cancel, done, "existence rebuild worker")
 		go func() {
 			defer close(done)
 			worker.Run(workerCtx)
@@ -493,11 +470,25 @@ func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.
 			autoCompleteWorker.Run(workerCtx)
 		}()
 	}
+	outboxRepo := outbox.NewRepository(db)
+	if cfg.OutboxTransport == "postgres" && cfg.OutboxConsumerEnabled {
+		// 直接从 outbox 表取。不要同时开中继，否则同一条事件会被两边认领。
+		consumer := outbox.NewDirectConsumer(outboxRepo, consumerDB, cfg.OutboxConsumerGroup, []outbox.Handler{
+			attribution.NewProjector(consumerDB),
+			order.NewTimeoutHandler(consumerDB, order.WithTimeoutStats(observability.NewOrderTimeoutMetrics(registry))),
+		}, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize, cfg.OutboxRelayLease, int32(cfg.OutboxMaxAttempts))
+		consumerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		workers.add(cancel, done, "outbox direct consumer")
+		go func() {
+			defer close(done)
+			consumer.Run(consumerCtx)
+		}()
+	}
 	if redisClient == nil {
 		return workers
 	}
-	outboxRepo := outbox.NewRepository(db)
-	if cfg.OutboxRelayEnabled {
+	if cfg.OutboxTransport != "postgres" && cfg.OutboxRelayEnabled {
 		publisher := outbox.Publisher(outbox.NewRedisStreamPublisher(redisClient, cfg.OutboxStream, cfg.OutboxStreamMaxLen,
 			outbox.WithRequiredConsumerGroup(cfg.OutboxConsumerGroup)))
 		relay := outbox.NewRelay(outboxRepo, publisher, cfg.OutboxRelayInterval, cfg.OutboxRelayBatchSize,
@@ -527,7 +518,7 @@ func startWorkers(ctx context.Context, cfg *config.Config, db, consumerDB *gorm.
 			worker.Run(workerCtx)
 		}()
 	}
-	if cfg.OutboxConsumerEnabled {
+	if cfg.OutboxTransport != "postgres" && cfg.OutboxConsumerEnabled {
 		handlers := []outbox.Handler{
 			attribution.NewProjector(consumerDB),
 			// 订单超时延迟事件：加速器（轮询 Worker 仍是安全网）。

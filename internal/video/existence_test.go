@@ -10,13 +10,12 @@ import (
 
 // fakeGuard 记录缓存穿透防护的调用，用来断言"该挡的挡住、不该写的别写"。
 type fakeGuard struct {
-	// reject 为 true 时表示布隆过滤器/负缓存判定"一定不存在"。
+	// reject 为 true 时表示负缓存判定"一定不存在"。
 	reject bool
 	err    error
 
 	mayExistCalls int
 	markedMissing []int64
-	added         []int64
 }
 
 func (g *fakeGuard) MayExist(context.Context, string, int64) (bool, error) {
@@ -31,9 +30,7 @@ func (g *fakeGuard) MarkMissing(_ context.Context, _ string, id int64) {
 	g.markedMissing = append(g.markedMissing, id)
 }
 
-func (g *fakeGuard) Add(_ string, id int64) { g.added = append(g.added, id) }
-
-// TestGetShortCircuitsWhenGuardRejects：布隆过滤器/负缓存说"不存在"时，
+// TestGetShortCircuitsWhenGuardRejects：负缓存说"不存在"时，
 // 详情查询不应触达仓储层（这正是防护的意义：把穿透请求挡在数据库之外）。
 func TestGetShortCircuitsWhenGuardRejects(t *testing.T) {
 	repo := newFakeRepo()
@@ -90,24 +87,6 @@ func TestGetMarksMissingOnlyWhenRecordAbsent(t *testing.T) {
 		require.Equal(t, int64(7), detail.VideoID)
 		require.Empty(t, guard.markedMissing)
 	})
-}
-
-// TestCreateRegistersNewIDInGuard：新建的视频必须立刻进过滤器，
-// 否则"创建后马上看详情"会在下次重建前被判成不存在。
-func TestCreateRegistersNewIDInGuard(t *testing.T) {
-	repo := newFakeRepo()
-	store := newFakeStorage()
-	guard := &fakeGuard{}
-	svc := newTestService(repo, store)
-	svc.SetExistenceGuard(guard)
-	registerTicket(t, repo, 42, "videos/42/new.mp4")
-	store.objectSizes["videos/42/new.mp4"] = 1024
-
-	result, err := svc.Create(context.Background(), 42, CreateParams{
-		Title: "t", ObjectKey: "videos/42/new.mp4", DurationSeconds: 5,
-	})
-	require.NoError(t, err)
-	require.Equal(t, []int64{result.VideoID}, guard.added)
 }
 
 // TestGuardFailureFailsOpen：防护层自身出错时必须放行到数据库，
