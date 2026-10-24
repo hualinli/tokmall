@@ -28,7 +28,7 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 		if err := db.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", lockKey).Error; err != nil {
 			return fmt.Errorf("lock order idempotency key: %w", err)
 		}
-		// 已完成订单的重放不应重新依赖商品当前状态：商品在首单后下架，
+		// 已落库订单的重放不看状态，也不重新读商品：商品在首单后下架，
 		// 客户端仍必须能用原 key 拿到原结果。默认 READ COMMITTED 下，
 		// 等待锁后这次查询可见前一事务已提交的订单；唯一约束仍作为兜底。
 		existing, err := findExistingOrder(db, cmd.UserID, cmd.IdempotencyKey)
@@ -65,12 +65,13 @@ func (r *GormRepository) Create(ctx context.Context, cmd CreateCommand) (*create
 		}
 
 		// 用券：锁住持券行 → 校验归属/状态/有效期/门槛 → 算出优惠。
-		// 锁在扣库存之前，且所有路径都用同一顺序（券 → 库存），避免死锁。
+		// 券锁在扣库存之前。取消、关单、未发货退款先改库存再锁券；同一张券不会对锁，
+		// 因为这里只有 UNUSED 才扣库存，那三条路径锁的是仍为 USED 的券。
 		discount := Amount(0)
 		var userCouponID *int64
 		if cmd.UserCouponID != nil {
-			// 注意传的是"当前时间"而不是 cmd.ExpiresAt：后者是订单支付截止时间，
-			// 用它判断券是否在有效期内会把窗口放大 30 分钟。
+			// 传当前时间，不传 cmd.ExpiresAt（支付截止时间，现在加 30 分钟）。
+			// DiscountFor 把它当"现在"：用截止时间会拒绝这 30 分钟内到期的券；用现在则下单时未过期即可用。
 			applied, err := applyUserCoupon(db, cmd.UserID, sku.MerchantID, *cmd.UserCouponID, int64(lineAmount), time.Now())
 			if err != nil {
 				return err

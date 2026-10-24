@@ -299,11 +299,11 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (*CreateResul
 	if err := validateCreateParams(params); err != nil {
 		return nil, err
 	}
-	fingerprint, err := requestFingerprint(params)
+	fingerprint, err := requestFingerprint(params) // 用参数生成请求指纹，用于幂等性校验（避免前端传来的幂等键一样但是参数不一样的情况）
 	if err != nil {
 		return nil, err
 	}
-	orderNo, err := s.newOrderNo()
+	orderNo, err := s.newOrderNo() // 生成订单号, 这个 service 用的是 UUID v7
 	if err != nil {
 		return nil, err
 	}

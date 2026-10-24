@@ -112,11 +112,11 @@ export const orderScenarios: Scenario[] = [
   {
     id: 'tail',
     title: '库存放在事务最后',
-    foundation: '热点行持有越久，别的事务等得越久。锁的顺序还要全库一致，否则和另一条路径形成等待环。',
-    apply: '顺序是咨询锁、读 SKU、锁券、插订单和流水、改券、写超时事件，最后按 quantity >= 购买数量扣库存。失败则前面全部回滚。锁顺序固定为先券、后库存。',
+    foundation: '热点行持有越久，别的事务等得越久。库存行放在事务尾部，是为了缩短成功路径的持锁时间。',
+    apply: '顺序是咨询锁、读 SKU、锁券、插订单和流水、改券、写超时事件，最后按 quantity >= 购买数量扣库存。失败则前面全部回滚。取消和退款回补先改库存再锁券，不靠这条顺序防死锁。',
     code: {
       file: 'internal/order/repository.go',
-      lines: '171–176',
+      lines: '172–177',
       body: `// 独立写入已准备好，再竞争热点库存行。
 stock := db.Model(&inventoryRow{}).
     Where("sku_id = ? AND quantity >= ?", cmd.SKUID, cmd.Quantity)`,
@@ -143,7 +143,7 @@ stock := db.Model(&inventoryRow{}).
     apply: 'payment_no 和渠道交易号都唯一。两者与订单、金额一致才重放。金额必须等于订单实付。实付被券吃到 0 或以下时，下单直接拒绝。',
     code: {
       file: 'internal/order/repository.go',
-      lines: '225–228',
+      lines: '226–229',
       body: `if existing != nil {
     if !sameSuccessfulPayment(*existing, order.ID, cmd) {
         return ErrIdempotencyConflict
@@ -157,7 +157,7 @@ stock := db.Model(&inventoryRow{}).
     apply: '支付发现已过 expires_at 时，先在事务里关单、回补、退券并提交，再返回已过期。另两条路是到点的 Outbox 事件，以及大约每 5 秒的 SKIP LOCKED 扫描。事实以数据库里仍待支付且已到期为准。',
     code: {
       file: 'internal/order/repository.go',
-      lines: '206–208',
+      lines: '207–209',
       body: `// 不能直接 return ErrOrderExpired。
 // 事务闭包返回错误会回滚刚刚写下的关单与库存回补。`,
     },
@@ -169,7 +169,7 @@ stock := db.Model(&inventoryRow{}).
     apply: '买家取消时按 user_id 锁订单。状态必须仍是待支付。回补流水原因是 ORDER_CANCELED，并退券。别人的订单和不存在是同一个错误。',
     code: {
       file: 'internal/order/repository.go',
-      lines: '304–309',
+      lines: '305–310',
       body: `Where("id = ? AND user_id = ?", orderID, userID).Take(&order)
 // 仅 PENDING_PAYMENT 可以取消，回补原因 ORDER_CANCELED`,
     },
@@ -271,7 +271,7 @@ export const raceScenarios: Scenario[] = [
     apply: '库存条件不满足时，订单、流水、占券和超时事件回滚。支付过期若在闭包里直接返回错误，关单和回补也会被撤销。正确做法是先提交关单，再返回已过期。',
     code: {
       file: 'internal/order/repository.go',
-      lines: '184',
+      lines: '185',
       body: `if stock.RowsAffected == 0 {
     // 条件扣减失败，整个事务回滚
 }`,
@@ -279,13 +279,14 @@ export const raceScenarios: Scenario[] = [
   },
   {
     id: 'deadlock',
-    title: '两把锁的顺序必须全库相同',
-    foundation: 'A 握着甲等乙，B 握着乙等甲，两边都不释放，就是死锁。避免的办法是所有路径按同一个顺序申请锁。',
-    apply: '下单和退券相关路径都先券、后库存。「顺序相反」那一帧是故意展示被避免的环。超时任务如果先锁退款单，会和已经锁着订单的商家互相等；实际它只锁订单，锁被占用时跳过。',
+    title: '顺序相反时，同一张券走不成环',
+    foundation: 'A 握着甲等乙，B 握着乙等甲，两边都不释放，就是死锁。同一顺序可以避免这种环。券和库存的顺序并不相同，靠的是券的状态走不到环上。',
+    apply: '下单先锁券再扣库存；取消、超时关单和未发货退款先改库存再锁券。「顺序相反」那一帧是这种锁序可能形成的环。同一张券走不到：下单只有 UNUSED 才抢库存，回补锁的是仍为 USED 的券。超时任务如果先锁退款单，会和已经锁着订单的商家互相等；实际它只锁订单，锁被占用时跳过。',
     code: {
       file: 'internal/order/repository.go',
-      lines: '68',
-      body: `// 锁在扣库存之前，且所有路径都用同一顺序（券 → 库存），避免死锁。`,
+      lines: '68–69',
+      body: `// 券锁在扣库存之前。取消、关单、未发货退款先改库存再锁券；同一张券不会对锁，
+// 因为这里只有 UNUSED 才扣库存，那三条路径锁的是仍为 USED 的券。`,
     },
   },
 ]

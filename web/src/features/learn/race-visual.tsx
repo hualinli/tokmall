@@ -307,7 +307,7 @@ const deadScripts = {
           { name: '下单', cells: ['hold', 'wait'] },
           { name: '另一条路径', cells: ['wait', 'hold'] },
         ] as LockRow[],
-        text: '下单等库存，另一条等券。谁也不释放，环就形成了。代码把所有路径都固定成先券后库存，避免走到这一帧。',
+        text: '下单等库存，另一条等同一张券，环就形成了。下单和回补的锁序确实相反，但同一张券走不到这里：下单读到 USED 就返回。',
       },
     ],
   },
@@ -320,15 +320,15 @@ const deadScripts = {
           { name: '下单', cells: ['idle', 'idle'] },
           { name: '退款回补', cells: ['idle', 'idle'] },
         ] as LockRow[],
-        text: '两条路径都先要券，再要库存。',
+        text: '下单只有读到 UNUSED 才去抢库存。回补锁的是仍为 USED 的券，而且它先拿库存。',
       },
       {
         cycle: false,
         rows: [
-          { name: '下单', cells: ['hold', 'hold'] },
-          { name: '退款回补', cells: ['wait', 'idle'] },
+          { name: '下单', cells: ['hold', 'idle'] },
+          { name: '退款回补', cells: ['wait', 'hold'] },
         ] as LockRow[],
-        text: '下单握着两把锁。回补只在券上排队，还碰不到库存。',
+        text: '回补握着库存，正在等这张 USED 券。下单可以锁到券，但读到 USED 就返回，不会去等库存。',
       },
       {
         cycle: false,
@@ -336,7 +336,7 @@ const deadScripts = {
           { name: '下单', cells: ['gone', 'gone'] },
           { name: '退款回补', cells: ['hold', 'hold'] },
         ] as LockRow[],
-        text: '下单提交并释放。回补按同一顺序拿到券和库存，然后提交。没有环。',
+        text: '下单回滚并放开券。回补拿到券、退回之后提交。没有两边同时等待的环。',
       },
     ],
   },
@@ -382,7 +382,7 @@ function DeadPlay() {
         {(
           [
             ['cycle', '顺序相反'],
-            ['same', '同一顺序'],
+            ['same', '同一张券'],
             ['refund', '退款两把锁'],
           ] as const
         ).map(([id, label]) => (
